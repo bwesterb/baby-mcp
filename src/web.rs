@@ -113,9 +113,6 @@ struct Next {
     html: String,
 }
 
-fn next_tile(title: &'static str, last: &Value, last_detail: &str, next: &Value) -> Next {
-    next_tile_extra(title, last, last_detail, next, "")
-}
 
 /// Like `next_tile`, with an extra line (already HTML) under the estimate.
 fn next_tile_extra(title: &'static str, last: &Value, last_detail: &str, next: &Value, extra: &str) -> Next {
@@ -192,6 +189,59 @@ fn sleep_line(v: &Value) -> String {
         _ => String::new(),
     };
     format!(r#"<div class="side">😴 face {} {}{assumed}</div>"#, side_arrow(next), esc(next))
+}
+
+/// One diaper tile: the earliest expected diaper (wet or dirty) as the
+/// headline, the other on a line below, and the wet diaper warning.
+fn diaper_tile(s: &Value) -> Next {
+    let wet = ("💧", "wet", &s["next_wet_diaper_estimate"], &s["last_wet_diaper"]);
+    let dirty = ("💩", "dirty", &s["next_dirty_diaper_estimate"], &s["last_dirty_diaper"]);
+    let at = |e: &Value| e["at"].as_str().map(str::to_string);
+    // The earliest first; one without an estimate last.
+    let (first, second) = match (at(wet.2), at(dirty.2)) {
+        (Some(a), Some(b)) if b < a => (dirty, wet),
+        (None, Some(_)) => (dirty, wet),
+        _ => (wet, dirty),
+    };
+    let hm = |e: &Value| e["at"].as_str().filter(|a| a.len() >= 16).map(|a| a[11..16].to_string());
+    let (when, sub, overdue) = match hm(first.2) {
+        None => ("—".to_string(), "not enough data yet".to_string(), false),
+        Some(t) => match (first.2["due_in"].as_str(), first.2["overdue_by"].as_str()) {
+            (_, Some(d)) => (format!("~{t}"), format!("{} {} · ⏰ {d} overdue", first.0, first.1), true),
+            (Some(d), _) => (format!("~{t}"), format!("{} {} · in {d}", first.0, first.1), false),
+            _ => (format!("~{t}"), format!("{} {}", first.0, first.1), false),
+        },
+    };
+    let other = match hm(second.2) {
+        Some(t) => {
+            let state = match (second.2["due_in"].as_str(), second.2["overdue_by"].as_str()) {
+                (_, Some(d)) => format!("{d} overdue"),
+                (Some(d), _) => format!("in {d}"),
+                _ => String::new(),
+            };
+            format!(r#"<div class="side">{} {} ~{t} <span class="mut">({state})</span></div>"#, second.0, second.1)
+        }
+        None => String::new(),
+    };
+    let warning = s["wet_diaper_warning"]["text"].as_str().map(|t| format!(r#"<div class="side warn">⚠️ {}</div>"#, esc(t))).unwrap_or_default();
+    let last = |x: &(&str, &str, &Value, &Value)| {
+        x.3["ago"].as_str().map(|a| {
+            let color = x.3["value"].as_str().map(stool_emoji).unwrap_or("");
+            format!("{}{color} {a} ago", x.0)
+        })
+    };
+    let lasts: Vec<String> = [&wet, &dirty].iter().filter_map(|x| last(x)).collect();
+    let last_line = if lasts.is_empty() { "nothing logged yet".to_string() } else { format!("last {}", lasts.join(" · ")) };
+    let alarm = overdue || !warning.is_empty();
+    let html = format!(
+        r#"<div class="next{}"><div class="t">🧷 Diaper</div><div class="v">{}</div><div class="{}">{}</div>{other}{warning}<div class="last">{}</div></div>"#,
+        if alarm { " overdue" } else { "" },
+        esc(&when),
+        if overdue { "warn" } else { "mut" },
+        esc(&sub),
+        esc(&last_line)
+    );
+    Next { title: "🧷 Diaper", at: at(first.2), html }
 }
 
 /// The vitamins tile: what is still to give today (orange from 18:00), or
@@ -402,7 +452,6 @@ pub async fn status(State(app): State<Arc<App>>, headers: HeaderMap) -> Response
     );
 
     let feed_what = s["last_feed"]["value"]["fields"].as_object().map(feed_summary).unwrap_or_default();
-    let stool = s["last_dirty_diaper"]["value"].as_str().map(|c| format!("{} {c}", stool_emoji(c))).unwrap_or_default();
     let feed_warning = s["feeding_guidance"]["warnings"].as_array().is_some_and(|w| !w.is_empty());
     // With a preparation time, the tile shows when to start (diaper first).
     let start = &s["next_feed_start"];
@@ -417,15 +466,7 @@ pub async fn status(State(app): State<Arc<App>>, headers: HeaderMap) -> Response
     }
     let mut tiles = vec![
         feed,
-        {
-            let warning = s["wet_diaper_warning"]["text"].as_str().map(|t| format!(r#"<div class="side warn">⚠️ {}</div>"#, esc(t))).unwrap_or_default();
-            let mut tile = next_tile_extra("💧 Wet diaper", &s["last_wet_diaper"], "", &s["next_wet_diaper_estimate"], &warning);
-            if !warning.is_empty() {
-                tile.html = tile.html.replacen(r#"<div class="next">"#, r#"<div class="next overdue">"#, 1);
-            }
-            tile
-        },
-        next_tile("💩 Dirty diaper", &s["last_dirty_diaper"], &stool, &s["next_dirty_diaper_estimate"]),
+        diaper_tile(&s),
         bath_tile(clock, &s["bath"], t),
     ];
     tiles.extend(vitamins_tile(clock, &s["vitamins"], t));
@@ -1267,12 +1308,33 @@ mod tests {
     }
 
     #[test]
+    fn one_diaper_tile() {
+        use serde_json::json;
+        let s = json!({
+            "next_wet_diaper_estimate": {"at": "2025-11-07 15:38", "overdue_by": "1h33m"},
+            "next_dirty_diaper_estimate": {"at": "2025-11-07 18:05", "due_in": "1h"},
+            "last_wet_diaper": {"ago": "4h54m"}, "last_dirty_diaper": {"ago": "10h46m", "value": "yellow"},
+        });
+        let t = diaper_tile(&s);
+        assert_eq!(t.at.as_deref(), Some("2025-11-07 15:38"));
+        assert!(t.html.contains(">~15:38<") && t.html.contains("💧 wet · ⏰ 1h33m overdue") && t.html.contains(r#"class="next overdue""#), "{}", t.html);
+        assert!(t.html.contains("💩 dirty ~18:05 <span class=\"mut\">(in 1h)</span>") && t.html.contains("last 💧 4h54m ago · 💩🟡 10h46m ago"), "{}", t.html);
+        // Dirty first when it is earlier; the warning makes the tile orange.
+        let mut s2 = s.clone();
+        s2["next_dirty_diaper_estimate"] = json!({"at": "2025-11-07 14:00", "due_in": "10m"});
+        s2["next_wet_diaper_estimate"] = json!({"at": "2025-11-07 16:00", "due_in": "2h"});
+        s2["wet_diaper_warning"] = json!({"text": "Only 4 wet diapers in the last 24 h (usually at least 6 from day 6)"});
+        let t = diaper_tile(&s2);
+        assert!(t.html.contains(">~14:00<") && t.html.contains("💩 dirty · in 10m") && t.html.contains("⚠️ Only 4 wet") && t.html.contains(r#"class="next overdue""#), "{}", t.html);
+    }
+
+    #[test]
     fn whats_next_order() {
         use serde_json::json;
         let html = whats_next(vec![
-            next_tile("🍼 Feed", &json!({"ago": "1h", "at": "2025-11-07 13:00"}), "", &json!({"at": "2025-11-07 16:00", "due_in": "1h"})),
-            next_tile("💩 Dirty diaper", &Value::Null, "", &Value::Null),
-            next_tile("💧 Wet diaper", &json!({"ago": "3h", "at": "2025-11-07 11:00"}), "", &json!({"at": "2025-11-07 14:30", "overdue_by": "30m"})),
+            next_tile_extra("🍼 Feed", &json!({"ago": "1h", "at": "2025-11-07 13:00"}), "", &json!({"at": "2025-11-07 16:00", "due_in": "1h"}), ""),
+            next_tile_extra("💩 Dirty diaper", &Value::Null, "", &Value::Null, ""),
+            next_tile_extra("💧 Wet diaper", &json!({"ago": "3h", "at": "2025-11-07 11:00"}), "", &json!({"at": "2025-11-07 14:30", "overdue_by": "30m"}), ""),
         ]);
         let (w, f, d) = (html.find("Wet").unwrap(), html.find("Feed").unwrap(), html.find("Dirty").unwrap());
         assert!(w < f && f < d, "overdue first, no estimate last");
