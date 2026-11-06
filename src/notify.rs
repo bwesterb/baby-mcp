@@ -15,11 +15,12 @@ use rusqlite::{Connection, params};
 use serde_json::Value;
 use std::sync::Arc;
 
-pub const KINDS: [(&str, &str, &str); 5] = [
+pub const KINDS: [(&str, &str, &str); 6] = [
     ("feed_soon", "Feed soon", "15 minutes before the next feed is expected"),
     ("feed_overdue", "Feed overdue", "30 minutes after the next feed was expected"),
     ("attention", "Entries need attention", "when an entry is marked as needing you (🙋)"),
     ("vitamins", "Vitamins", "at 18:00 if vitamin K or D hasn't been given that day"),
+    ("changes", "Any change", "when someone else logs, changes or deletes an entry (off unless you turn it on)"),
     ("feed_warning", "Feeding minimum", "when it gets close to the longest pause without a feed, or to only the minimum number of feeds in 24 hours (NVK)"),
 ];
 
@@ -36,6 +37,8 @@ pub struct Notice {
     pub body: String,
     pub url: String,
     pub ttl: u32,
+    /// Who caused it: not sent to that user.
+    pub by: Option<i64>,
 }
 
 /// What is due now, for everyone (before choices and deduplication).
@@ -72,6 +75,7 @@ pub fn due(c: &Connection, clock: &Clock, status: &Value, name: &str, now: i64) 
                 body,
                 url: "/".into(),
                 ttl: (at - now + OVERDUE) as u32,
+                by: None,
             });
         }
         if now >= at + OVERDUE && now < at + STALE {
@@ -82,6 +86,7 @@ pub fn due(c: &Connection, clock: &Clock, status: &Value, name: &str, now: i64) 
                 body: format!("Expected around {hm}; last feed {last_hm}{extra}"),
                 url: "/".into(),
                 ttl: 3600,
+                by: None,
             });
         }
     }
@@ -94,6 +99,7 @@ pub fn due(c: &Connection, clock: &Clock, status: &Value, name: &str, now: i64) 
                 body: text.to_string(),
                 url: "/".into(),
                 ttl: 2 * 3600,
+                by: None,
             });
         }
     }
@@ -108,6 +114,7 @@ pub fn due(c: &Connection, clock: &Clock, status: &Value, name: &str, now: i64) 
                 body: format!("Not given yet today: {what}"),
                 url: "/".into(),
                 ttl: (clock.next_day_start(now) - now) as u32,
+                by: None,
             });
         }
     }
@@ -133,6 +140,29 @@ pub fn due(c: &Connection, clock: &Clock, status: &Value, name: &str, now: i64) 
             },
             url: format!("/day?date={}", clock.day(at)),
             ttl: 6 * 3600,
+            by: None,
+        });
+    }
+    // Any change: every new version in the last 15 minutes, for the others.
+    let names = crate::entries::user_names(c)?;
+    let ids: Vec<i64> = {
+        let mut st = c.prepare("SELECT entry_id FROM entry WHERE changed_at >= ?1 ORDER BY changed_at").map_err(|e| e.to_string())?;
+        st.query_map([now - ATTENTION_WINDOW], |r| r.get(0)).map_err(|e| e.to_string())?.collect::<rusqlite::Result<_>>().map_err(|e| e.to_string())?
+    };
+    for id in ids {
+        let e = crate::entries::get(c, id)?;
+        let who = names.get(&e.changed_by).cloned().unwrap_or_else(|| "someone".into());
+        let verb = if e.deleted { "deleted" } else if e.version == 1 { "logged" } else { "changed" };
+        let what = crate::web::entry_summary(&e);
+        let what = if what.is_empty() { e.text.chars().take(80).collect() } else { what };
+        out.push(Notice {
+            kind: "changes",
+            key: format!("{id}:{}", e.version),
+            title: format!("✏️ {name}: {who} {verb} {}", clock.zoned(e.at).strftime("%H:%M")),
+            body: what,
+            url: format!("/entry/{id}"),
+            ttl: 3 * 3600,
+            by: Some(e.changed_by),
         });
     }
     Ok(out)
@@ -175,14 +205,17 @@ pub fn current_badge(app: &App, now: i64) -> Result<Vec<String>, String> {
     Ok(badge(&app.clock, &status, now))
 }
 
-/// A user's choice for a kind (on unless turned off).
+/// Kinds that are off until a user turns them on.
+const OFF_BY_DEFAULT: [&str; 1] = ["changes"];
+
+/// A user's choice for a kind (on unless turned off, except OFF_BY_DEFAULT).
 pub fn wants(c: &Connection, user_id: i64, kind: &str) -> rusqlite::Result<bool> {
     let v: Option<i64> = rusqlite::OptionalExtension::optional(c.query_row(
         "SELECT enabled FROM push_pref WHERE user_id = ?1 AND kind = ?2",
         params![user_id, kind],
         |r| r.get(0),
     ))?;
-    Ok(v.unwrap_or(1) == 1)
+    Ok(v.unwrap_or(if OFF_BY_DEFAULT.contains(&kind) { 0 } else { 1 }) == 1)
 }
 
 pub fn subscriptions(c: &Connection, user_id: i64) -> rusqlite::Result<Vec<Subscription>> {
@@ -241,7 +274,7 @@ async fn tick(app: &App, client: &reqwest::Client) -> Result<(), String> {
             let mut jobs = vec![];
             for n in notices {
                 for &u in &users {
-                    if !wants(c, u, n.kind)? {
+                    if n.by == Some(u) || !wants(c, u, n.kind)? {
                         continue;
                     }
                     // Mark first: never twice, even if delivery fails.
@@ -262,6 +295,7 @@ async fn tick(app: &App, client: &reqwest::Client) -> Result<(), String> {
         let topic = match n.kind {
             "attention" => "attention",
             "vitamins" => "vitamins",
+            "changes" => "changes",
             "feed_warning" => "feedwarning",
             _ => "feed",
         };
@@ -289,8 +323,13 @@ mod tests {
     #[test]
     fn feed_notices() {
         let clock = Clock::new("Europe/Amsterdam").unwrap();
-        let c = Connection::open_in_memory().unwrap();
-        c.execute_batch("CREATE TABLE entry (entry_id INTEGER, version INTEGER, at INTEGER, text TEXT, needs_attention_why TEXT, needs_attention_by INTEGER, deleted INTEGER, changed_at INTEGER)").unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::db::Db::open(&dir.path().join("t.sqlite")).unwrap();
+        db.with(|c| {
+            c.execute_batch("INSERT INTO user (id, name, display_name, created_at) VALUES (1, 'anna', 'Anna', 0), (2, 'tom', 'Tom', 0)")?;
+            Ok(())
+        }).unwrap();
+        let c = rusqlite::Connection::open(dir.path().join("t.sqlite")).unwrap();
         let status = json!({
             "last_feed": {"at": "2025-11-07 10:00"},
             "next_feed_estimate": {"at": "2025-11-07 13:00"},
@@ -314,11 +353,23 @@ mod tests {
         assert_eq!(n.body, "Start around 12:45 (diaper first), feed ~13:00 (last feed 10:00) · about 90 ml · then face right");
         assert_eq!(n.key, at("2025-11-07 10:00").to_string());
 
-        c.execute("INSERT INTO entry VALUES (7, 2, ?1, 'Spit up a lot', 'check this', 1, 0, ?1)", [at("2025-11-07 12:40")]).unwrap();
-        c.execute("INSERT INTO entry VALUES (8, 1, ?1, 'agent only', 'x', 2, 0, ?1)", [at("2025-11-07 12:40")]).unwrap();
+        let new = |text: &str, f: Value, by: i64, attn: i64| {
+            crate::entries::insert(&c, by, &crate::entries::NewEntry {
+                at: at("2025-11-07 12:40"), duration_s: None, text: text.into(), fields: f.as_object().cloned().unwrap(),
+                attention_by: attn, attention_why: (attn != 0).then(|| "check this".to_string()),
+            }, at("2025-11-07 12:40")).unwrap()
+        };
+        let spit = new("Spit up a lot", json!({"vomit": true}), 1, 1);
+        new("agent only", json!({}), 2, 2);
         let ns = due(&c, &clock, &status, "Eva", at("2025-11-07 12:44")).unwrap();
-        assert_eq!(ns.len(), 1);
-        assert_eq!((ns[0].kind, ns[0].key.as_str(), ns[0].url.as_str()), ("attention", "7:2", "/day?date=2025-11-07"));
+        let attention: Vec<&Notice> = ns.iter().filter(|n| n.kind == "attention").collect();
+        assert_eq!(attention.len(), 1);
+        assert_eq!((attention[0].key.clone(), attention[0].url.as_str()), (format!("{}:1", spit.entry_id), "/day?date=2025-11-07"));
+        // Any change: both new entries, each with its author (not sent to them).
+        let changes: Vec<&Notice> = ns.iter().filter(|n| n.kind == "changes").collect();
+        assert_eq!(changes.len(), 2);
+        assert_eq!((changes[0].title.as_str(), changes[0].body.as_str(), changes[0].by), ("✏️ Eva: Anna logged 12:40", "🤢", Some(1)));
+        assert_eq!(changes[1].title, "✏️ Eva: Tom logged 12:40");
         assert!(due(&c, &clock, &status, "Eva", at("2025-11-07 13:10")).unwrap().is_empty(), "only recent changes");
 
         let vit = json!({"vitamins": {"to_give_today": ["K", "D"], "remind_at": "2025-11-07 18:00"}});

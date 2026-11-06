@@ -65,7 +65,7 @@ fn stool_emoji(color: &str) -> &'static str {
 }
 
 /// Everything an entry records, as compact emoji shorthand.
-fn entry_summary(e: &en::Entry) -> String {
+pub(crate) fn entry_summary(e: &en::Entry) -> String {
     let mut what = vec![feed_summary(&e.fields)];
     if e.is("wet") {
         what.push("💧".into());

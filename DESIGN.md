@@ -436,6 +436,8 @@ devices, sends a test, and has per-user choices (default on):
 - **Feed overdue**: 30 minutes after it (not after 3 hours: nobody is logging);
 - **Entries need attention**: an entry marked for the user (🙋) in the last
   15 minutes.
+- **Any change** (off by default): when someone else logs, changes or deletes
+  an entry (each version once, linking to the entry).
 - **Vitamins**: at 18:00 if vitamin K or D (whichever applies at her age)
   hasn't been given that day; once per day.
 

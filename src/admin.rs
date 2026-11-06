@@ -206,6 +206,7 @@ pub fn run(cfg: &Config, cmd: Cmd) -> Result<(), String> {
                 body: "Notifications work on this device.".into(),
                 url: "/notifications".into(),
                 ttl: 600,
+                by: None,
             };
             let rt = tokio::runtime::Runtime::new().map_err(|e| e.to_string())?;
             let sent = rt.block_on(crate::notify::deliver(&app, &app.push_client, id, &n, "test"))?;

@@ -205,6 +205,7 @@ pub async fn test(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
         body: "Notifications work on this device.".into(),
         url: "/notifications".into(),
         ttl: 600,
+        by: None,
     };
     match notify::deliver(&app, &app.push_client, user.id, &n, "test").await {
         Ok(sent) => Json(json!({ "sent": sent })).into_response(),
