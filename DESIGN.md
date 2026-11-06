@@ -449,6 +449,11 @@ expires after a day) over our own TLS. So Apple/Google relay an id, not
 "Eva needs a feed", and the classical P-256 push encryption guards nothing
 of lasting value. Endpoints answering 404/410 are removed.
 
+Wet diapers: a warning (💧 tile, badge, `status.wet_diaper_warning`) when the
+last 24 hours had fewer wet diapers than usual for her age: at least as many
+as the day of life up to day 5, then at least 6 (breastfeeding and kraamzorg
+guidance). Not before day 2, and only while someone is logging.
+
 App badge: the home-screen icon shows a count (Badging API; iOS 16.4+ for
 home-screen apps, with notifications allowed) of entries needing the parents
 (🙋) plus one each for feeding (due within 15 minutes, overdue, or an NVK

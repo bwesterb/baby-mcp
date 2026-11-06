@@ -425,6 +425,25 @@ fn estimate(clock: &Clock, times: &[i64], min_gap: i64, what: &str, now: i64) ->
     v
 }
 
+/// Fewer wet diapers in the last 24 hours than usual for her age: at least as
+/// many as the day of life up to day 5, then at least 6 (breastfeeding and
+/// kraamzorg guidance). Only once she is a day old and while someone is
+/// logging (an entry in the last 6 hours). `day` is the last 24 hours.
+pub fn wet_warning(clock: &Clock, baby: &Baby, day: &[Entry], now: i64) -> Value {
+    let Some(birth) = baby.birth else { return Value::Null };
+    if now - birth < 86400 || !day.iter().any(|e| e.at > now - 6 * 3600) {
+        return Value::Null;
+    }
+    let dol = crate::feeding::day_of_life(clock, birth, now);
+    let min = dol.min(6) as usize;
+    let wet = day.iter().filter(|e| e.is("wet")).count();
+    if wet >= min {
+        return Value::Null;
+    }
+    let rule = if dol >= 6 { "usually at least 6 from day 6".to_string() } else { format!("usually at least {min} on day {dol}") };
+    json!({"wet_24h": wet, "minimum": min, "text": format!("Only {wet} wet diaper{} in the last 24 h ({rule})", if wet == 1 { "" } else { "s" })})
+}
+
 /// When to start the routine for the next feed (diaper first): the estimate
 /// moved up by `prep` seconds, with due_in / overdue_by from that time.
 fn feed_start(clock: &Clock, next: &Value, prep: i64, now: i64) -> Value {
@@ -488,6 +507,7 @@ pub fn status(c: &Connection, clock: &Clock, baby: &Baby, now: i64) -> Result<Va
         "next_feed_start": feed_start(clock, &next_feed, baby.feed_prep_s, now),
         "last_wet_diaper": since(&last_wet, clock, now, None),
         "next_wet_diaper_estimate": next_wet,
+        "wet_diaper_warning": wet_warning(clock, baby, &day, now),
         "last_dirty_diaper": since(&last_dirty, clock, now, last_dirty.as_ref().and_then(|e| e.fields.get("stool_color").cloned())),
         "next_dirty_diaper_estimate": next_dirty,
         "last_temperature": since(&last_temp, clock, now, last_temp.as_ref().and_then(|e| e.fields.get("temp_c").cloned())),
@@ -686,6 +706,30 @@ pub mod tests {
             assert!(c.execute("DELETE FROM entry", []).is_err());
             Ok(())
         }).unwrap();
+    }
+
+    #[test]
+    fn wet_diapers() {
+        let clock = Clock::new("Europe/Amsterdam").unwrap();
+        let birth = clock.parse("2025-10-31 16:40", 0).unwrap();
+        let baby = Baby { name: "B".into(), birth: Some(birth), birth_weight_g: None, sex: None, growth: None, delivery: None, change: None,
+                          aim_feeds_per_day: None, feed_prep_s: 0 };
+        let at = |s: &str| clock.parse(s, 0).unwrap();
+        let e = |t: &str, wet: bool| Entry { entry_id: 0, version: 1, at: at(t), duration_s: None, text: String::new(),
+            fields: fields(json!({"wet": wet})), attention_by: 0, attention_why: None, deleted: false, changed_at: 0, changed_by: 1, superseded_at: None };
+        // Day 3 (2 Nov): at least 3; two wet diapers → warning.
+        let day = [e("2025-11-02 02:00", true), e("2025-11-02 08:00", true), e("2025-11-02 11:00", false)];
+        let w = wet_warning(&clock, &baby, &day, at("2025-11-02 12:00"));
+        assert_eq!(w["text"], "Only 2 wet diapers in the last 24 h (usually at least 3 on day 3)");
+        // Day 8: at least 6.
+        let day: Vec<Entry> = (0..5).map(|k| e(&format!("2025-11-07 {:02}:00", 1 + k * 4), true)).collect();
+        assert_eq!(wet_warning(&clock, &baby, &day, at("2025-11-07 22:00"))["minimum"], 6);
+        let day: Vec<Entry> = (0..6).map(|k| e(&format!("2025-11-07 {:02}:00", 1 + k * 3), true)).collect();
+        assert!(wet_warning(&clock, &baby, &day, at("2025-11-07 22:00")).is_null(), "six is enough");
+        // Nobody logging for 6 hours: no warning.
+        assert!(wet_warning(&clock, &baby, &day[..1], at("2025-11-07 22:00")).is_null());
+        // First day: nothing yet.
+        assert!(wet_warning(&clock, &baby, &[e("2025-10-31 20:00", false)], at("2025-10-31 22:00")).is_null());
     }
 
     #[test]

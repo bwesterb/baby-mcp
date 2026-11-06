@@ -192,6 +192,9 @@ pub fn badge(clock: &Clock, status: &Value, now: i64) -> Vec<String> {
     if !give.is_empty() && status["vitamins"]["remind_at"].as_str().and_then(|r| clock.parse(r, now).ok()).is_some_and(|r| now >= r) {
         items.push(format!("💊 vitamin {} not given yet", give.join(" + ")));
     }
+    if let Some(w) = status["wet_diaper_warning"]["text"].as_str() {
+        items.push(format!("💧 {w}"));
+    }
     if status["bath"]["due"]["overdue_by"].is_string() {
         items.push("🛁 bath overdue".into());
     }

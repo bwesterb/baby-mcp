@@ -417,7 +417,14 @@ pub async fn status(State(app): State<Arc<App>>, headers: HeaderMap) -> Response
     }
     let mut tiles = vec![
         feed,
-        next_tile("💧 Wet diaper", &s["last_wet_diaper"], "", &s["next_wet_diaper_estimate"]),
+        {
+            let warning = s["wet_diaper_warning"]["text"].as_str().map(|t| format!(r#"<div class="side warn">⚠️ {}</div>"#, esc(t))).unwrap_or_default();
+            let mut tile = next_tile_extra("💧 Wet diaper", &s["last_wet_diaper"], "", &s["next_wet_diaper_estimate"], &warning);
+            if !warning.is_empty() {
+                tile.html = tile.html.replacen(r#"<div class="next">"#, r#"<div class="next overdue">"#, 1);
+            }
+            tile
+        },
         next_tile("💩 Dirty diaper", &s["last_dirty_diaper"], &stool, &s["next_dirty_diaper_estimate"]),
         bath_tile(clock, &s["bath"], t),
     ];
