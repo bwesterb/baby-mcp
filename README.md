@@ -2,6 +2,8 @@
 
 # baby-mcp
 
+[![CI](https://github.com/bwesterb/baby-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/bwesterb/baby-mcp/actions/workflows/ci.yml)
+
 > [!NOTE]
 > :robot: During the kraamweek we logged our newborn's feeds and diapers in the
 > maternity nurse's portal, by just telling Claude through
