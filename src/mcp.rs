@@ -33,6 +33,7 @@ Logging ("drank 60 ml of pumped milk and had a wet diaper"):
 - If `log` reports a likely duplicate (someone else may have logged it already), ask the user before logging again with confirm=true.
 
 Corrections: `update` or `delete` by entry id (from `entries`, `status` or `attention`); every earlier version is kept (`history`).
+Partial information ("she's drinking now, I'll tell you how much later", "had a bottle, not sure how much"): log right away with what is known, and set needs_attention_by=["user"] with needs_attention_why saying exactly what is missing (e.g. "amount not given yet", "still feeding: add duration and amount"). The parents then see it as 🙋 on the status page and get a notification, so it isn't lost if this conversation is forgotten. When the rest comes, `update` the entry and clear the attention (needs_attention_by=[]).
 Attention: entries logged on the web form without an agent are marked for an agent (needs_attention by agent); process them with `attention` and `update`: extract the fields, set `at` from the text if it mentions a time (the stored time is when it was typed), then clear the attention.
 Sleep is not tracked; don't log sleeps.
 How much and when: `status` has feeding_guidance (a daily target from age and weight, the last 24 hours against it, and a suggested amount for the next feed). It is a rule-of-thumb guide; a feeding plan from the nurse, midwife or doctor that the user mentions always takes precedence, and say so when they differ. Mention that intake at the breast isn't measured. It follows the NVK minimum for healthy term babies (feeding_guidance.minimum: at least 6 feeds per 24 h and pauses of at most 6 h until 14 days old and back above birth weight, then 5 and 8 h until 8 weeks, then 4 and 12 h); next_feed.latest_at is the latest time for the next feed under that minimum: the end of the longest pause or, if earlier, when the last 24 h would hold fewer than the minimum number of feeds (latest_reason says which). The parents aim for at least aim_feeds_per_day feeds (planned on top of the minimum); The parents start the routine (diaper first) some minutes before a feed (next_feed_start.prep): next_feed_start (and next_feed.latest_start_at) say when to start; when they ask when to feed, give both. feeding_guidance.breast_side suggests which breast to start with (the one used less over the last 24 h, else alternating). feeding_guidance.warnings says when it gets close to the longest pause or to only the minimum number of feeds in 24 h: mention those first.
@@ -69,14 +70,14 @@ fn tools() -> Value {
     let id = json!({"type": "integer", "description": "entry id"});
     json!([
         {"name": "log", "title": "Log an entry",
-         "description": "Add an entry: what happened at one moment, with structured fields. Refuses a likely duplicate (an entry within 15 minutes sharing a feed/diaper/… group) unless confirm=true.",
+         "description": "Add an entry: what happened at one moment, with structured fields. Refuses a likely duplicate (an entry within 15 minutes sharing a feed/diaper/… group) unless confirm=true. With only partial information, log now and set needs_attention_by=[\"user\"] with what is missing in needs_attention_why, so the parents finish it later.",
          "inputSchema": {"type": "object", "required": ["text"], "properties": {
             "text": {"type": "string", "description": "what the user said (or a faithful paraphrase)"},
             "at": {"type": "string", "description": "start time: HH:MM, YYYY-MM-DD HH:MM or RFC 3339; default now"},
             "duration_min": {"type": "number", "description": "duration in minutes, if known and final"},
             "fields": field_schema(),
             "needs_attention_by": attention_schema(),
-            "needs_attention_why": {"type": "string"},
+            "needs_attention_why": {"type": "string", "description": "required with needs_attention_by: what is missing or needs checking"},
             "confirm": {"type": "boolean", "description": "log even if it looks like a duplicate"}}},
          "annotations": {"destructiveHint": false, "openWorldHint": false}},
         {"name": "update", "title": "Update an entry",
@@ -245,7 +246,10 @@ fn call(app: &App, user: i64, name: &str, a: &Value) -> Result<Value, String> {
             let at = clock.parse(a["at"].as_str().unwrap_or(""), t)?;
             let fields = fields_arg(a)?;
             let by = attention_arg(a)?.unwrap_or(0);
-            let why = a["needs_attention_why"].as_str().map(str::to_string).filter(|_| by != 0);
+            let why = a["needs_attention_why"].as_str().map(str::trim).filter(|w| !w.is_empty()).map(str::to_string).filter(|_| by != 0);
+            if by != 0 && why.is_none() {
+                return Err("needs_attention_why is required with needs_attention_by: say what is missing".into());
+            }
             let n = NewEntry { at, duration_s: duration_arg(a)?.flatten(), text: text.into(), fields, attention_by: by, attention_why: why };
             app.db.with(|c| {
                 Ok((|| {

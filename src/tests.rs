@@ -203,6 +203,15 @@ async fn oauth_and_mcp() {
     assert!(e, "implausible value accepted: {v}");
     let (e, _) = tool(&t, &access, "log", json!({"text": "x", "fields": {"mood": "happy"}})).await;
     assert!(e, "unknown field accepted");
+    // Partial information: logged now, flagged for the parents, with a reason.
+    let partial = json!({"text": "drinking at the breast now", "fields": {"latch": "with_aid"}, "needs_attention_by": ["user"], "confirm": true});
+    let (e, v) = tool(&t, &access, "log", partial.clone()).await;
+    assert!(e && v.as_str().unwrap().contains("needs_attention_why is required"), "{v}");
+    let mut with_why = partial;
+    with_why["needs_attention_why"] = json!("still feeding: add duration and amount");
+    let (e, v) = tool(&t, &access, "log", with_why).await;
+    assert!(!e && v["logged"] == true, "{v}");
+    assert_eq!(v["entry"]["needs_attention"], json!({"by": ["user"], "why": "still feeding: add duration and amount"}));
     let (e, v) = tool(&t, &access, "update", json!({"entry_id": id, "fields": {"bottle_formula_ml": 20}, "remove": ["dirty"]})).await;
     assert!(!e, "{v}");
     assert_eq!(v["entry"]["fields"], json!({"bottle_breastmilk_ml": 60.0, "bottle_formula_ml": 20.0, "wet": true}));
