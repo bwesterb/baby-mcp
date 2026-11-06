@@ -1,3 +1,5 @@
+<img src="docs/icon.png" width="112" align="right" alt="The app icon: an elephant with a raised trunk on a marigold">
+
 # baby-mcp
 
 > [!NOTE]
