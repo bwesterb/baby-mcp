@@ -31,3 +31,6 @@ td{vertical-align:top}td.time{white-space:nowrap;width:1%;color:var(--mut)}
 .head{display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap}
 .head a{color:var(--acc);text-decoration:none;font-size:14px}.head h1,.head h2{margin:0}
 nav button{padding:2px 8px}.swatch{vertical-align:-1px}.hollow{fill:var(--card)}
+#ptr{position:fixed;top:0;left:50%;width:36px;height:36px;margin-left:-18px;border-radius:50%;background:var(--card);border:1px solid var(--bd);box-shadow:0 2px 6px rgba(0,0,0,.15);color:var(--acc);font-size:18px;line-height:34px;text-align:center;opacity:0;transform:translateY(-44px);z-index:10;pointer-events:none}
+#ptr.busy{animation:ptr-spin .8s linear infinite}
+@keyframes ptr-spin{from{transform:translateY(66px) rotate(0)}to{transform:translateY(66px) rotate(360deg)}}

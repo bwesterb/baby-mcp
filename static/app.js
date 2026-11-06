@@ -114,3 +114,41 @@ if ($('push')) {
   }
   refresh().catch(e => dev('Error: ' + e.message));
 }
+
+// Pull to refresh in the installed app (iOS gives home-screen apps none;
+// a browser tab keeps its own).
+(() => {
+  const standalone = navigator.standalone === true || matchMedia('(display-mode: standalone)').matches;
+  if (!standalone || !('ontouchstart' in window)) return;
+  const el = document.createElement('div');
+  el.id = 'ptr';
+  el.textContent = '↓';
+  document.body.prepend(el);
+  const ready = 70;
+  let start = null, dist = 0;
+  const show = (d) => {
+    el.style.transform = `translateY(${Math.min(d, 110) - 44}px)`;
+    el.style.opacity = String(Math.min(1, d / ready));
+    el.textContent = d >= ready ? '↻' : '↓';
+  };
+  addEventListener('touchstart', (e) => {
+    start = window.scrollY <= 0 && e.touches.length === 1 ? e.touches[0].clientY : null;
+    dist = 0;
+  }, {passive: true});
+  addEventListener('touchmove', (e) => {
+    if (start === null) return;
+    dist = e.touches[0].clientY - start;
+    if (dist > 0) show(dist);
+  }, {passive: true});
+  addEventListener('touchend', () => {
+    if (start !== null && dist >= ready) {
+      el.classList.add('busy');
+      location.reload();
+    } else {
+      el.style.transform = '';
+      el.style.opacity = '0';
+    }
+    start = null;
+    dist = 0;
+  });
+})();
