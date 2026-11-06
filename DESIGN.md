@@ -246,7 +246,7 @@ Europe/Amsterdam.
 
 Passkey session required. English labels. *(v1)*
 
-- **Status** (`/`): time since the last feed, diaper and poop; today's totals; entries that need attention (with a link to
+- **Status** (`/`): a timeline of the last 6 and next 4 hours (logged entries as emojis on lanes for feeds, diapers and the rest; expected ones faded, overdue ones ringed just after now); time since the last feed, diaper and poop; today's totals; entries that need attention (with a link to
   each); refreshes every minute.
 - **Charts** (`/charts`): weight change since birth and the WHO growth chart
   (see Growth), ml per day by kind (pumped breast milk, formula), minutes at the breast per day (left and right), a per-kg chart (see

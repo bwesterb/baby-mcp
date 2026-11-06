@@ -191,6 +191,88 @@ fn sleep_line(v: &Value) -> String {
     format!(r#"<div class="side">😴 face {} {}{assumed}</div>"#, side_arrow(next), esc(next))
 }
 
+/// The timeline above "what's next": how far back and ahead it shows.
+const TL_PAST: i64 = 6 * 3600;
+const TL_FUTURE: i64 = 4 * 3600;
+
+/// A strip with the last hours' entries and the next hours' expectations
+/// as emojis on three lanes (feeds, diapers, the rest): logged ones solid,
+/// expected ones faded, overdue ones just after "now" with an orange ring.
+fn timeline(clock: &crate::time::Clock, entries: &[en::Entry], s: &Value, now: i64) -> String {
+    let (w, h, l, r) = (400.0, 92.0, 12.0, 12.0);
+    let (from, to) = (now - TL_PAST, now + TL_FUTURE);
+    let x = |t: i64| l + (t - from) as f64 / (to - from) as f64 * (w - l - r);
+    let lanes = [26.0, 50.0, 74.0]; // feeds, diapers, other (text baselines)
+    let hm = |t: i64| clock.zoned(t).strftime("%H:%M").to_string();
+    let mut svg = format!(r#"<svg class="tl" viewBox="0 0 {w} {h}" width="100%" role="img" aria-label="The last 6 hours and the next 4">"#);
+    svg += &format!(r#"<rect x="{:.1}" y="4" width="{:.1}" height="{:.1}" class="future"/>"#, x(now), x(to) - x(now), h - 22.0);
+    // Hour lines, labelled every two hours.
+    let mut hr = from - from.rem_euclid(3600) + 3600;
+    while hr < to {
+        svg += &format!(r#"<line x1="{0:.1}" x2="{0:.1}" y1="6" y2="{1:.1}" class="hour"/>"#, x(hr), h - 18.0);
+        let hh = clock.zoned(hr).strftime("%H").to_string();
+        if hh.parse::<i64>().unwrap_or(0) % 2 == 0 {
+            svg += &format!(r#"<text x="{:.1}" y="{}" text-anchor="middle">{hh}</text>"#, x(hr), h - 4.0);
+        }
+        hr += 3600;
+    }
+    svg += &format!(r#"<line x1="{0:.1}" x2="{0:.1}" y1="2" y2="{1:.1}" class="now"/>"#, x(now), h - 16.0);
+    let mut put = |lane: usize, emoji: &str, t: i64, faded: bool, ring: bool, title: String| {
+        let (cx, cy) = (x(t), lanes[lane]);
+        if ring {
+            svg += &format!(r#"<circle cx="{cx:.1}" cy="{:.1}" r="11" class="ring"/>"#, cy - 6.0);
+        }
+        svg += &format!(
+            r#"<text x="{cx:.1}" y="{cy}" text-anchor="middle" class="emo"{}><title>{}</title>{emoji}</text>"#,
+            if faded { r#" opacity=".45""# } else { "" },
+            esc(&title)
+        );
+    };
+    for e in entries.iter().filter(|e| e.at >= from && e.at <= now) {
+        let what = entry_summary(e);
+        let title = format!("{} {what}", hm(e.at));
+        if e.is_feed() {
+            put(0, "🍼", e.at, false, false, title.clone());
+        }
+        if e.is("dirty") {
+            put(1, "💩", e.at, false, false, title.clone());
+        } else if e.is("wet") {
+            put(1, "💧", e.at, false, false, title.clone());
+        }
+        if e.is("vitamin_d") || e.is("vitamin_k") {
+            put(2, "💊", e.at, false, false, title.clone());
+        } else if e.str("bath").is_some() {
+            put(2, "🛁", e.at, false, false, title.clone());
+        } else if e.num("weight_g").is_some() {
+            put(2, "⚖️", e.at, false, false, title.clone());
+        } else if e.is("vomit") {
+            put(2, "🤢", e.at, false, false, title.clone());
+        }
+    }
+    // What's expected: overdue ones just after now, with a ring.
+    let soon = now + (TL_FUTURE / 40);
+    let mut expect = |lane: usize, emoji: &str, at: Option<i64>, label: &str| {
+        let Some(t) = at else { return };
+        if t > to {
+            return;
+        }
+        let overdue = t < now;
+        put(lane, emoji, if overdue { soon } else { t }, !overdue, overdue,
+            format!("{} {label}{}", hm(t), if overdue { " (overdue)" } else { " (expected)" }));
+    };
+    let at = |v: &Value| v["at"].as_str().and_then(|a| clock.parse(a, now).ok());
+    expect(0, "🍼", at(&s["next_feed_estimate"]), "feed");
+    expect(1, "💧", at(&s["next_wet_diaper_estimate"]), "wet diaper");
+    expect(1, "💩", at(&s["next_dirty_diaper_estimate"]), "dirty diaper");
+    if s["vitamins"]["to_give_today"].as_array().is_some_and(|a| !a.is_empty()) {
+        expect(2, "💊", s["vitamins"]["remind_at"].as_str().and_then(|a| clock.parse(a, now).ok()), "vitamins");
+    } else if s["bath"]["due"]["at"].is_string() && !s["bath"]["due"]["never"].as_bool().unwrap_or(false) {
+        expect(2, "🛁", at(&s["bath"]["due"]), "bath");
+    }
+    svg += "</svg>";
+    format!(r#"<div class="card timeline">{svg}</div>"#)
+}
+
 /// One diaper tile: the earliest expected diaper (wet or dirty) as the
 /// headline, the other on a line below, and the wet diaper warning.
 fn diaper_tile(s: &Value) -> Next {
@@ -435,10 +517,11 @@ pub async fn status(State(app): State<Arc<App>>, headers: HeaderMap) -> Response
             let s = en::status(c, clock, &app.baby(), t)?;
             let today = en::list(c, clock.day_start(t), t + 1, false)?;
             let loggers = en::loggers(c, &today)?;
-            Ok::<_, String>((s, today, loggers))
+            let recent = en::list(c, t - TL_PAST, t + 1, false)?;
+            Ok::<_, String>((s, today, loggers, recent))
         })())
     });
-    let (s, today, loggers) = match res {
+    let (s, today, loggers, recent) = match res {
         Ok(Ok(x)) => x,
         Ok(Err(e)) => return html::error_page(StatusCode::INTERNAL_SERVER_ERROR, &e),
         Err(e) => return html::error_page(StatusCode::INTERNAL_SERVER_ERROR, &en::err(e)),
@@ -450,6 +533,8 @@ pub async fn status(State(app): State<Arc<App>>, headers: HeaderMap) -> Response
         s["age"].as_str().map(|a| format!("{a} old · ")).unwrap_or_default(),
         esc(s["now"].as_str().unwrap_or(""))
     );
+
+    body += &timeline(clock, &recent, &s, t);
 
     let feed_what = s["last_feed"]["value"]["fields"].as_object().map(feed_summary).unwrap_or_default();
     let feed_warning = s["feeding_guidance"]["warnings"].as_array().is_some_and(|w| !w.is_empty());
@@ -1326,6 +1411,26 @@ mod tests {
         s2["wet_diaper_warning"] = json!({"text": "Only 4 wet diapers in the last 24 h (usually at least 6 from day 6)"});
         let t = diaper_tile(&s2);
         assert!(t.html.contains(">~14:00<") && t.html.contains("💩 dirty · in 10m") && t.html.contains("⚠️ Only 4 wet") && t.html.contains(r#"class="next overdue""#), "{}", t.html);
+    }
+
+    #[test]
+    fn timeline_strip() {
+        use serde_json::json;
+        let clock = crate::time::Clock::new("Europe/Amsterdam").unwrap();
+        let at = |s: &str| clock.parse(s, 0).unwrap();
+        let now = at("2025-11-07 14:00");
+        let e = |t: &str, f: serde_json::Value| en::Entry { entry_id: 1, version: 1, at: at(t), duration_s: None, text: String::new(),
+            fields: f.as_object().cloned().unwrap(), attention_by: 0, attention_why: None, deleted: false, changed_at: 0, changed_by: 1, superseded_at: None };
+        let entries = [e("2025-11-07 07:00", json!({"bottle_formula_ml": 60})),   // before the window
+                       e("2025-11-07 10:30", json!({"bottle_formula_ml": 80, "wet": true, "dirty": true})),
+                       e("2025-11-07 12:00", json!({"vitamin_d": true, "vitamin_k": true}))];
+        let s = json!({"next_feed_estimate": {"at": "2025-11-07 13:30"}, "next_wet_diaper_estimate": {"at": "2025-11-07 15:00"}});
+        let html = timeline(&clock, &entries, &s, now);
+        assert_eq!(html.matches(">🍼</text>").count(), 2, "one logged feed in the window, one expected: {html}");
+        assert!(html.contains("10:30 🍼 80 ml formula") && html.contains("💩") && html.contains("💊"));
+        assert!(html.contains("13:30 feed (overdue)") && html.contains(r#"class="ring""#), "overdue feed ringed");
+        assert!(html.contains("15:00 wet diaper (expected)") && html.contains(r#"opacity=".45""#), "expected wet diaper faded");
+        assert!(html.contains(">10<") && html.contains(">16<"), "hour labels");
     }
 
     #[test]

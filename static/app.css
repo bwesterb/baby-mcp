@@ -36,3 +36,4 @@ nav button{padding:2px 8px}.swatch{vertical-align:-1px}.hollow{fill:var(--card)}
 @keyframes ptr-spin{from{transform:translateY(66px) rotate(0)}to{transform:translateY(66px) rotate(360deg)}}
 .hist div{margin:1px 0}.hist .add{color:var(--add);background:var(--add-bg);border-radius:4px;padding:0 4px}.hist .del{color:var(--del);background:var(--del-bg);border-radius:4px;padding:0 4px}.hist s.del{text-decoration:line-through}.hist .att{color:var(--warn)}.hist .note{color:var(--mut)}
 h3.section{font-size:13px;font-weight:600;color:var(--mut);text-transform:uppercase;letter-spacing:.04em;margin:14px 0 2px}h3.section:first-of-type{margin-top:6px}
+.timeline{padding:8px 10px}.timeline svg{display:block;max-width:560px;margin:0 auto}.tl .future{fill:currentColor;opacity:.04}.tl .hour{stroke:currentColor;stroke-opacity:.08}.tl .now{stroke:var(--acc);stroke-width:2}.tl text.emo{font-size:18px}.tl .ring{fill:none;stroke:var(--warn);stroke-width:2}
