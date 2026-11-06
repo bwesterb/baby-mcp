@@ -1,9 +1,11 @@
 # baby-mcp
 
 > [!NOTE]
-> :robot: When the kraamweek ended, the maternity nurse's portal where we had been
-> logging our newborn's feeds and diapers closed, and we still wanted to keep
-> track. So I asked Claude to write our own baby log: an MCP server, so I can just
+> :robot: During the kraamweek we logged our newborn's feeds and diapers in the
+> maternity nurse's portal, by just telling Claude through
+> [healthsoft-mcp](https://github.com/bwesterb/healthsoft-mcp). When the
+> kraamweek ended, that portal closed, and we still wanted to keep track. So I
+> asked Claude to write our own baby log: an MCP server, so I can just
 > tell Claude "she drank 90 ml and had a wet diaper" or ask when the next feed is
 > due, plus a small web app for the phone with reminders. This is the result.
 > Works well for us, but of course: no guarantees and provided as-is! Not medical
@@ -13,6 +15,15 @@ An MCP-first baby logger, with a dashboard with graphs and web notifications.
 You log and ask through Claude (or another assistant); the web app on the phone
 shows what's next, the log and charts. One instance is for one baby; several
 parents log in with their own passkeys.
+
+<p>
+<img src="docs/screenshots/status.png" width="200" alt="Status: what's next, with feed time, amount, breast side and sleeping side, vitamins and bath, and today's totals">
+<img src="docs/screenshots/growth.png" width="200" alt="Weight change since birth against reference percentiles, and the WHO growth chart">
+<img src="docs/screenshots/charts.png" width="200" alt="Bottle, breast and diaper charts per day">
+<img src="docs/screenshots/history.png" width="200" alt="One entry with its fields and version history">
+</p>
+
+<sub>Screenshots with made-up data.</sub>
 
 - **Log by talking.** Each entry is one moment (a feed, a diaper, a weighing, or
   several at once) with the text as said and structured fields from a fixed
