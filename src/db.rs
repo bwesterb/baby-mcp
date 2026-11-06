@@ -208,6 +208,12 @@ fn migrate(c: &mut Connection) -> rusqlite::Result<()> {
         tx.execute_batch("PRAGMA user_version = 2")?;
         tx.commit()?;
     }
+    if version < 3 {
+        // The notification group: a newer message of a group replaces the older.
+        let tx = c.transaction()?;
+        tx.execute_batch("ALTER TABLE push_message ADD COLUMN tag TEXT; PRAGMA user_version = 3")?;
+        tx.commit()?;
+    }
     sync_generated_columns(c)
 }
 

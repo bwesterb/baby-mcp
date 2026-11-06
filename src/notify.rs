@@ -211,6 +211,69 @@ pub fn current_badge(app: &App, now: i64) -> Result<Vec<String>, String> {
 /// Kinds that are off until a user turns them on.
 const OFF_BY_DEFAULT: [&str; 1] = ["changes"];
 
+/// Notification groups: one notification per group on a device, a newer one
+/// replacing the older (also the push "topic").
+pub fn group(kind: &str) -> &'static str {
+    match kind {
+        "feed_soon" | "feed_overdue" | "feed_warning" => "feed",
+        "attention" => "attention",
+        "changes" => "changes",
+        "vitamins" => "vitamins",
+        "test" => "test",
+        _ => "other",
+    }
+}
+
+fn priority(kind: &str) -> u8 {
+    match kind {
+        "feed_warning" => 0,
+        "feed_overdue" => 1,
+        "feed_soon" => 2,
+        _ => 3,
+    }
+}
+
+/// The current notices of one group as one notification: the most important
+/// first, one line each.
+pub fn merge(group: &str, name: &str, mut ns: Vec<Notice>) -> Notice {
+    ns.sort_by_key(|n| priority(n.kind));
+    if ns.len() == 1 {
+        return ns.remove(0);
+    }
+    let first = ns[0].clone();
+    let mut lines: Vec<String> = vec![];
+    let title = match group {
+        "changes" => {
+            let prefix = format!("✏️ {name}: ");
+            for n in &ns {
+                lines.push(format!("{}: {}", n.title.trim_start_matches(prefix.as_str()), n.body));
+            }
+            format!("✏️ {name}: {} changes", ns.len())
+        }
+        "attention" => {
+            lines = ns.iter().map(|n| n.body.clone()).collect();
+            format!("🙋 {name}: {} entries need your attention", ns.len())
+        }
+        _ => {
+            for n in &ns {
+                if !lines.contains(&n.body) {
+                    lines.push(n.body.clone());
+                }
+            }
+            first.title.clone()
+        }
+    };
+    Notice {
+        kind: first.kind,
+        key: first.key.clone(),
+        title,
+        body: lines.join("\n"),
+        url: if matches!(group, "changes" | "attention") { "/".into() } else { first.url.clone() },
+        ttl: ns.iter().map(|n| n.ttl).max().unwrap_or(3600),
+        by: None,
+    }
+}
+
 /// A user's choice for a kind (on unless turned off, except OFF_BY_DEFAULT).
 pub fn wants(c: &Connection, user_id: i64, kind: &str) -> rusqlite::Result<bool> {
     let v: Option<i64> = rusqlite::OptionalExtension::optional(c.query_row(
@@ -241,7 +304,7 @@ pub async fn deliver(app: &App, client: &reqwest::Client, user_id: i64, n: &Noti
     let t = now();
     let (vapid, subs, id) = app
         .db
-        .with(|c| Ok((push::vapid(c)?, subscriptions(c, user_id)?, push::store_message(c, user_id, &n.title, &n.body, &n.url, t)?)))
+        .with(|c| Ok((push::vapid(c)?, subscriptions(c, user_id)?, push::store_message(c, user_id, &n.title, &n.body, &n.url, topic, t)?)))
         .map_err(|e| e.to_string())?;
     let payload = serde_json::json!({ "m": id }).to_string();
     let mut ok = 0;
@@ -274,7 +337,8 @@ async fn tick(app: &App, client: &reqwest::Client) -> Result<(), String> {
                 let mut st = c.prepare("SELECT DISTINCT user_id FROM push_subscription")?;
                 st.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?
             };
-            let mut jobs = vec![];
+            // Per user and group: everything current, and whether any of it is new.
+            let mut current: Vec<((i64, &'static str), Vec<Notice>, bool)> = vec![];
             for n in notices {
                 for &u in &users {
                     if n.by == Some(u) || !wants(c, u, n.kind)? {
@@ -285,24 +349,23 @@ async fn tick(app: &App, client: &reqwest::Client) -> Result<(), String> {
                         "INSERT OR IGNORE INTO push_sent (user_id, kind, key, at) VALUES (?1, ?2, ?3, ?4)",
                         params![u, n.kind, n.key, t],
                     )? == 1;
-                    if fresh {
-                        jobs.push((u, n.clone()));
+                    let k = (u, group(n.kind));
+                    match current.iter_mut().find(|x| x.0 == k) {
+                        Some(x) => {
+                            x.1.push(n.clone());
+                            x.2 |= fresh;
+                        }
+                        None => current.push((k, vec![n.clone()], fresh)),
                     }
                 }
             }
             c.execute("DELETE FROM push_sent WHERE at < ?1", [t - 7 * 86400])?;
-            Ok(jobs)
+            // A group with something new goes out as one notification with all of it.
+            Ok(current.into_iter().filter(|x| x.2).map(|((u, g), ns, _)| (u, merge(g, &baby.name, ns))).collect())
         })
         .map_err(|e| e.to_string())?;
     for (u, n) in jobs {
-        let topic = match n.kind {
-            "attention" => "attention",
-            "vitamins" => "vitamins",
-            "changes" => "changes",
-            "feed_warning" => "feedwarning",
-            _ => "feed",
-        };
-        deliver(app, client, u, &n, topic).await?;
+        deliver(app, client, u, &n, group(n.kind)).await?;
     }
     Ok(())
 }
@@ -381,6 +444,17 @@ mod tests {
         assert_eq!((n.kind, n.key.as_str(), n.body.as_str()), ("vitamins", "2025-11-07", "Not given yet today: vitamin K and vitamin D"));
         let none = json!({"vitamins": {"to_give_today": [], "remind_at": "2025-11-07 18:00"}});
         assert!(due(&c, &clock, &none, "Eva", at("2025-11-07 18:01")).unwrap().is_empty());
+    }
+
+    #[test]
+    fn grouping() {
+        let n = |kind: &'static str, title: &str, body: &str| Notice { kind, key: String::new(), title: title.into(), body: body.into(), url: "/".into(), ttl: 600, by: None };
+        let feed = merge("feed", "Eva", vec![n("feed_soon", "🍼 Eva: feed soon", "Start around 12:45"), n("feed_warning", "⚠️ Eva: feeding", "Almost 6 h since the last feed")]);
+        assert_eq!((feed.title.as_str(), feed.body.as_str()), ("⚠️ Eva: feeding", "Almost 6 h since the last feed\nStart around 12:45"));
+        let ch = merge("changes", "Eva", vec![n("changes", "✏️ Eva: Tom logged 12:40", "🤢"), n("changes", "✏️ Eva: Ritu changed 12:00", "🍼 60 ml formula")]);
+        assert_eq!((ch.title.as_str(), ch.body.as_str()), ("✏️ Eva: 2 changes", "Tom logged 12:40: 🤢\nRitu changed 12:00: 🍼 60 ml formula"));
+        assert_eq!(merge("vitamins", "Eva", vec![n("vitamins", "💊", "x")]).body, "x", "one notice stays as it is");
+        assert_eq!((group("feed_overdue"), group("feed_warning"), group("changes")), ("feed", "feed", "changes"));
     }
 
     #[test]

@@ -219,9 +219,9 @@ pub async fn message(State(app): State<Arc<App>>, Path(id): Path<String>) -> Res
     let hash = crate::auth::sha256_hex(&id);
     let r = app.db.with(|c| {
         rusqlite::OptionalExtension::optional(c.query_row(
-            "SELECT title, body, url FROM push_message WHERE hash = ?1 AND expires > ?2",
+            "SELECT title, body, url, tag FROM push_message WHERE hash = ?1 AND expires > ?2",
             params![hash, now()],
-            |r| Ok(json!({ "title": r.get::<_, String>(0)?, "body": r.get::<_, String>(1)?, "url": r.get::<_, String>(2)? })),
+            |r| Ok(json!({ "title": r.get::<_, String>(0)?, "body": r.get::<_, String>(1)?, "url": r.get::<_, String>(2)?, "tag": r.get::<_, Option<String>>(3)? })),
         ))
     });
     match r {
@@ -259,7 +259,7 @@ self.addEventListener('push', (e) => {
       if (id) {
         const r = await fetch('/push/message/' + encodeURIComponent(id), {cache: 'no-store', credentials: 'omit'});
         if (r.ok) msg = await r.json();
-        tag = msg.url;
+        tag = msg.tag || msg.url;
       }
     } catch (_) {}
     try {

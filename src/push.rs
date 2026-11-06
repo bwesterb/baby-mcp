@@ -153,12 +153,12 @@ pub async fn send(client: &reqwest::Client, v: &Vapid, s: &Subscription, payload
 }
 
 /// Stores a message for a user and returns the id to push.
-pub fn store_message(c: &Connection, user_id: i64, title: &str, body: &str, url: &str, now: i64) -> rusqlite::Result<String> {
+pub fn store_message(c: &Connection, user_id: i64, title: &str, body: &str, url: &str, tag: &str, now: i64) -> rusqlite::Result<String> {
     let id = crate::auth::random_token(16);
     c.execute("DELETE FROM push_message WHERE expires < ?1", [now])?;
     c.execute(
-        "INSERT INTO push_message (hash, user_id, title, body, url, expires) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        params![crate::auth::sha256_hex(&id), user_id, title, body, url, now + 24 * 3600],
+        "INSERT INTO push_message (hash, user_id, title, body, url, tag, expires) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![crate::auth::sha256_hex(&id), user_id, title, body, url, tag, now + 24 * 3600],
     )?;
     Ok(id)
 }

@@ -441,6 +441,10 @@ devices, sends a test, and has per-user choices (default on):
 - **Vitamins**: at 18:00 if vitamin K or D (whichever applies at her age)
   hasn't been given that day; once per day.
 
+Notifications are grouped: feeding (soon, overdue, minimum), attention,
+changes, vitamins. A group with something new goes out as one notification
+listing everything current in it (most important first), and replaces the
+group's previous notification on the device (its tag, and the push topic).
 A task checks once a minute; `push_sent` keeps each (user, kind, key) to
 one push (the key is the last feed's time, or entry id and version).
 Pushes are content-free: the encrypted payload is only a random message id;
