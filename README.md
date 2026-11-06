@@ -17,10 +17,10 @@ shows what's next, the log and charts. One instance is for one baby; several
 parents log in with their own passkeys.
 
 <p>
-<img src="docs/screenshots/status.png" width="200" alt="Status: what's next, with feed time, amount, breast side and sleeping side, vitamins and bath, and today's totals">
-<img src="docs/screenshots/growth.png" width="200" alt="Weight change since birth against reference percentiles, and the WHO growth chart">
-<img src="docs/screenshots/charts.png" width="200" alt="Bottle, breast and diaper charts per day">
-<img src="docs/screenshots/history.png" width="200" alt="One entry with its fields and version history">
+<img src="docs/screenshots/status.png" width="200" alt="What's next: diapers, the next feed with start time, amount, breast side and sleeping side, vitamins and bath">
+<img src="docs/screenshots/growth.png" width="200" alt="Weight change since birth against reference percentiles, the WHO growth chart, and intake and growth per kg">
+<img src="docs/screenshots/charts.png" width="200" alt="Bottle, breast, diapers and feeds per day">
+<img src="docs/screenshots/history.png" width="200" alt="One entry with its fields and three versions: typed on the web, processed by Claude, corrected by the other parent">
 </p>
 
 <sub>Screenshots with made-up data.</sub>
