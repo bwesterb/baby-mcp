@@ -1,0 +1,15 @@
+# /etc/baby-mcp/config.toml — contains no secrets; readable by the service user.
+origin = "https://baby.example.com"   # passkey RP; effectively permanent
+listen = "127.0.0.1:8095"
+state  = "/var/lib/baby-mcp"
+tz     = "Europe/Amsterdam"
+# oauth_redirect_hosts = ["claude.ai", "claude.com"]
+
+[baby]
+name           = "…"
+birth          = 2026-01-02T03:04:00+01:00
+birth_weight_g = 3500
+sex            = "female"         # or "male": selects the WHO growth standard
+delivery       = "vaginal"        # or "cesarean": selects the first-month weight-change reference
+# feed_prep_minutes = 15         # start the routine (diaper first) this long before a feed
+# aim_feeds_per_day = 7         # plan at least this many feeds per 24 h (the NVK minimum applies anyway)

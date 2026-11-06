@@ -1,0 +1,31 @@
+[package]
+name = "baby-mcp"
+version = "0.1.0"
+edition = "2024"
+description = "A baby log with an MCP server for Claude and a web app with reminders, with OAuth + passkey login"
+license = "MIT"
+repository = "https://github.com/bwesterb/baby-mcp"
+
+[dependencies]
+aes-gcm = "0.11"
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "query", "form", "json"] }
+base64 = "0.23.1"
+clap = { version = "4.6.7", features = ["derive"] }
+hmac = "0.13.0"
+jiff = { version = "0.2.39", features = ["tzdb-bundle-always"] }
+p256 = { version = "0.14", features = ["ecdh", "ecdsa"] }
+rand = "0.10.3"
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider"] }
+rusqlite = { version = "0.41.1", features = ["bundled", "hooks"] }
+rustls = { version = "0.23.46", default-features = false, features = ["ring", "std"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+sha2 = "0.11.1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "signal", "sync"] }
+toml = "1.2.0"
+uuid = { version = "1.29.0", features = ["v4", "serde"] }
+webauthn-rs = "0.6"
+
+[dev-dependencies]
+tempfile = "3.27.0"
+tower = { version = "0.5", features = ["util"] }

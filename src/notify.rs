@@ -1,0 +1,354 @@
+//! Push notifications: once a minute, work out what is due and push it to
+//! every device of the users who want that kind.
+//!
+//! - `feed_soon`: 15 minutes before the next-feed estimate (the feed tile's);
+//! - `feed_overdue`: 30 minutes after it (not after 3 hours: then nobody is logging);
+//! - `attention`: an entry was marked as needing the user (🙋), within 15 minutes.
+//!
+//! Each (user, kind, key) is sent once; the key is the last feed's time or
+//! the entry and its version.
+
+use crate::app::App;
+use crate::push::{self, Outcome, Subscription};
+use crate::time::{Clock, now};
+use rusqlite::{Connection, params};
+use serde_json::Value;
+use std::sync::Arc;
+
+pub const KINDS: [(&str, &str, &str); 5] = [
+    ("feed_soon", "Feed soon", "15 minutes before the next feed is expected"),
+    ("feed_overdue", "Feed overdue", "30 minutes after the next feed was expected"),
+    ("attention", "Entries need attention", "when an entry is marked as needing you (🙋)"),
+    ("vitamins", "Vitamins", "at 18:00 if vitamin K or D hasn't been given that day"),
+    ("feed_warning", "Feeding minimum", "when it gets close to the longest pause without a feed, or to only the minimum number of feeds in 24 hours (NVK)"),
+];
+
+const SOON: i64 = 15 * 60;
+const OVERDUE: i64 = 30 * 60;
+const STALE: i64 = 3 * 3600;
+const ATTENTION_WINDOW: i64 = 15 * 60;
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Notice {
+    pub kind: &'static str,
+    pub key: String,
+    pub title: String,
+    pub body: String,
+    pub url: String,
+    pub ttl: u32,
+}
+
+/// What is due now, for everyone (before choices and deduplication).
+pub fn due(c: &Connection, clock: &Clock, status: &Value, name: &str, now: i64) -> Result<Vec<Notice>, String> {
+    let mut out = vec![];
+    let at = status["next_feed_estimate"]["at"].as_str().and_then(|s| clock.parse(s, now).ok());
+    let last = status["last_feed"]["at"].as_str().and_then(|s| clock.parse(s, now).ok());
+    if let (Some(at), Some(last)) = (at, last) {
+        let mut extra = vec![];
+        if let Some(ml) = status["feeding_guidance"]["next_feed"]["amount_ml"].as_f64() {
+            extra.push(format!("about {ml:.0} ml"));
+        }
+        if let Some(side) = status["feeding_guidance"]["breast_side"]["start"].as_str() {
+            extra.push(format!("start {side} breast"));
+        }
+        if let Some(side) = status["sleep_facing"]["next"].as_str() {
+            extra.push(format!("then face {side}"));
+        }
+        let extra = if extra.is_empty() { String::new() } else { format!(" · {}", extra.join(" · ")) };
+        let hm = clock.zoned(at).strftime("%H:%M").to_string();
+        let last_hm = clock.zoned(last).strftime("%H:%M").to_string();
+        // With a preparation time (diaper first), "soon" counts from the start.
+        let start = status["next_feed_start"]["at"].as_str().and_then(|s| clock.parse(s, now).ok()).unwrap_or(at);
+        if now >= start - SOON && now < start {
+            let body = if start < at {
+                format!("Start around {} (diaper first), feed ~{hm} (last feed {last_hm}){extra}", clock.zoned(start).strftime("%H:%M"))
+            } else {
+                format!("Expected around {hm} (last feed {last_hm}){extra}")
+            };
+            out.push(Notice {
+                kind: "feed_soon",
+                key: last.to_string(),
+                title: format!("🍼 {name}: feed soon"),
+                body,
+                url: "/".into(),
+                ttl: (at - now + OVERDUE) as u32,
+            });
+        }
+        if now >= at + OVERDUE && now < at + STALE {
+            out.push(Notice {
+                kind: "feed_overdue",
+                key: last.to_string(),
+                title: format!("⏰ {name}: feed overdue"),
+                body: format!("Expected around {hm}; last feed {last_hm}{extra}"),
+                url: "/".into(),
+                ttl: 3600,
+            });
+        }
+    }
+    for w in status["feeding_guidance"]["warnings"].as_array().into_iter().flatten() {
+        if let (Some(key), Some(text)) = (w["key"].as_str(), w["text"].as_str()) {
+            out.push(Notice {
+                kind: "feed_warning",
+                key: key.to_string(),
+                title: format!("⚠️ {name}: feeding"),
+                body: text.to_string(),
+                url: "/".into(),
+                ttl: 2 * 3600,
+            });
+        }
+    }
+    let give: Vec<&str> = status["vitamins"]["to_give_today"].as_array().map(|a| a.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
+    if let (false, Some(remind)) = (give.is_empty(), status["vitamins"]["remind_at"].as_str().and_then(|s| clock.parse(s, now).ok())) {
+        if now >= remind && now < clock.next_day_start(now) {
+            let what = give.iter().map(|l| format!("vitamin {l}")).collect::<Vec<_>>().join(" and ");
+            out.push(Notice {
+                kind: "vitamins",
+                key: clock.day(now),
+                title: format!("💊 {name}: vitamins"),
+                body: format!("Not given yet today: {what}"),
+                url: "/".into(),
+                ttl: (clock.next_day_start(now) - now) as u32,
+            });
+        }
+    }
+    let mut st = c
+        .prepare(
+            "SELECT entry_id, version, at, text, needs_attention_why FROM entry \
+             WHERE deleted = 0 AND needs_attention_by != 0 AND needs_attention_by & 1 AND changed_at >= ?1 ORDER BY at",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = st
+        .query_map([now - ATTENTION_WINDOW], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?, r.get::<_, String>(3)?, r.get::<_, Option<String>>(4)?)))
+        .map_err(|e| e.to_string())?;
+    for row in rows {
+        let (id, version, at, text, why) = row.map_err(|e| e.to_string())?;
+        let short: String = text.chars().take(80).collect();
+        out.push(Notice {
+            kind: "attention",
+            key: format!("{id}:{version}"),
+            title: format!("🙋 {name}: needs your attention"),
+            body: match why {
+                Some(w) => format!("{w} — {} {short}", clock.zoned(at).strftime("%H:%M")),
+                None => format!("{} {short}", clock.zoned(at).strftime("%H:%M")),
+            },
+            url: format!("/day?date={}", clock.day(at)),
+            ttl: 6 * 3600,
+        });
+    }
+    Ok(out)
+}
+
+/// What the app icon's badge counts: each entry needing the parents (🙋),
+/// and one each for feeding (due within 15 minutes, overdue, or an NVK
+/// warning), vitamins not given yet after 18:00, and an overdue bath.
+pub fn badge(clock: &Clock, status: &Value, now: i64) -> Vec<String> {
+    let mut items = vec![];
+    for e in status["needs_attention"].as_array().into_iter().flatten() {
+        if e["needs_attention"]["by"].as_array().is_some_and(|b| b.iter().any(|x| x == "user")) {
+            items.push(format!("🙋 {}", e["needs_attention"]["why"].as_str().unwrap_or("needs attention")));
+        }
+    }
+    let g = &status["feeding_guidance"];
+    // With a preparation time, "soon" and "overdue" count from the start.
+    let next = if status["next_feed_start"]["at"].is_string() { &status["next_feed_start"] } else { &status["next_feed_estimate"] };
+    if let Some(w) = g["warnings"].as_array().and_then(|w| w.first()).and_then(|w| w["text"].as_str()) {
+        items.push(format!("⚠️ {w}"));
+    } else if next["overdue_by"].is_string() {
+        items.push("🍼 feed overdue".into());
+    } else if next["at"].as_str().and_then(|a| clock.parse(a, now).ok()).is_some_and(|t| t - now <= SOON) {
+        items.push("🍼 feed due soon".into());
+    }
+    let give: Vec<&str> = status["vitamins"]["to_give_today"].as_array().map(|a| a.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
+    if !give.is_empty() && status["vitamins"]["remind_at"].as_str().and_then(|r| clock.parse(r, now).ok()).is_some_and(|r| now >= r) {
+        items.push(format!("💊 vitamin {} not given yet", give.join(" + ")));
+    }
+    if status["bath"]["due"]["overdue_by"].is_string() {
+        items.push("🛁 bath overdue".into());
+    }
+    items
+}
+
+/// The badge for the current state.
+pub fn current_badge(app: &App, now: i64) -> Result<Vec<String>, String> {
+    let baby = app.baby();
+    let status = app.db.with(|c| Ok(crate::entries::status(c, &app.clock, &baby, now))).map_err(|e| e.to_string())??;
+    Ok(badge(&app.clock, &status, now))
+}
+
+/// A user's choice for a kind (on unless turned off).
+pub fn wants(c: &Connection, user_id: i64, kind: &str) -> rusqlite::Result<bool> {
+    let v: Option<i64> = rusqlite::OptionalExtension::optional(c.query_row(
+        "SELECT enabled FROM push_pref WHERE user_id = ?1 AND kind = ?2",
+        params![user_id, kind],
+        |r| r.get(0),
+    ))?;
+    Ok(v.unwrap_or(1) == 1)
+}
+
+pub fn subscriptions(c: &Connection, user_id: i64) -> rusqlite::Result<Vec<Subscription>> {
+    let mut st = c.prepare("SELECT id, endpoint, p256dh, auth FROM push_subscription WHERE user_id = ?1")?;
+    let rows = st.query_map([user_id], |r| Ok(Subscription { id: r.get(0)?, endpoint: r.get(1)?, p256dh: r.get(2)?, auth: r.get(3)? }))?;
+    rows.collect()
+}
+
+pub fn client() -> reqwest::Client {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(20))
+        .user_agent(concat!("baby-mcp/", env!("CARGO_PKG_VERSION")))
+        .build()
+        .expect("http client")
+}
+
+/// Pushes a message to all of a user's devices; returns how many accepted it.
+pub async fn deliver(app: &App, client: &reqwest::Client, user_id: i64, n: &Notice, topic: &str) -> Result<usize, String> {
+    let t = now();
+    let (vapid, subs, id) = app
+        .db
+        .with(|c| Ok((push::vapid(c)?, subscriptions(c, user_id)?, push::store_message(c, user_id, &n.title, &n.body, &n.url, t)?)))
+        .map_err(|e| e.to_string())?;
+    let payload = serde_json::json!({ "m": id }).to_string();
+    let mut ok = 0;
+    for s in &subs {
+        let outcome = push::send(client, &vapid, s, payload.as_bytes(), n.ttl, topic, app.cfg.origin(), t).await;
+        let _ = app.db.with(|c| match &outcome {
+            Outcome::Ok => c.execute("UPDATE push_subscription SET last_ok = ?1, last_error = NULL WHERE id = ?2", params![t, s.id]),
+            Outcome::Gone => c.execute("DELETE FROM push_subscription WHERE id = ?1", [s.id]),
+            Outcome::Failed(e) => c.execute("UPDATE push_subscription SET last_error = ?1 WHERE id = ?2", params![e, s.id]),
+        });
+        match outcome {
+            Outcome::Ok => ok += 1,
+            Outcome::Gone => eprintln!("push: subscription {} is gone; removed", s.id),
+            Outcome::Failed(e) => eprintln!("push: subscription {}: {e}", s.id),
+        }
+    }
+    Ok(ok)
+}
+
+/// One round: what is due, for whom, not sent before.
+async fn tick(app: &App, client: &reqwest::Client) -> Result<(), String> {
+    let t = now();
+    let baby = app.baby();
+    let jobs: Vec<(i64, Notice)> = app
+        .db
+        .with(|c| {
+            let status = crate::entries::status(c, &app.clock, &baby, t).map_err(rusqlite::Error::InvalidParameterName)?;
+            let notices = due(c, &app.clock, &status, &baby.name, t).map_err(rusqlite::Error::InvalidParameterName)?;
+            let users: Vec<i64> = {
+                let mut st = c.prepare("SELECT DISTINCT user_id FROM push_subscription")?;
+                st.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?
+            };
+            let mut jobs = vec![];
+            for n in notices {
+                for &u in &users {
+                    if !wants(c, u, n.kind)? {
+                        continue;
+                    }
+                    // Mark first: never twice, even if delivery fails.
+                    let fresh = c.execute(
+                        "INSERT OR IGNORE INTO push_sent (user_id, kind, key, at) VALUES (?1, ?2, ?3, ?4)",
+                        params![u, n.kind, n.key, t],
+                    )? == 1;
+                    if fresh {
+                        jobs.push((u, n.clone()));
+                    }
+                }
+            }
+            c.execute("DELETE FROM push_sent WHERE at < ?1", [t - 7 * 86400])?;
+            Ok(jobs)
+        })
+        .map_err(|e| e.to_string())?;
+    for (u, n) in jobs {
+        let topic = match n.kind {
+            "attention" => "attention",
+            "vitamins" => "vitamins",
+            "feed_warning" => "feedwarning",
+            _ => "feed",
+        };
+        deliver(app, client, u, &n, topic).await?;
+    }
+    Ok(())
+}
+
+pub async fn run(app: Arc<App>) {
+    let client = client();
+    let mut every = tokio::time::interval(std::time::Duration::from_secs(60));
+    loop {
+        every.tick().await;
+        if let Err(e) = tick(&app, &client).await {
+            eprintln!("push: {e}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn feed_notices() {
+        let clock = Clock::new("Europe/Amsterdam").unwrap();
+        let c = Connection::open_in_memory().unwrap();
+        c.execute_batch("CREATE TABLE entry (entry_id INTEGER, version INTEGER, at INTEGER, text TEXT, needs_attention_why TEXT, needs_attention_by INTEGER, deleted INTEGER, changed_at INTEGER)").unwrap();
+        let status = json!({
+            "last_feed": {"at": "2025-11-07 10:00"},
+            "next_feed_estimate": {"at": "2025-11-07 13:00"},
+            "feeding_guidance": {"next_feed": {"amount_ml": 90.0}},
+            "sleep_facing": {"next": "right"},
+        });
+        let at = |s: &str| clock.parse(s, 0).unwrap();
+        let kinds = |t: &str| due(&c, &clock, &status, "Eva", at(t)).unwrap().into_iter().map(|n| n.kind).collect::<Vec<_>>();
+        assert!(kinds("2025-11-07 12:40").is_empty());
+        assert_eq!(kinds("2025-11-07 12:45"), ["feed_soon"]);
+        assert!(kinds("2025-11-07 13:10").is_empty());
+        assert_eq!(kinds("2025-11-07 13:30"), ["feed_overdue"]);
+        assert!(kinds("2025-11-07 16:00").is_empty(), "stale: nobody is logging");
+        let n = &due(&c, &clock, &status, "Eva", at("2025-11-07 12:50")).unwrap()[0];
+        assert_eq!(n.body, "Expected around 13:00 (last feed 10:00) · about 90 ml · then face right");
+        // With 15 minutes' preparation: "soon" from 12:30, saying when to start.
+        let mut prep = status.clone();
+        prep["next_feed_start"] = json!({"at": "2025-11-07 12:45", "feed_at": "2025-11-07 13:00", "prep": "15m"});
+        assert!(due(&c, &clock, &prep, "Eva", at("2025-11-07 12:29")).unwrap().is_empty());
+        let n = &due(&c, &clock, &prep, "Eva", at("2025-11-07 12:31")).unwrap()[0];
+        assert_eq!(n.body, "Start around 12:45 (diaper first), feed ~13:00 (last feed 10:00) · about 90 ml · then face right");
+        assert_eq!(n.key, at("2025-11-07 10:00").to_string());
+
+        c.execute("INSERT INTO entry VALUES (7, 2, ?1, 'Spit up a lot', 'check this', 1, 0, ?1)", [at("2025-11-07 12:40")]).unwrap();
+        c.execute("INSERT INTO entry VALUES (8, 1, ?1, 'agent only', 'x', 2, 0, ?1)", [at("2025-11-07 12:40")]).unwrap();
+        let ns = due(&c, &clock, &status, "Eva", at("2025-11-07 12:44")).unwrap();
+        assert_eq!(ns.len(), 1);
+        assert_eq!((ns[0].kind, ns[0].key.as_str(), ns[0].url.as_str()), ("attention", "7:2", "/day?date=2025-11-07"));
+        assert!(due(&c, &clock, &status, "Eva", at("2025-11-07 13:10")).unwrap().is_empty(), "only recent changes");
+
+        let vit = json!({"vitamins": {"to_give_today": ["K", "D"], "remind_at": "2025-11-07 18:00"}});
+        assert!(due(&c, &clock, &vit, "Eva", at("2025-11-07 17:59")).unwrap().is_empty());
+        let n = &due(&c, &clock, &vit, "Eva", at("2025-11-07 18:01")).unwrap()[0];
+        assert_eq!((n.kind, n.key.as_str(), n.body.as_str()), ("vitamins", "2025-11-07", "Not given yet today: vitamin K and vitamin D"));
+        let none = json!({"vitamins": {"to_give_today": [], "remind_at": "2025-11-07 18:00"}});
+        assert!(due(&c, &clock, &none, "Eva", at("2025-11-07 18:01")).unwrap().is_empty());
+    }
+
+    #[test]
+    fn badge_items() {
+        let clock = Clock::new("Europe/Amsterdam").unwrap();
+        let at = |s: &str| clock.parse(s, 0).unwrap();
+        let s = json!({
+            "needs_attention": [
+                {"needs_attention": {"by": ["user"], "why": "bath: with or without soap?"}},
+                {"needs_attention": {"by": ["agent"], "why": "split"}},
+            ],
+            "next_feed_estimate": {"at": "2025-11-07 13:00", "due_in": "10m"},
+            "feeding_guidance": {"warnings": []},
+            "vitamins": {"to_give_today": ["D"], "remind_at": "2025-11-07 18:00"},
+            "bath": {"due": {"due_in": "2d"}},
+        });
+        assert_eq!(badge(&clock, &s, at("2025-11-07 12:50")), vec!["🙋 bath: with or without soap?", "🍼 feed due soon"]);
+        assert_eq!(badge(&clock, &s, at("2025-11-07 12:30")).len(), 1, "feed not soon yet; agent-only entries don't count");
+        let mut s2 = s.clone();
+        s2["feeding_guidance"]["warnings"] = json!([{"text": "Almost 5h since the last feed"}]);
+        s2["bath"]["due"] = json!({"overdue_by": "3h"});
+        let b = badge(&clock, &s2, at("2025-11-07 18:30"));
+        assert_eq!(b, vec!["🙋 bath: with or without soap?", "⚠️ Almost 5h since the last feed", "💊 vitamin D not given yet", "🛁 bath overdue"]);
+    }
+}

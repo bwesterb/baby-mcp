@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 512 512"><g transform="translate(6 10)">
+<path d="M398,290 q28,6 22,36" stroke="#9aa8be" stroke-width="9" fill="none" stroke-linecap="round"/>
+<circle cx="420" cy="330" r="8" fill="#5a4a6a"/>
+<rect x="318" y="320" width="44" height="80" rx="20" fill="#8e9cb3"/>
+<rect x="224" y="320" width="44" height="80" rx="20" fill="#8e9cb3"/>
+<ellipse cx="300" cy="290" rx="112" ry="86" fill="#a9b6cb"/>
+<rect x="262" y="330" width="44" height="80" rx="20" fill="#a9b6cb"/>
+<rect x="356" y="330" width="44" height="80" rx="20" fill="#a9b6cb"/>
+<path d="M248,218 h120 q14,0 14,14 v58 q0,16 -16,16 h-112 q-16,0 -16,-16 v-58 q0,-14 14,-14z" fill="#c8323c" stroke="#f4c430" stroke-width="6"/>
+<path d="M262,236 h92" stroke="#f4c430" stroke-width="3" stroke-dasharray="6 5"/>
+<circle cx="285" cy="262" r="6" fill="#fff6e0" stroke="#f4c430" stroke-width="2"/><circle cx="315" cy="262" r="6" fill="#fff6e0" stroke="#f4c430" stroke-width="2"/><circle cx="345" cy="262" r="6" fill="#fff6e0" stroke="#f4c430" stroke-width="2"/><circle cx="262" cy="305" r="7" fill="#f4c430"/><circle cx="280" cy="305" r="7" fill="#f4c430"/><circle cx="298" cy="305" r="7" fill="#f4c430"/><circle cx="316" cy="305" r="7" fill="#f4c430"/><circle cx="334" cy="305" r="7" fill="#f4c430"/><circle cx="352" cy="305" r="7" fill="#f4c430"/><circle cx="370" cy="305" r="7" fill="#f4c430"/>
+<path d="M112,262 C70,250 52,196 74,160 C88,138 114,144 108,166" stroke="#a9b6cb" stroke-width="36" fill="none" stroke-linecap="round"/>
+<circle cx="180" cy="236" r="88" fill="#a9b6cb"/>
+<ellipse cx="236" cy="240" rx="54" ry="68" fill="#bfcadb"/>
+<ellipse cx="240" cy="242" rx="34" ry="46" fill="#f3b6c3"/>
+<ellipse cx="148" cy="226" rx="11" ry="13" fill="#2e2a3a"/>
+<circle cx="152" cy="221" r="4" fill="#fff"/>
+<path d="M138,282 q14,12 28,2" stroke="#2e2a3a" stroke-width="4" fill="none" stroke-linecap="round"/>
+<circle cx="160" cy="262" r="12" fill="#f3a0b2" fill-opacity=".7"/>
+<path d="M150,150 q30,-14 60,0 l-6,22 q-24,-10 -48,0z" fill="#f4c430"/>
+<path d="M180,168 q-14,22 0,40 q14,-18 0,-40z" fill="#f4c430"/>
+<circle cx="180" cy="190" r="6" fill="#c8323c"/>
+<circle cx="160" cy="172" r="4" fill="#c8323c"/><circle cx="200" cy="172" r="4" fill="#c8323c"/>
+</g></svg>
