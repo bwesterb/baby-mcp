@@ -192,12 +192,12 @@ fn sleep_line(v: &Value) -> String {
 }
 
 /// The timeline above "what's next": how far back it can show (the widest).
-const TL_PAST: i64 = 18 * 3600;
+const TL_PAST: i64 = 12 * 3600;
 
 /// The timeline in three widths, the stylesheet showing the one that fits:
 /// (hours back, hours ahead, class). The same space per hour in each.
-const TL_SIZES: [(i64, i64, &str); 3] = [(9, 6, "tl-s"), (14, 9, "tl-m"), (18, 12, "tl-l")];
-const TL_UNITS_PER_HOUR: f64 = 25.0;
+const TL_SIZES: [(i64, i64, &str); 3] = [(6, 4, "tl-s"), (9, 6, "tl-m"), (12, 8, "tl-l")];
+const TL_UNITS_PER_HOUR: f64 = 38.0;
 
 fn timeline(clock: &crate::time::Clock, entries: &[en::Entry], s: &Value, now: i64) -> String {
     let svgs: String = TL_SIZES.iter().map(|(back, ahead, class)| timeline_svg(clock, entries, s, now, back * 3600, ahead * 3600, class)).collect();
@@ -1459,7 +1459,7 @@ mod tests {
         let all = timeline(&clock, &entries, &s2, now);
         assert!(all.contains("15:15 start (feed ~15:30) (expected)"), "{all}");
         assert!(all.contains("tl-s") && all.contains("tl-m") && all.contains("tl-l"));
-        assert!(all.contains(">22<") && all.contains(">08<"), "the wide one reaches back 18 hours");
+        assert!(all.contains(">08<"), "the wide one reaches back 12 hours");
     }
 
     #[test]
