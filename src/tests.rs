@@ -485,8 +485,8 @@ async fn entry_history_page() {
     let r = send(&t, get(&format!("/entry/{id}")).header(header::COOKIE, &t.cookie).body(Body::empty()).unwrap()).await;
     assert_eq!(r.status, StatusCode::OK);
     assert!(r.body.contains("History · 2 versions"), "{}", r.body);
-    assert!(r.body.contains("bottle_formula_ml: 50 ml → 40 ml"));
-    assert!(r.body.contains("− pump_ml (was 10 ml)") && r.body.contains("+ bottle_breastmilk_ml: 10 ml"));
+    assert!(r.body.contains(r#"bottle_formula_ml: <s class="del">50 ml</s> → <span class="add">40 ml</span>"#));
+    assert!(r.body.contains(r#"<span class="del">− pump_ml (was 10 ml)</span>"#) && r.body.contains(r#"<span class="add">+ bottle_breastmilk_ml: 10 ml</span>"#));
     assert!(r.body.contains("attention cleared (was: split)") && r.body.contains("🤖"));
     assert!(r.body.find(">v2<").unwrap() < r.body.find(">v1<").unwrap(), "newest first");
     let day = send(&t, get("/").header(header::COOKIE, &t.cookie).body(Body::empty()).unwrap()).await;

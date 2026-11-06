@@ -1082,6 +1082,29 @@ fn changes(clock: &crate::time::Clock, old: &en::Entry, new: &en::Entry) -> Vec<
     out
 }
 
+/// One line of an entry's history, coloured: added green, removed red, a
+/// change as the old value struck through and the new one green.
+fn history_line(l: &str) -> String {
+    if l.starts_with("+ ") || l == "restored" || l == "created" {
+        return format!(r#"<div><span class="add">{}</span></div>"#, esc(l));
+    }
+    if l.starts_with("− ") || l == "deleted" {
+        return format!(r#"<div><span class="del">{}</span></div>"#, esc(l));
+    }
+    if l.starts_with("text changed") || l.starts_with("attention cleared") {
+        return format!(r#"<div class="note">{}</div>"#, esc(l));
+    }
+    if let Some((key, rest)) = l.split_once(": ") {
+        if let Some((old, new)) = rest.split_once(" → ") {
+            return format!(r#"<div>{}: <s class="del">{}</s> → <span class="add">{}</span></div>"#, esc(key), esc(old), esc(new));
+        }
+    }
+    if l.starts_with('🙋') || l.starts_with('🤖') || l.contains("waiting for") {
+        return format!(r#"<div class="att">{}</div>"#, esc(l));
+    }
+    format!("<div>{}</div>", esc(l))
+}
+
 pub async fn entry_page(State(app): State<Arc<App>>, headers: HeaderMap, axum::extract::Path(id): axum::extract::Path<i64>) -> Response {
     let user = match require(&app, &headers, &format!("/entry/{id}")) {
         Ok(u) => u,
@@ -1134,9 +1157,9 @@ pub async fn entry_page(State(app): State<Arc<App>>, headers: HeaderMap, axum::e
             }
             _ => changes(clock, &versions[i - 1], v),
         };
-        let items: String = lines.iter().map(|l| format!("<div>{}</div>", esc(l))).collect();
+        let items: String = lines.iter().map(|l| history_line(l)).collect();
         body += &format!(
-            r#"<tr><td class="time">v{}<div class="sub">{}</div></td><td>{}{}</td></tr>"#,
+            r#"<tr><td class="time">v{}<div class="sub">{}</div></td><td class="hist">{}{}</td></tr>"#,
             v.version,
             esc(&clock.fmt(v.changed_at)),
             if items.is_empty() { r#"<div class="mut">no visible change</div>"#.to_string() } else { items },
