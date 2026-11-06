@@ -11,6 +11,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Redirect, Response};
 use serde::Deserialize;
 use serde_json::{Map, Value};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 fn require(app: &App, headers: &HeaderMap, here: &str) -> Result<User, Response> {
@@ -306,7 +307,7 @@ fn totals_card(heading: &str, t: &en::Totals, weight: Option<(f64, Option<String
 }
 
 /// A day's entries, newest first.
-fn log_card(heading: &str, entries: &[en::Entry], clock: &crate::time::Clock, empty: &str) -> String {
+fn log_card(heading: &str, entries: &[en::Entry], loggers: &HashMap<i64, String>, clock: &crate::time::Clock, empty: &str) -> String {
     let mut s = format!(r#"<div class="card">{heading}<table>"#);
     for e in entries.iter().rev() {
         let flag = if e.attention_by != 0 {
@@ -315,9 +316,10 @@ fn log_card(heading: &str, entries: &[en::Entry], clock: &crate::time::Clock, em
         } else {
             String::new()
         };
+        let who = loggers.get(&e.entry_id).map(|n| format!(r#"<div class="sub">{}</div>"#, esc(n))).unwrap_or_default();
         let edited = if e.version > 1 { format!(r#"<div class="sub">✎ v{}</div>"#, e.version) } else { String::new() };
         s += &format!(
-            "<tr><td class=\"time\"><a href=\"/entry/{}\">{}</a>{flag}{edited}</td><td>{}{}</td></tr>",
+            "<tr><td class=\"time\"><a href=\"/entry/{}\">{}</a>{flag}{who}{edited}</td><td>{}{}</td></tr>",
             e.entry_id,
             esc(&clock.fmt_time(e.at)),
             esc(&e.text),
@@ -382,10 +384,11 @@ pub async fn status(State(app): State<Arc<App>>, headers: HeaderMap) -> Response
         Ok((|| {
             let s = en::status(c, clock, &app.baby(), t)?;
             let today = en::list(c, clock.day_start(t), t + 1, false)?;
-            Ok::<_, String>((s, today))
+            let loggers = en::loggers(c, &today)?;
+            Ok::<_, String>((s, today, loggers))
         })())
     });
-    let (s, today) = match res {
+    let (s, today, loggers) = match res {
         Ok(Ok(x)) => x,
         Ok(Err(e)) => return html::error_page(StatusCode::INTERNAL_SERVER_ERROR, &e),
         Err(e) => return html::error_page(StatusCode::INTERNAL_SERVER_ERROR, &en::err(e)),
@@ -467,7 +470,7 @@ pub async fn status(State(app): State<Arc<App>>, headers: HeaderMap) -> Response
         body += "</div>";
     }
 
-    body += &log_card("<h2>Today's log</h2>", &today, clock, "Nothing logged yet today.");
+    body += &log_card("<h2>Today's log</h2>", &today, &loggers, clock, "Nothing logged yet today.");
     html::render(Page { title: "Status · baby-mcp", body, nav: Some(&user.display_name), refresh: Some(60) })
 }
 
@@ -509,7 +512,8 @@ pub async fn day(
         esc(&age)
     );
     body += &totals_card("<h2>Totals</h2>", &en::totals(&entries), weight_of(&entries, &app.baby()));
-    body += &log_card("<h2>Log</h2>", &entries, clock, "Nothing logged this day.");
+    let loggers = app.db.with(|c| Ok(en::loggers(c, &entries))).ok().and_then(Result::ok).unwrap_or_default();
+    body += &log_card("<h2>Log</h2>", &entries, &loggers, clock, "Nothing logged this day.");
     html::render(Page { title: &format!("{title} · baby-mcp"), body, nav: Some(&user.display_name), refresh: Some(60) })
 }
 

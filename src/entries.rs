@@ -210,6 +210,25 @@ pub fn user_names(c: &Connection) -> Result<HashMap<i64, String>, String> {
     rows.collect::<rusqlite::Result<HashMap<_, _>>>().map_err(err)
 }
 
+/// Who first logged each entry (display names), by entry id: the author of
+/// version 1, which for edited entries is in `entry_old`.
+pub fn loggers(c: &Connection, entries: &[Entry]) -> Result<HashMap<i64, String>, String> {
+    let names = user_names(c)?;
+    let mut st = c.prepare("SELECT changed_by FROM entry_old WHERE entry_id = ?1 AND version = 1").map_err(err)?;
+    let mut out = HashMap::new();
+    for e in entries {
+        let by = if e.version == 1 {
+            e.changed_by
+        } else {
+            st.query_row([e.entry_id], |r| r.get(0)).unwrap_or(e.changed_by)
+        };
+        if let Some(n) = names.get(&by) {
+            out.insert(e.entry_id, n.clone());
+        }
+    }
+    Ok(out)
+}
+
 pub fn user_by_name(c: &Connection, name: &str) -> Result<Option<(i64, String)>, String> {
     c.query_row("SELECT id, display_name FROM user WHERE name = ?1", [name], |r| {
         Ok((r.get(0)?, r.get(1)?))

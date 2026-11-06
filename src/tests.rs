@@ -491,5 +491,6 @@ async fn entry_history_page() {
     assert!(r.body.find(">v2<").unwrap() < r.body.find(">v1<").unwrap(), "newest first");
     let day = send(&t, get("/").header(header::COOKIE, &t.cookie).body(Body::empty()).unwrap()).await;
     assert!(day.body.contains(&format!(r#"href="/entry/{id}""#)) && day.body.contains("✎ v2"));
+    assert!(day.body.contains(r#"<div class="sub">Bas</div><div class="sub">✎ v2</div>"#), "who logged it, then the edit mark");
     assert_eq!(send(&t, get("/entry/999999").header(header::COOKIE, &t.cookie).body(Body::empty()).unwrap()).await.status, StatusCode::NOT_FOUND);
 }
