@@ -2,7 +2,7 @@
 name = "baby-mcp"
 version = "0.1.0"
 edition = "2024"
-description = "A baby log with an MCP server for Claude and a web app with reminders, with OAuth + passkey login"
+description = "An MCP-first baby logger, with a dashboard with graphs and web notifications"
 license = "MIT"
 repository = "https://github.com/bwesterb/baby-mcp"
 

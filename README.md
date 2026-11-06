@@ -9,9 +9,10 @@
 > Works well for us, but of course: no guarantees and provided as-is! Not medical
 > advice, and not affiliated with Healthsoft.
 
-A baby log with an MCP server for Claude (or another assistant) and a web app
-for the phone. One instance is for one baby; several parents log in with their
-own passkeys.
+An MCP-first baby logger, with a dashboard with graphs and web notifications.
+You log and ask through Claude (or another assistant); the web app on the phone
+shows what's next, the log and charts. One instance is for one baby; several
+parents log in with their own passkeys.
 
 - **Log by talking.** Each entry is one moment (a feed, a diaper, a weighing, or
   several at once) with the text as said and structured fields from a fixed
