@@ -58,6 +58,7 @@ pub fn router(app: Arc<app::App>) -> Router {
         .route("/icon-180.png", get(web::icon_180))
         .route("/icon-192.png", get(web::icon_192))
         .route("/icon-512.png", get(web::icon_512))
+        .route("/icon-maskable-512.png", get(web::icon_maskable))
         .route("/favicon.ico", get(web::icon_192))
         .route("/elephant.png", get(web::elephant))
         .route("/notifications", get(notifications::page))

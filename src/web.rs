@@ -1004,7 +1004,7 @@ pub async fn manifest(State(app): State<Arc<App>>) -> Response {
         "icons": [
             {"src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any"},
             {"src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any"},
-            {"src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable"},
+            {"src": "/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable"},
         ],
     });
     ([(axum::http::header::CONTENT_TYPE, "application/manifest+json"), (axum::http::header::CACHE_CONTROL, "max-age=3600")], body.to_string()).into_response()
@@ -1024,6 +1024,11 @@ pub async fn icon_192() -> Response {
 
 pub async fn elephant() -> Response {
     png(include_bytes!("../static/elephant-64.png"))
+}
+
+/// For Android's circular crop: the elephant within the inner 80%.
+pub async fn icon_maskable() -> Response {
+    png(include_bytes!("../static/icon-maskable-512.png"))
 }
 
 pub async fn icon_512() -> Response {

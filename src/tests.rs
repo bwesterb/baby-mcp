@@ -284,7 +284,7 @@ async fn web_pages() {
     assert_eq!(m.status, StatusCode::OK);
     assert_eq!(m.json()["display"], "standalone");
     assert_eq!(m.json()["name"], "Baby");
-    for icon in ["/icon-180.png", "/icon-192.png", "/icon-512.png", "/favicon.ico", "/elephant.png"] {
+    for icon in ["/icon-180.png", "/icon-192.png", "/icon-512.png", "/icon-maskable-512.png", "/favicon.ico", "/elephant.png"] {
         let r = crate::router(t.app.clone()).oneshot(get(icon).body(Body::empty()).unwrap()).await.unwrap();
         assert_eq!(r.status(), StatusCode::OK, "{icon}");
         assert_eq!(r.headers()[header::CONTENT_TYPE], "image/png");
