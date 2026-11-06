@@ -67,13 +67,26 @@ pub async fn page(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
         esc(&key)
     );
     body += r#"<div class="card"><h2>What to send me</h2>"#;
-    for ((kind, label, when), on) in KINDS.iter().zip(&prefs) {
-        body += &format!(
-            r#"<p><label class="check"><input type="checkbox" data-kind="{kind}"{}><span><b>{}</b> <span class="mut">— {}</span></span></label></p>"#,
-            if *on { " checked" } else { "" },
-            esc(label),
-            esc(when)
-        );
+    // In sections: feeding, entries, care.
+    const SECTIONS: [(&str, &[&str]); 3] = [
+        ("🍼 Feeding", &["feed_soon", "feed_overdue", "feed_warning"]),
+        ("📝 Entries", &["attention", "changes"]),
+        ("💊 Care", &["vitamins"]),
+    ];
+    let listed: Vec<&str> = SECTIONS.iter().flat_map(|(_, ks)| ks.iter().copied()).collect();
+    let rest: Vec<&str> = KINDS.iter().map(|k| k.0).filter(|k| !listed.contains(k)).collect();
+    for (heading, kinds) in SECTIONS.iter().map(|(h, ks)| (*h, ks.to_vec())).chain((!rest.is_empty()).then(|| ("Other", rest.clone()))) {
+        body += &format!(r#"<h3 class="section">{}</h3>"#, esc(heading));
+        for kind in kinds {
+            let Some(i) = KINDS.iter().position(|k| k.0 == kind) else { continue };
+            let (_, label, when) = KINDS[i];
+            body += &format!(
+                r#"<p><label class="check"><input type="checkbox" data-kind="{kind}"{}><span><b>{}</b> <span class="mut">— {}</span></span></label></p>"#,
+                if prefs[i] { " checked" } else { "" },
+                esc(label),
+                esc(when)
+            );
+        }
     }
     body += r#"<p class="mut">For all your devices; the other parent chooses their own. <span id="saved"></span></p></div>"#;
     body += r#"<div class="card"><h2>Your devices</h2>"#;

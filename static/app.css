@@ -35,3 +35,4 @@ nav button{padding:2px 8px}.swatch{vertical-align:-1px}.hollow{fill:var(--card)}
 #ptr.busy{animation:ptr-spin .8s linear infinite}
 @keyframes ptr-spin{from{transform:translateY(66px) rotate(0)}to{transform:translateY(66px) rotate(360deg)}}
 .hist div{margin:1px 0}.hist .add{color:var(--add);background:var(--add-bg);border-radius:4px;padding:0 4px}.hist .del{color:var(--del);background:var(--del-bg);border-radius:4px;padding:0 4px}.hist s.del{text-decoration:line-through}.hist .att{color:var(--warn)}.hist .note{color:var(--mut)}
+h3.section{font-size:13px;font-weight:600;color:var(--mut);text-transform:uppercase;letter-spacing:.04em;margin:14px 0 2px}h3.section:first-of-type{margin-top:6px}

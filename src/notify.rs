@@ -16,11 +16,11 @@ use serde_json::Value;
 use std::sync::Arc;
 
 pub const KINDS: [(&str, &str, &str); 6] = [
-    ("feed_soon", "Feed soon", "15 minutes before the next feed is expected"),
+    ("feed_soon", "Feed soon", "15 minutes before it's time to start (diaper first)"),
     ("feed_overdue", "Feed overdue", "30 minutes after the next feed was expected"),
     ("attention", "Entries need attention", "when an entry is marked as needing you (🙋)"),
     ("vitamins", "Vitamins", "at 18:00 if vitamin K or D hasn't been given that day"),
-    ("changes", "Any change", "when someone else logs, changes or deletes an entry (off unless you turn it on)"),
+    ("changes", "Any change", "when someone else logs, changes or deletes an entry"),
     ("feed_warning", "Feeding minimum", "when it gets close to the longest pause without a feed, or to only the minimum number of feeds in 24 hours (NVK)"),
 ];
 

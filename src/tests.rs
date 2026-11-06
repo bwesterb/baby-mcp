@@ -391,6 +391,8 @@ async fn push_notifications() {
     let r = send(&t, get("/notifications").header(header::COOKIE, &t.cookie).body(Body::empty()).unwrap()).await;
     assert_eq!(r.status, StatusCode::OK);
     assert!(r.body.contains(r#"data-key="B"#) && r.body.matches(" checked").count() == 5, "{}", r.body);
+    let (f, e, c) = (r.body.find("🍼 Feeding").unwrap(), r.body.find("📝 Entries").unwrap(), r.body.find("💊 Care").unwrap());
+    assert!(f < r.body.find(r#"data-kind="feed_warning""#).unwrap() && r.body.find(r#"data-kind="feed_warning""#).unwrap() < e && e < r.body.find(r#"data-kind="changes""#).unwrap() && r.body.find(r#"data-kind="changes""#).unwrap() < c);
     assert!(r.headers[header::CONTENT_SECURITY_POLICY].to_str().unwrap().contains("worker-src 'self'"));
 
     // Subscribing: same-origin and logged in only; https endpoints only.
