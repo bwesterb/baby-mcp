@@ -19,26 +19,21 @@ use std::time::{Duration, Instant};
 
 const DUPLICATE_WINDOW: i64 = 15 * 60;
 
-const INSTRUCTIONS: &str = r#"A baby log. Each entry is one event or episode (a feed, a diaper, a measurement, or several at the same moment) with a start time, an optional duration, the text the user said, and structured fields from a fixed registry (see the `fields` tool).
+const INSTRUCTIONS: &str = r#"A baby log. Each entry is one moment (a feed, a diaper, a measurement, or several at once) with a start time, an optional duration, the text as said, and structured fields (their meanings are in the `log` tool's schema).
 
 Logging ("drank 60 ml of pumped milk and had a wet diaper"):
-- Call `log` once per moment. Put everything that happened at that moment in one entry; split events at different times into separate entries.
-- Text: the user's own words where possible (any language); when it was a conversation, a short faithful paraphrase.
-- Fields: extract every registry field the user mentions. A key absent means unknown/not stated; a key with null means deliberately nothing ("no bottle this time"). false and 0 are ordinary values.
-- Bottle milk: expressed breast milk in bottle_breastmilk_ml, formula in bottle_formula_ml (a mixed bottle has both). At the breast: breast_left_min/breast_right_min and/or latch.
-- Sleeping position: "put her down facing left" → sleep_facing=left (the side her face is turned to; not the breast side). The parents alternate it after every feed; `status` gives the next side under sleep_facing, assuming they kept alternating after feeds logged since the last logged side (feeds_since, assumed_current); a logged side resets that.
-- Bath: "bathed her with soap" → bath=with_soap; "in the bath, no soap" / "just water" → bath=without_soap; "washed with a sponge/washcloth" (no bath) → bath=sponge. Goal: two baths a week, alternating with and without soap; `status` gives under bath when the next is due and next_kind (soap or not).
-- Vitamins: "gave vitamin D (and K)" → vitamin_d=true (vitamin_k=true). Dutch advice: K daily from day 8 until 12 weeks, D daily from day 8 until 4 years; `status` lists under vitamins.to_give_today what is still due today.
-- Times are local; bare clock times mean today, or yesterday if that would be in the future. Report back the time you logged.
-- If `log` reports a likely duplicate (someone else may have logged it already), ask the user before logging again with confirm=true.
+- One `log` per moment, with everything that happened then; events at different times are separate entries.
+- Text: the user's own words (any language), or a short faithful paraphrase of a conversation.
+- Fields: fill in every field the user mentions. Leave out what wasn't said; null means deliberately nothing ("no bottle this time"). Sleep itself isn't tracked, only the side the baby is put down facing.
+- Times are local; a bare clock time means today, or yesterday if that would be in the future. Tell the user the time you logged.
+- Partial information ("she's drinking now, I'll tell you how much later"): log it now with needs_attention_by=["user"] and say in needs_attention_why what is missing. The parents see it on the status page and get a notification, so nothing is lost if this conversation is forgotten. Complete it later with `update` and clear the attention.
+- If `log` reports a likely duplicate (someone else may already have logged it), ask before logging again with confirm=true.
 
-Corrections: `update` or `delete` by entry id (from `entries`, `status` or `attention`); every earlier version is kept (`history`).
-Partial information ("she's drinking now, I'll tell you how much later", "had a bottle, not sure how much"): log right away with what is known, and set needs_attention_by=["user"] with needs_attention_why saying exactly what is missing (e.g. "amount not given yet", "still feeding: add duration and amount"). The parents then see it as 🙋 on the status page and get a notification, so it isn't lost if this conversation is forgotten. When the rest comes, `update` the entry and clear the attention (needs_attention_by=[]).
-Attention: entries logged on the web form without an agent are marked for an agent (needs_attention by agent); process them with `attention` and `update`: extract the fields, set `at` from the text if it mentions a time (the stored time is when it was typed), then clear the attention.
-Sleep is not tracked; don't log sleeps.
-How much and when: `status` has feeding_guidance (a daily target from age and weight, the last 24 hours against it, and a suggested amount for the next feed). It is a rule-of-thumb guide; a feeding plan from the nurse, midwife or doctor that the user mentions always takes precedence, and say so when they differ. Mention that intake at the breast isn't measured. It follows the NVK minimum for healthy term babies (feeding_guidance.minimum: at least 6 feeds per 24 h and pauses of at most 6 h until 14 days old and back above birth weight, then 5 and 8 h until 8 weeks, then 4 and 12 h); next_feed.latest_at is the latest time for the next feed under that minimum: the end of the longest pause or, if earlier, when the last 24 h would hold fewer than the minimum number of feeds (latest_reason says which). The parents aim for at least aim_feeds_per_day feeds (planned on top of the minimum); The parents start the routine (diaper first) some minutes before a feed (next_feed_start.prep): next_feed_start (and next_feed.latest_start_at) say when to start; when they ask when to feed, give both. feeding_guidance.breast_side suggests which breast to start with (the one used less over the last 24 h, else alternating). feeding_guidance.warnings says when it gets close to the longest pause or to only the minimum number of feeds in 24 h: mention those first.
-Wet diapers: `status` has wet_diaper_warning when the last 24 hours had fewer than usual for her age (day of life up to day 5, then 6); mention it. Questions: `status` for the current situation (last feed and diapers, estimates of the next feed, wet and dirty diaper, today's totals), `stats` for per-day totals, `entries` for the raw log, `sql` for anything else.
-If the user wants something these tools cannot do, or only awkwardly, do what you can and call `suggest` so the developer can add it."#;
+Corrections: `update`, `delete` and `undelete` by entry id; `history` shows every earlier version.
+Entries typed on the web form wait for an agent (`attention` by agent): extract the fields, set `at` from the text if it names a time (the stored time is when it was typed), and clear the attention.
+
+Answering: use `status` for anything about now: what's next, when and how much. Its feeding guidance is a rule of thumb; a plan from the midwife, nurse or doctor that the user mentions takes precedence, so say so when they differ, and mention that intake at the breast isn't measured. For "when to feed", give the time to start (diaper first) and the feed time; put warnings first. Use `stats` for per-day totals, `entries` for the log, `sql` for anything else.
+If the user wants something the tools can't do (or only awkwardly), do what you can and call `suggest`."#;
 
 fn field_schema() -> Value {
     let mut props = Map::new();
@@ -66,11 +61,11 @@ fn attention_schema() -> Value {
            "description": "who still needs to look at this entry (empty = nobody)"})
 }
 
-fn tools() -> Value {
+fn tools(tz: &str) -> Value {
     let id = json!({"type": "integer", "description": "entry id"});
     json!([
         {"name": "log", "title": "Log an entry",
-         "description": "Add an entry: what happened at one moment, with structured fields. Refuses a likely duplicate (an entry within 15 minutes sharing a feed/diaper/… group) unless confirm=true. With only partial information, log now and set needs_attention_by=[\"user\"] with what is missing in needs_attention_why, so the parents finish it later.",
+         "description": "Add an entry for one moment. Refuses a likely duplicate (an entry within 15 minutes of the same kind: feed, diaper, …) unless confirm=true.",
          "inputSchema": {"type": "object", "required": ["text"], "properties": {
             "text": {"type": "string", "description": "what the user said (or a faithful paraphrase)"},
             "at": {"type": "string", "description": "start time: HH:MM, YYYY-MM-DD HH:MM or RFC 3339; default now"},
@@ -81,13 +76,13 @@ fn tools() -> Value {
             "confirm": {"type": "boolean", "description": "log even if it looks like a duplicate"}}},
          "annotations": {"destructiveHint": false, "openWorldHint": false}},
         {"name": "update", "title": "Update an entry",
-         "description": "Change an entry. Fields are merged: given keys are set (null = deliberately nothing), keys in `remove` become unknown again. Earlier versions are kept.",
+         "description": "Change an entry. Fields are merged: given keys are set, keys in `remove` become unknown again.",
          "inputSchema": {"type": "object", "required": ["entry_id"], "properties": {
             "entry_id": id,
             "at": {"type": "string"},
             "duration_min": {"type": ["number", "null"], "description": "final duration in minutes; null clears it"},
             "text": {"type": "string", "description": "replaces the text"},
-            "fields": field_schema(),
+            "fields": {"type": "object", "description": "the same fields as in `log` (null = deliberately nothing)"},
             "remove": {"type": "array", "items": {"type": "string"}, "description": "field names to make unknown"},
             "needs_attention_by": attention_schema(),
             "needs_attention_why": {"type": "string"}}},
@@ -109,12 +104,12 @@ fn tools() -> Value {
          "inputSchema": {"type": "object", "required": ["entry_id"], "properties": {"entry_id": id}},
          "annotations": {"readOnlyHint": true}},
         {"name": "attention", "title": "Entries needing attention",
-         "description": "Entries that still need a person and/or an agent to look at them (e.g. web entries whose fields are not extracted yet).",
+         "description": "Entries waiting for a parent and/or an agent, with why.",
          "inputSchema": {"type": "object", "properties": {
             "by": {"enum": ["user", "agent", "any"], "description": "default any"}}},
          "annotations": {"readOnlyHint": true}},
         {"name": "status", "title": "Current status",
-         "description": "Last feed, diapers, temperature and weight with how long ago; weight percentile (WHO weight-for-age), birth-weight percentile and whether birth weight is regained; estimates of the next feed, wet diaper and dirty diaper (median recent gap; due_in or overdue_by); feeding_guidance (daily target from age and weight, last 24 h vs target, suggested next amount); today's and last 24 h totals; entries needing attention.",
+         "description": "The current situation: last feed, diapers, temperature and weight, with how long ago; next_*_estimate for the feed and diapers (last + median recent gap; due_in or overdue_by); next_feed_start (the feed moved up by the parents' preparation time, diaper first); wet_diaper_warning (fewer wet diapers in 24 h than usual for the age); feeding_guidance: daily target (first-week build-up, then 150 ml/kg), last 24 h against it, the next amount, minimum (NVK minimum feeds per 24 h and longest pause, with the rule), aim_feeds_per_day, next_feed.latest_at / latest_start_at (latest_reason: pause or count), breast_side (which breast to start with), warnings (close to the longest pause or to too few feeds); sleep_facing.next (side to put the baby down on, assuming alternation after each feed since the last logged side); bath (when the next is due and with or without soap: two a week, alternating); vitamins.to_give_today (with the rule); WHO weight percentiles, weight change against newborns with the same delivery mode, birth weight regained; today's and last-24 h totals; entries needing attention.",
          "inputSchema": {"type": "object", "properties": {}}, "annotations": {"readOnlyHint": true}},
         {"name": "stats", "title": "Per-day statistics",
          "description": "Per local day: feeds, ml of breast milk and formula, breast minutes, diapers, spit-ups, pumped ml, temperature range, weight vs birth weight and its WHO weight-for-age percentile.",
@@ -125,7 +120,7 @@ fn tools() -> Value {
         {"name": "fields", "title": "Field registry", "description": "The structured fields entries can have, with types, units and allowed values.",
          "inputSchema": {"type": "object", "properties": {}}, "annotations": {"readOnlyHint": true}},
         {"name": "sql", "title": "Read-only SQL",
-         "description": "Run one read-only SQLite query for questions the other tools don't answer. Table `entry` (current versions; deleted=0 for live ones): entry_id, at (Unix seconds UTC), duration_s, text, fields (JSON), needs_attention_by, needs_attention_why, deleted, changed_at, changed_by, plus one column per registry field (e.g. bottle_formula_ml, wet). `entry_old` has earlier versions. Times: use datetime(at, 'unixepoch') (UTC; local is Europe/Amsterdam). At most 500 rows.",
+         "description": format!("Run one read-only SQLite query for questions the other tools don't answer. Table `entry` (current versions; deleted=0 for live ones): entry_id, at (Unix seconds UTC), duration_s, text, fields (JSON), needs_attention_by, needs_attention_why, deleted, changed_at, changed_by, plus one column per registry field (e.g. bottle_formula_ml, wet). `entry_old` has earlier versions. Times: use datetime(at, 'unixepoch') (UTC; local is {tz}). At most 500 rows."),
          "inputSchema": {"type": "object", "required": ["query"], "properties": {"query": {"type": "string"}}},
          "annotations": {"readOnlyHint": true}},
         {"name": "suggest", "title": "Suggest a feature",
@@ -174,7 +169,7 @@ fn one(app: &App, user: i64, req: &Value) -> Option<Value> {
             "instructions": format!("This log is for {}.\n\n{INSTRUCTIONS}", app.cfg.baby.name),
         }),
         "ping" => json!({}),
-        "tools/list" => json!({"tools": tools()}),
+        "tools/list" => json!({"tools": tools(&app.cfg.tz)}),
         "tools/call" => {
             let name = req["params"]["name"].as_str().unwrap_or("");
             let args = req["params"].get("arguments").cloned().unwrap_or(json!({}));
@@ -451,4 +446,17 @@ fn run_sql(app: &App, q: &str) -> Result<Value, String> {
         out.push(Value::Object(row));
     }
     Ok(json!({"columns": cols, "rows": out, "truncated": truncated}))
+}
+
+#[cfg(test)]
+mod size_tests {
+    /// Keep what the agent reads at the start of a session short.
+    #[test]
+    fn instructions_and_tools_stay_small() {
+        let tools = super::tools("Europe/Amsterdam").to_string();
+        println!("instructions {} bytes, tools {} bytes", super::INSTRUCTIONS.len(), tools.len());
+        assert!(super::INSTRUCTIONS.len() < 3000, "instructions grew to {} bytes", super::INSTRUCTIONS.len());
+        assert!(tools.len() < 9000, "tool definitions grew to {} bytes", tools.len());
+        assert!(tools.contains("local is Europe/Amsterdam"));
+    }
 }

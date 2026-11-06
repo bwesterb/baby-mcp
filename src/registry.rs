@@ -59,7 +59,7 @@ pub static FIELDS: &[Field] = &[
         kind: Kind::Choice(SIDES),
         unit: "",
         group: Group::Position,
-        help: "which way her face is turned when put down to sleep (left or right); it should alternate after every feed",
+        help: "the side the face is turned to when put down to sleep (not the breast side); the parents alternate it after every feed",
     },
     Field {
         name: "bottle_breastmilk_ml",
@@ -73,7 +73,7 @@ pub static FIELDS: &[Field] = &[
         kind: Kind::Number { min: 0.0, max: 300.0 },
         unit: "ml",
         group: Group::Feed,
-        help: "formula given",
+        help: "formula given by bottle; a mixed bottle fills both bottle fields",
     },
     Field {
         name: "breast_left_min",
@@ -150,21 +150,21 @@ pub static FIELDS: &[Field] = &[
         kind: Kind::Choice(BATH),
         unit: "",
         group: Group::Care,
-        help: "washed: in the bath with soap, in the bath without soap, or only a sponge/washcloth wash",
+        help: "in the bath with soap, in the bath without soap (just water), or only a sponge/washcloth wash",
     },
     Field {
         name: "vitamin_k",
         kind: Kind::Bool,
         unit: "",
         group: Group::Supplement,
-        help: "vitamin K drops given (Netherlands: daily from day 8 until 12 weeks)",
+        help: "vitamin K drops given",
     },
     Field {
         name: "vitamin_d",
         kind: Kind::Bool,
         unit: "",
         group: Group::Supplement,
-        help: "vitamin D drops given (Netherlands: daily from day 8 until 4 years)",
+        help: "vitamin D drops given",
     },
 ];
 
