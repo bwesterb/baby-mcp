@@ -408,7 +408,7 @@ fn since(e: &Option<Entry>, clock: &Clock, now: i64, extra: Option<Value>) -> Va
 /// Estimates the next occurrence from event times (oldest first): the last
 /// one plus the median of up to 8 recent gaps of at least `min_gap`.
 fn estimate(clock: &Clock, times: &[i64], min_gap: i64, what: &str, now: i64) -> Value {
-    let gaps: Vec<i64> = times.windows(2).map(|w| w[1] - w[0]).filter(|g| *g >= min_gap).rev().take(8).collect();
+    let gaps = recent_gaps(times, min_gap);
     let (Some(m), Some(last)) = (median(gaps.clone()), times.last()) else {
         return Value::Null;
     };
@@ -424,6 +424,22 @@ fn estimate(clock: &Clock, times: &[i64], min_gap: i64, what: &str, now: i64) ->
     }
     v
 }
+
+fn recent_gaps(times: &[i64], min_gap: i64) -> Vec<i64> {
+    times.windows(2).map(|w| w[1] - w[0]).filter(|g| *g >= min_gap).rev().take(8).collect()
+}
+
+/// The typical gap between events (oldest first), as `estimate` uses it.
+pub fn usual_gap(times: &[i64]) -> Option<i64> {
+    median(recent_gaps(times, ESTIMATE_MIN_GAP))
+}
+
+/// Gaps shorter than this don't count for estimates (a feed in two parts).
+const ESTIMATE_MIN_GAP: i64 = 30 * 60;
+
+/// How far back the estimates look: feeds and wet diapers, dirty diapers.
+pub const ESTIMATE_BACK: i64 = 36 * 3600;
+pub const ESTIMATE_BACK_DIRTY: i64 = 72 * 3600;
 
 /// Fewer wet diapers in the last 24 hours than usual for her age: at least as
 /// many as the day of life up to day 5, then at least 6 (breastfeeding and
@@ -489,15 +505,15 @@ pub fn status(c: &Connection, clock: &Clock, baby: &Baby, now: i64) -> Result<Va
     let last_dirty = last_where(c, "dirty = 1")?;
     let last_temp = last_where(c, "temp_c IS NOT NULL")?;
     let last_weight = last_where(c, "weight_g IS NOT NULL")?;
-    let recent = list(c, now - 36 * 3600, now + 1, false)?;
-    let three_days = list(c, now - 72 * 3600, now + 1, false)?;
+    let recent = list(c, now - ESTIMATE_BACK, now + 1, false)?;
+    let three_days = list(c, now - ESTIMATE_BACK_DIRTY, now + 1, false)?;
     let today = list(c, clock.day_start(now), now + 1, false)?;
     let day = list(c, now - 24 * 3600, now + 1, false)?;
 
     let times = |es: &[Entry], f: fn(&Entry) -> bool| es.iter().filter(|e| f(e)).map(|e| e.at).collect::<Vec<_>>();
-    let next_feed = estimate(clock, &times(&recent, Entry::is_feed), 30 * 60, "feed", now);
-    let next_wet = estimate(clock, &times(&recent, |e| e.is("wet")), 30 * 60, "wet diaper", now);
-    let next_dirty = estimate(clock, &times(&three_days, |e| e.is("dirty")), 30 * 60, "dirty diaper", now);
+    let next_feed = estimate(clock, &times(&recent, Entry::is_feed), ESTIMATE_MIN_GAP, "feed", now);
+    let next_wet = estimate(clock, &times(&recent, |e| e.is("wet")), ESTIMATE_MIN_GAP, "wet diaper", now);
+    let next_dirty = estimate(clock, &times(&three_days, |e| e.is("dirty")), ESTIMATE_MIN_GAP, "dirty diaper", now);
 
     let mut out = json!({
         "now": clock.fmt(now),

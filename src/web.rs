@@ -234,62 +234,91 @@ fn timeline_svg(clock: &crate::time::Clock, entries: &[en::Entry], s: &Value, no
         hr += 3600;
     }
     svg += &format!(r#"<line x1="{0:.1}" x2="{0:.1}" y1="2" y2="{1:.1}" class="now"/>"#, x(now), h - 16.0);
-    let mut put = |lane: usize, emoji: &str, t: i64, faded: bool, ring: bool, title: String| {
+    let mut put = |lane: usize, emoji: &str, t: i64, opacity: Option<&str>, ring: bool, title: String| {
         let (cx, cy) = (x(t), lanes[lane]);
         if ring {
             svg += &format!(r#"<circle cx="{cx:.1}" cy="{:.1}" r="11" class="ring"/>"#, cy - 6.0);
         }
         svg += &format!(
             r#"<text x="{cx:.1}" y="{cy}" text-anchor="middle" class="emo"{}><title>{}</title>{emoji}</text>"#,
-            if faded { r#" opacity=".45""# } else { "" },
+            opacity.map(|o| format!(r#" opacity="{o}""#)).unwrap_or_default(),
             esc(&title)
         );
     };
     for e in entries.iter().filter(|e| e.at >= from && e.at <= now) {
         let title = format!("{} {}", hm(e.at), entry_summary(e));
         if e.is_feed() {
-            put(0, "🍼", e.at, false, false, title.clone());
+            put(0, "🍼", e.at, None, false, title.clone());
         }
         if e.is("dirty") {
-            put(1, "💩", e.at, false, false, title.clone());
+            put(1, "💩", e.at, None, false, title.clone());
         } else if e.is("wet") {
-            put(1, "💧", e.at, false, false, title.clone());
+            put(1, "💧", e.at, None, false, title.clone());
         }
         if e.is("vitamin_d") || e.is("vitamin_k") {
-            put(2, "💊", e.at, false, false, title.clone());
+            put(2, "💊", e.at, None, false, title.clone());
         } else if e.str("bath").is_some() {
-            put(2, "🛁", e.at, false, false, title.clone());
+            put(2, "🛁", e.at, None, false, title.clone());
         } else if e.num("weight_g").is_some() {
-            put(2, "⚖️", e.at, false, false, title.clone());
+            put(2, "⚖️", e.at, None, false, title.clone());
         } else if e.is("vomit") {
-            put(2, "🤢", e.at, false, false, title.clone());
+            put(2, "🤢", e.at, None, false, title.clone());
         }
     }
     // What's expected: overdue ones just after now, with a ring.
     let soon = now + 8 * 60;
-    let mut expect = |lane: usize, emoji: &str, at: Option<i64>, label: String| {
+    let mut expect = |lane: usize, emoji: &str, at: Option<i64>, label: String, opacity: &str| {
         let Some(t) = at else { return };
         if t > to {
             return;
         }
         let overdue = t < now;
-        put(lane, emoji, if overdue { soon } else { t }, !overdue, overdue,
+        put(lane, emoji, if overdue { soon } else { t }, if overdue { None } else { Some(opacity) }, overdue,
             format!("{} {label}{}", hm(t), if overdue { " (overdue)" } else { " (expected)" }));
+    };
+    // After the next one, more at the usual gap (the same rule as the
+    // estimates), from the next one or, if that is overdue, from now: fainter.
+    let usual = |back: i64, f: fn(&en::Entry) -> bool| {
+        let times: Vec<i64> = entries.iter().filter(|e| e.at > now - back && f(e)).map(|e| e.at).collect();
+        en::usual_gap(&times)
+    };
+    let later = |next: Option<i64>, gap: Option<i64>, shift: i64| -> Vec<i64> {
+        let (Some(next), Some(gap)) = (next, gap) else { return vec![] };
+        let mut out = vec![];
+        let mut t = next.max(now) + gap;
+        while t - shift <= to {
+            out.push(t - shift);
+            t += gap;
+        }
+        out
     };
     let at = |v: &Value| v["at"].as_str().and_then(|a| clock.parse(a, now).ok());
     // The feed: when to start (diaper first), if there is a preparation time.
-    match (at(&s["next_feed_start"]), s["next_feed_start"]["feed_at"].as_str()) {
-        (Some(start), Some(feed)) if s["next_feed_start"]["prep"] != "0m" && feed.len() >= 16 => {
-            expect(0, "🍼", Some(start), format!("start (feed ~{})", &feed[11..16]))
-        }
-        _ => expect(0, "🍼", at(&s["next_feed_estimate"]), "feed".into()),
+    let feed_at = at(&s["next_feed_estimate"]);
+    let prep = match (at(&s["next_feed_start"]), feed_at) {
+        (Some(start), Some(feed)) if feed > start => feed - start,
+        _ => 0,
+    };
+    let feed_label = |t: i64| if prep > 0 { format!("start (feed ~{})", hm(t + prep)) } else { "feed".to_string() };
+    expect(0, "🍼", feed_at.map(|t| t - prep), feed_at.map(|t| feed_label(t - prep)).unwrap_or_default(), ".45");
+    for t in later(feed_at, usual(en::ESTIMATE_BACK, en::Entry::is_feed), prep) {
+        expect(0, "🍼", Some(t), feed_label(t), ".25");
     }
-    expect(1, "💧", at(&s["next_wet_diaper_estimate"]), "wet diaper".into());
-    expect(1, "💩", at(&s["next_dirty_diaper_estimate"]), "dirty diaper".into());
+    let wet_at = at(&s["next_wet_diaper_estimate"]);
+    let dirty_at = at(&s["next_dirty_diaper_estimate"]);
+    expect(1, "💧", wet_at, "wet diaper".into(), ".45");
+    expect(1, "💩", dirty_at, "dirty diaper".into(), ".45");
+    for t in later(wet_at, usual(en::ESTIMATE_BACK, |e| e.is("wet")), 0) {
+        expect(1, "💧", Some(t), "wet diaper".into(), ".25");
+    }
+    for t in later(dirty_at, usual(en::ESTIMATE_BACK_DIRTY, |e| e.is("dirty")), 0) {
+        expect(1, "💩", Some(t), "dirty diaper".into(), ".25");
+    }
     if s["vitamins"]["to_give_today"].as_array().is_some_and(|a| !a.is_empty()) {
-        expect(2, "💊", s["vitamins"]["remind_at"].as_str().and_then(|a| clock.parse(a, now).ok()), "vitamins".into());
-    } else if s["bath"]["due"]["at"].is_string() && !s["bath"]["due"]["never"].as_bool().unwrap_or(false) {
-        expect(2, "🛁", at(&s["bath"]["due"]), "bath".into());
+        expect(2, "💊", s["vitamins"]["remind_at"].as_str().and_then(|a| clock.parse(a, now).ok()), "vitamins".into(), ".45");
+    }
+    if s["bath"]["due"]["at"].is_string() && !s["bath"]["due"]["never"].as_bool().unwrap_or(false) {
+        expect(2, "🛁", at(&s["bath"]["due"]), "bath".into(), ".45");
     }
     svg += "</svg>";
     (svg, x(now))
@@ -539,7 +568,7 @@ pub async fn status(State(app): State<Arc<App>>, headers: HeaderMap) -> Response
             let s = en::status(c, clock, &app.baby(), t)?;
             let today = en::list(c, clock.day_start(t), t + 1, false)?;
             let loggers = en::loggers(c, &today)?;
-            let recent = en::list(c, t - TL_PAST, t + 1, false)?;
+            let recent = en::list(c, t - TL_PAST.max(en::ESTIMATE_BACK_DIRTY), t + 1, false)?;
             Ok::<_, String>((s, today, loggers, recent))
         })())
     });
@@ -1449,7 +1478,8 @@ mod tests {
         let s = json!({"next_feed_estimate": {"at": "2025-11-07 13:30"}, "next_wet_diaper_estimate": {"at": "2025-11-07 15:00"}});
         let (html, now_x) = timeline_svg(&clock, &entries, &s, now, 6 * 3600, 4 * 3600);
         assert_eq!(now_x, 12.0 + 6.0 * TL_UNITS_PER_HOUR);
-        assert_eq!(html.matches(">🍼</text>").count(), 2, "one logged feed in the window, one expected: {html}");
+        assert_eq!(html.matches(">🍼</text>").count(), 3, "one logged feed in the window, one expected, one later: {html}");
+        assert!(html.contains(r#"opacity=".25"><title>17:30 feed"#), "the next after an overdue one: now + the usual gap (3h30), fainter: {html}");
         assert!(html.contains("10:30 🍼 80 ml formula") && html.contains("💩") && html.contains("💊"));
         assert!(html.contains("13:30 feed (overdue)") && html.contains(r#"class="ring""#), "overdue feed ringed");
         assert!(html.contains("15:00 wet diaper (expected)") && html.contains(r#"opacity=".45""#), "expected wet diaper faded");
@@ -1462,6 +1492,8 @@ mod tests {
         assert!(all.contains("15:15 start (feed ~15:30) (expected)"), "{all}");
         assert!(all.contains(r#"id="tl" data-now="924""#), "{all}");
         assert!(all.contains("07:00 🍼 60 ml formula"), "reaches back 24 hours");
+        // Feeds every 3h30 after 15:30, as starts; ends within the 12 hours ahead.
+        assert!(all.contains("18:45 start (feed ~19:00)") && all.contains("01:45 start (feed ~02:00)") && !all.contains("feed ~05:30"), "{all}");
     }
 
     #[test]
