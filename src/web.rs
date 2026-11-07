@@ -579,7 +579,7 @@ pub async fn status(State(app): State<Arc<App>>, headers: HeaderMap) -> Response
     };
 
     let mut body = format!(
-        r#"<div class="card"><h1>{}</h1><p class="mut">{}{}</p></div>"#,
+        r#"<div class="card top"><h1>{}</h1><span class="mut">{}{}</span></div>"#,
         esc(&app.cfg.baby.name),
         s["age"].as_str().map(|a| format!("{a} old · ")).unwrap_or_default(),
         esc(s["now"].as_str().unwrap_or(""))
