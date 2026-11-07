@@ -607,6 +607,28 @@ pub async fn status(State(app): State<Arc<App>>, headers: HeaderMap) -> Response
         esc(s["now"].as_str().unwrap_or(""))
     );
 
+    // Needs attention, first: today's and older.
+    if let Some(list) = s["needs_attention"].as_array().filter(|l| !l.is_empty()) {
+        body += r#"<div class="card"><h2 class="warn">Needs attention</h2><table>"#;
+        for e in list {
+            let by: Vec<&str> = e["needs_attention"]["by"].as_array().map(|v| v.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
+            body += &format!(
+                "<tr><td class=\"time\"><a href=\"/entry/{}\">{}</a> <span title=\"{}\">{}</span></td><td>{}{}</td></tr>",
+                e["id"].as_i64().unwrap_or(0),
+                esc(&e["at"].as_str().unwrap_or("")[5..]),
+                esc(&attention_label(by.contains(&"user"), by.contains(&"agent"))),
+                attention_emoji(by.contains(&"user"), by.contains(&"agent")),
+                esc(e["text"].as_str().unwrap_or("")),
+                e["needs_attention"]["why"].as_str().map(|w| format!(r#"<div class="sub warn">{}</div>"#, esc(w))).unwrap_or_default()
+            );
+        }
+        body += "</table>";
+        if list.iter().any(|e| e["needs_attention"]["by"].as_array().is_some_and(|v| v.iter().any(|x| x == "agent"))) {
+            body += AGENT_HINT;
+        }
+        body += "</div>";
+    }
+
     body += &timeline(clock, &recent, &s, t);
 
     let feed_what = s["last_feed"]["value"]["fields"].as_object().map(feed_summary).unwrap_or_default();
@@ -654,35 +676,10 @@ pub async fn status(State(app): State<Arc<App>>, headers: HeaderMap) -> Response
         weight,
     );
 
-    // Needs attention: today's entries are marked in the log below (with the
-    // reason); a card only for older ones.
-    let day_start = clock.day_start(t);
-    let older: Vec<&Value> = s["needs_attention"]
-        .as_array()
-        .map(|l| l.iter().filter(|e| e["at"].as_str().and_then(|a| clock.parse(a, t).ok()).is_some_and(|at| at < day_start)).collect())
-        .unwrap_or_default();
-    if !older.is_empty() {
-        body += r#"<div class="card"><h2 class="warn">Needs attention</h2><table>"#;
-        for e in &older {
-            let by: Vec<&str> = e["needs_attention"]["by"].as_array().map(|v| v.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
-            body += &format!(
-                "<tr><td class=\"time\"><a href=\"/entry/{}\">{}</a> <span title=\"{}\">{}</span></td><td>{}{}</td></tr>",
-                e["id"].as_i64().unwrap_or(0),
-                esc(&e["at"].as_str().unwrap_or("")[5..]),
-                esc(&attention_label(by.contains(&"user"), by.contains(&"agent"))),
-                attention_emoji(by.contains(&"user"), by.contains(&"agent")),
-                esc(e["text"].as_str().unwrap_or("")),
-                sub_line(e["needs_attention"]["why"].as_str().unwrap_or(""))
-            );
-        }
-        body += "</table>";
-        if older.iter().any(|e| e["needs_attention"]["by"].as_array().is_some_and(|v| v.iter().any(|x| x == "agent"))) {
-            body += AGENT_HINT;
-        }
-        body += "</div>";
-    }
-
-    body += &log_card("<h2>Today's log</h2>", &today, &loggers, clock, "Nothing logged yet today.");
+    // Entries needing attention are in their own card at the start, not
+    // repeated in the log.
+    let today_rest: Vec<en::Entry> = today.iter().filter(|e| e.attention_by == 0).cloned().collect();
+    body += &log_card("<h2>Today's log</h2>", &today_rest, &loggers, clock, if today.is_empty() { "Nothing logged yet today." } else { "Only entries that need attention so far." });
     html::render(Page { title: "Status · baby-mcp", body, nav: Some(&user.display_name), refresh: Some(60) })
 }
 

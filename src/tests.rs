@@ -316,8 +316,8 @@ async fn web_pages() {
         "SELECT count(*), sum(needs_attention_by = 2), sum(coalesce(wet, 0)) FROM entry", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))).unwrap();
     assert_eq!((n, attention, wet), (2, 2, 0), "every web entry goes to an agent");
     let r = send(&t, get("/").header(header::COOKIE, &t.cookie).body(Body::empty()).unwrap()).await;
-    // Today's entries needing attention: once each, in the log, with the reason.
-    assert!(!r.body.contains("Needs attention") && r.body.contains("🤖") && r.body.matches("process the entries that need attention").count() == 1, "{}", r.body);
+    // Entries needing attention: once each, in their own card first (not in the log), with the reason.
+    assert!(r.body.contains("Needs attention") && r.body.find("Needs attention") < r.body.find("What's next") && r.body.contains("🤖") && r.body.matches("process the entries that need attention").count() == 1, "{}", r.body);
     assert_eq!(r.body.matches("fields not extracted yet").count(), 2, "{}", r.body);
     let r = send(&t, get("/charts").header(header::COOKIE, &t.cookie).body(Body::empty()).unwrap()).await;
     assert!(r.status == StatusCode::OK && r.body.contains("<svg"));
