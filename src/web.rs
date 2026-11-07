@@ -1286,7 +1286,7 @@ fn field_chip(name: &str, v: &Value) -> (String, bool) {
 }
 
 /// What changed from one version to the next, as short lines.
-fn changes(clock: &crate::time::Clock, old: &en::Entry, new: &en::Entry) -> Vec<String> {
+fn changes(clock: &crate::time::Clock, old: &en::Entry, new: &en::Entry) -> Vec<Line> {
     let mut out = vec![];
     if old.at != new.at {
         out.push(format!("time: {} → {}", clock.fmt(old.at), clock.fmt(new.at)));
@@ -1299,25 +1299,33 @@ fn changes(clock: &crate::time::Clock, old: &en::Entry, new: &en::Entry) -> Vec<
     let mut keys: Vec<&String> = old.fields.keys().chain(new.fields.keys()).collect();
     keys.sort_by_key(|k| (order(k), k.to_string()));
     keys.dedup();
+    let chip = |k: &str, v: &Value, class: &str| {
+        format!(r#"<span class="chip {class}" title="{}">{}</span>"#, esc(&format!("{k}: {}", field_value(k, v))), esc(&field_chip(k, v).0))
+    };
+    let mut chips = vec![];
     for k in keys {
         match (old.fields.get(k), new.fields.get(k)) {
-            (None, Some(v)) => out.push(format!("+ {k}: {}", field_value(k, v))),
-            (Some(v), None) => out.push(format!("− {k} (was {})", field_value(k, v))),
-            (Some(a), Some(b)) if a != b => out.push(format!("{k}: {} → {}", field_value(k, a), field_value(k, b))),
+            (None, Some(v)) => chips.push(chip(k, v, "add")),
+            (Some(v), None) => chips.push(chip(k, v, "del")),
+            (Some(a), Some(b)) if a != b => chips.push(format!(r#"<span class="chg">{} → {}</span>"#, chip(k, a, "del"), chip(k, b, "add"))),
             _ => {}
         }
     }
+    let mut out: Vec<Line> = out.into_iter().map(Line::Text).collect();
+    if !chips.is_empty() {
+        out.push(Line::Html(format!(r#"<div class="chips">{}</div>"#, chips.concat())));
+    }
     if (old.attention_by, &old.attention_why) != (new.attention_by, &new.attention_why) {
         match (new.attention_by, &new.attention_why) {
-            (0, _) => out.push(format!("attention cleared{}", old.attention_why.as_ref().map(|w| format!(" (was: {w})")).unwrap_or_default())),
+            (0, _) => out.push(Line::Text(format!("attention cleared{}", old.attention_why.as_ref().map(|w| format!(" (was: {w})")).unwrap_or_default()))),
             (by, why) => {
                 let (u, a) = (by & en::BY_USER != 0, by & BY_AGENT != 0);
-                out.push(format!("{} {}{}", attention_emoji(u, a), attention_label(u, a), why.as_ref().map(|w| format!(": {w}")).unwrap_or_default()));
+                out.push(Line::Text(format!("{} {}{}", attention_emoji(u, a), attention_label(u, a), why.as_ref().map(|w| format!(": {w}")).unwrap_or_default())));
             }
         }
     }
     if old.deleted != new.deleted {
-        out.push((if new.deleted { "deleted" } else { "restored" }).into());
+        out.push(Line::Text((if new.deleted { "deleted" } else { "restored" }).into()));
     }
     out
 }
@@ -1388,13 +1396,20 @@ fn word_diff(old: &str, new: &str) -> String {
     out
 }
 
+/// A line of an entry's history: text (coloured by `history_line`) or
+/// ready HTML (the field chips).
+enum Line {
+    Text(String),
+    Html(String),
+}
+
 /// One line of an entry's history, coloured: added green, removed red, a
 /// change as the old value struck through and the new one green.
 fn history_line(l: &str) -> String {
-    if l.starts_with("+ ") || l == "restored" || l == "created" {
+    if l == "restored" || l == "created" {
         return format!(r#"<div><span class="add">{}</span></div>"#, esc(l));
     }
-    if l.starts_with("− ") || l == "deleted" {
+    if l == "deleted" {
         return format!(r#"<div><span class="del">{}</span></div>"#, esc(l));
     }
     if l.starts_with("attention cleared") {
@@ -1454,16 +1469,21 @@ pub async fn entry_page(State(app): State<Arc<App>>, headers: HeaderMap, axum::e
     for (i, v) in versions.iter().enumerate().rev() {
         let lines = match i {
             0 => {
-                let mut l = vec!["created".to_string()];
-                if v.attention_by != 0 {
-                    let (u, a) = (v.attention_by & en::BY_USER != 0, v.attention_by & BY_AGENT != 0);
-                    l.push(format!("{} {}{}", attention_emoji(u, a), attention_label(u, a), v.attention_why.as_ref().map(|w| format!(": {w}")).unwrap_or_default()));
-                }
+                // Created: as the change from an empty entry.
+                let empty = en::Entry { fields: Default::default(), attention_by: 0, attention_why: None, deleted: false, ..v.clone() };
+                let mut l = vec![Line::Text("created".to_string())];
+                l.extend(changes(clock, &empty, v));
                 l
             }
             _ => changes(clock, &versions[i - 1], v),
         };
-        let mut items: String = lines.iter().map(|l| history_line(l)).collect();
+        let mut items: String = lines
+            .iter()
+            .map(|l| match l {
+                Line::Text(t) => history_line(t),
+                Line::Html(h) => h.clone(),
+            })
+            .collect();
         if i > 0 && versions[i - 1].text != v.text {
             items += &format!(r#"<div class="tdiff">{}</div>"#, word_diff(&versions[i - 1].text, &v.text));
         }
