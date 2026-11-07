@@ -282,10 +282,17 @@ self.addEventListener('push', (e) => {
         await (msg.badge ? self.navigator.setAppBadge(msg.badge) : self.navigator.clearAppBadge());
       }
     } catch (_) {}
-    // Only show: closing notifications from here on iOS also suppressed
-    // the new one (and iOS revokes a subscription whose pushes show
-    // nothing). Stale ones are closed by the page when the app opens.
-    await self.registration.showNotification(msg.title, {body: msg.body, tag: group, renotify: true, icon: '/icon-192.png', data: {url: msg.url, group, at: Date.now()}});
+    // One notification per group: close the older one of this group (iOS
+    // doesn't replace by tag) and any whose group no longer applies. Each
+    // has a tag of its own, so closing an older one can't hit the new one;
+    // the group is in its data.
+    try {
+      for (const n of await self.registration.getNotifications()) {
+        const g = (n.data && n.data.group) || n.tag;
+        if (g === group || (Array.isArray(msg.groups) && !msg.groups.includes(g))) n.close();
+      }
+    } catch (_) {}
+    await self.registration.showNotification(msg.title, {body: msg.body, tag: group + ':' + id, icon: '/icon-192.png', data: {url: msg.url, group, at: Date.now()}});
   })());
 });
 self.addEventListener('notificationclick', (e) => {
