@@ -425,14 +425,19 @@ fn estimate(clock: &Clock, times: &[i64], min_gap: i64, what: &str, now: i64) ->
     v
 }
 
-/// Diapers are checked at feeds. Of the last (up to) 10 feeds, those with a
-/// `field` diaper at the feed or within an hour of it; None with fewer than 4.
-pub fn diapers_at_feeds(es: &[Entry], field: &str) -> Option<(usize, usize)> {
-    let feeds: Vec<&Entry> = es.iter().filter(|e| e.is_feed()).rev().take(10).collect();
+/// Diapers are checked at feeds. Of the last (up to) `window` feeds with a
+/// diaper logged (wet or dirty, yes or no, within an hour: a feed without one
+/// was probably just not logged), those with a `field` diaper; None with
+/// fewer than 4. (Backtested on the first weeks: wet over 10 feeds, Brier
+/// 0.07 against 0.25 for a coin; dirty is close to a steady rate, so over 20.)
+pub fn diapers_at_feeds(es: &[Entry], field: &str, window: usize) -> Option<(usize, usize)> {
+    let near = |f: &Entry, e: &Entry| (e.at - f.at).abs() <= 3600;
+    let logged = |f: &Entry| es.iter().any(|e| near(f, e) && (e.fields.contains_key("wet") || e.fields.contains_key("dirty")));
+    let feeds: Vec<&Entry> = es.iter().filter(|e| e.is_feed() && logged(e)).rev().take(window).collect();
     if feeds.len() < 4 {
         return None;
     }
-    let hit = feeds.iter().filter(|f| es.iter().any(|e| (e.at - f.at).abs() <= 3600 && e.is(field))).count();
+    let hit = feeds.iter().filter(|f| es.iter().any(|e| near(f, e) && e.is(field))).count();
     Some((hit, feeds.len()))
 }
 
@@ -440,9 +445,9 @@ pub fn diapers_at_feeds(es: &[Entry], field: &str) -> Option<(usize, usize)> {
 /// (`check`) with the chance from the last feeds; a less likely one at the
 /// first feed by which it has probably happened (chance over 50%).
 fn at_feeds(clock: &Clock, es: &[Entry], field: &str, what: &str, check: Option<i64>, gap: Option<i64>, now: i64) -> Option<Value> {
-    let (hit, n) = diapers_at_feeds(es, field)?;
+    let (hit, n) = diapers_at_feeds(es, field, if field == "dirty" { 20 } else { 10 })?;
     let check = check?;
-    let basis = format!("diapers are checked at feeds: a {what} at {hit} of the last {n} feeds");
+    let basis = format!("diapers are checked at feeds: a {what} at {hit} of the last {n} feeds with a diaper logged");
     if hit == 0 {
         return Some(json!({"chance": 0.0, "basis": basis}));
     }
@@ -780,14 +785,20 @@ pub mod tests {
             e("2025-11-07 10:00", json!({"bottle_formula_ml": 80, "wet": true, "dirty": true})),
             e("2025-11-07 13:00", json!({"bottle_formula_ml": 80, "wet": true})),
         ];
-        assert_eq!(diapers_at_feeds(&es, "wet"), Some((4, 5)));
-        assert_eq!(diapers_at_feeds(&es, "dirty"), Some((2, 5)));
-        assert_eq!(diapers_at_feeds(&es[..3], "wet"), None, "too few feeds");
+        assert_eq!(diapers_at_feeds(&es, "wet", 10), Some((4, 5)));
+        assert_eq!(diapers_at_feeds(&es, "dirty", 20), Some((2, 5)));
+        assert_eq!(diapers_at_feeds(&es[..3], "wet", 10), None, "too few feeds");
+        assert_eq!(diapers_at_feeds(&es, "wet", 4), Some((3, 4)), "the last four");
+        // A feed without any diaper logged doesn't count (probably not logged).
+        let mut more = es.to_vec();
+        more.push(e("2025-11-07 20:00", json!({"bottle_formula_ml": 20})));
+        more.push(e("2025-11-07 23:00", json!({"bottle_formula_ml": 80})));
+        assert_eq!(diapers_at_feeds(&more, "wet", 10), Some((4, 5)));
         let now = at("2025-11-07 14:00");
         let (check, gap) = (Some(at("2025-11-07 15:45")), Some(3 * 3600));
         let wet = at_feeds(&clock, &es, "wet", "wet diaper", check, gap, now).unwrap();
         assert_eq!((wet["at"].as_str(), wet["chance"].as_f64(), wet["at_feed"].as_i64()), (Some("2025-11-07 15:45"), Some(0.8), Some(1)));
-        assert_eq!(wet["basis"], "diapers are checked at feeds: a wet diaper at 4 of the last 5 feeds");
+        assert_eq!(wet["basis"], "diapers are checked at feeds: a wet diaper at 4 of the last 5 feeds with a diaper logged");
         // 40%: by the second feed it has probably happened (64%).
         let dirty = at_feeds(&clock, &es, "dirty", "dirty diaper", check, gap, now).unwrap();
         assert_eq!((dirty["at"].as_str(), dirty["at_feed"].as_i64(), dirty["due_in"].as_str()), (Some("2025-11-07 18:45"), Some(2), Some("4h45m")));
