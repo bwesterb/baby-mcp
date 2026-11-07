@@ -54,7 +54,7 @@ pub fn render(p: Page) -> Response {
         .map(|s| format!(r#"<meta http-equiv="refresh" content="{s}">"#))
         .unwrap_or_default();
     let html = format!(
-        r#"<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">{refresh}{head}<title>{title}</title><link rel="stylesheet" href="/app.css?v={v}"><script src="/app.js?v={v}" defer></script></head><body><main>{nav}{body}</main></body></html>"#,
+        r#"<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">{refresh}{head}<title>{title}</title><link rel="stylesheet" href="/app.css?v={v}"><script src="/app.js?v={v}" defer></script></head><body><main>{nav}{body}<footer><a href="https://github.com/bwesterb/baby-mcp">baby-mcp on GitHub</a></footer></main></body></html>"#,
         title = esc(p.title),
         head = app_head(),
         v = version(),
