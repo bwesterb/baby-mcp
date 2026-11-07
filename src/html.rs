@@ -38,15 +38,11 @@ pub const JS: &str = include_str!("../static/app.js");
 pub const VERSION: &str = env!("BABY_MCP_VERSION");
 const REPO: &str = "https://github.com/bwesterb/baby-mcp";
 
-/// The footer: the source on GitHub and the version, linked to its commit.
+/// The footer: the version, linked to its commit on GitHub (or the repository).
 fn footer() -> String {
     let commit = VERSION.trim_end_matches("-dirty").rsplit("-g").next().unwrap_or(VERSION);
-    let version = if commit.starts_with('v') {
-        esc(VERSION)
-    } else {
-        format!(r#"<a href="{REPO}/commit/{}">{}</a>"#, esc(commit), esc(VERSION))
-    };
-    format!(r#"<footer><a href="{REPO}">baby-mcp on GitHub</a> · {version}</footer>"#)
+    let href = if commit.starts_with('v') { REPO.to_string() } else { format!("{REPO}/commit/{commit}") };
+    format!(r#"<footer><a href="{}" title="baby-mcp on GitHub">{}</a></footer>"#, esc(&href), esc(VERSION))
 }
 
 pub struct Page<'a> {
