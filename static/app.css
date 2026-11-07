@@ -1,5 +1,5 @@
-:root{color-scheme:light dark;--bg:#f6f5f2;--card:#fff;--fg:#1d1d1f;--mut:#6b6b70;--acc:#2f6f5e;--bd:#ddd9d0;--warn:#a5531d;--add:#2f7d4f;--add-bg:rgba(47,125,79,.1);--del:#b23b3b;--del-bg:rgba(178,59,59,.08)}
-@media (prefers-color-scheme:dark){:root{--bg:#161615;--card:#20201f;--fg:#ececea;--mut:#9a9a96;--acc:#7cc4ad;--bd:#34332f;--warn:#e0a070;--add:#7fcf9a;--add-bg:rgba(127,207,154,.12);--del:#f08a8a;--del-bg:rgba(240,138,138,.12)}}
+:root{color-scheme:light dark;--bg:#f6f5f2;--card:#fff;--fg:#1d1d1f;--mut:#6b6b70;--acc:#2f6f5e;--bd:#ddd9d0;--warn:#a5531d;--add:#2f7d4f;--add-bg:rgba(47,125,79,.1);--del:#b23b3b;--del-bg:rgba(178,59,59,.08);--night:#1f3a6b;--night-fg:#fff;--day:#f7e08a;--day-fg:#4a3c00}
+@media (prefers-color-scheme:dark){:root{--bg:#161615;--card:#20201f;--fg:#ececea;--mut:#9a9a96;--acc:#7cc4ad;--bd:#34332f;--warn:#e0a070;--add:#7fcf9a;--add-bg:rgba(127,207,154,.12);--del:#f08a8a;--del-bg:rgba(240,138,138,.12);--night:#22345c;--night-fg:#e8eeff;--day:#7a6526;--day-fg:#fff7d6}}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.5 system-ui,-apple-system,sans-serif}
 main{max-width:720px;margin:0 auto;padding:16px}
@@ -39,3 +39,4 @@ h3.section{font-size:13px;font-weight:600;color:var(--mut);text-transform:upperc
 .timeline{padding:8px 0}.tl-scroll{overflow-x:auto;overscroll-behavior-x:contain;scrollbar-width:none;-webkit-mask-image:linear-gradient(to right,transparent,#000 14px,#000 calc(100% - 14px),transparent);mask-image:linear-gradient(to right,transparent,#000 14px,#000 calc(100% - 14px),transparent)}.tl-scroll::-webkit-scrollbar{display:none}.tl-scroll svg{display:block;max-width:none}.tl .future{fill:currentColor;opacity:.04}.tl .hour{stroke:currentColor;stroke-opacity:.08}.tl .now{stroke:var(--acc);stroke-width:2}.tl text.emo{font-size:18px}.tl .ring{fill:none;stroke:var(--warn);stroke-width:2}
 footer{text-align:center;font-size:13px;margin:20px 0 4px}footer a{color:var(--mut)}
 .top{display:flex;align-items:baseline;flex-wrap:wrap;gap:2px 12px;padding:10px 18px}.top h1{margin:0}
+.tl .night{fill:var(--night)}.tl .day{fill:var(--day)}.tl .hn,.tl .hd{font-size:12px;paint-order:stroke;stroke-width:3px;stroke-linejoin:round}.tl .hn{fill:var(--night-fg);stroke:var(--night)}.tl .hd{fill:var(--day-fg);stroke:var(--day)}

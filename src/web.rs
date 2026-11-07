@@ -198,6 +198,8 @@ const TL_PAST: i64 = 48 * 3600;
 const TL_FUTURE: i64 = 12 * 3600;
 const TL_NOW_AT: f64 = 0.7;
 const TL_UNITS_PER_HOUR: f64 = 38.0;
+/// Night in the timeline's band: from midnight until this hour.
+const TL_NIGHT_UNTIL: i8 = 8;
 
 fn timeline(clock: &crate::time::Clock, entries: &[en::Entry], s: &Value, now: i64) -> String {
     let (svg, now_x) = timeline_svg(clock, entries, s, now, TL_PAST, TL_FUTURE);
@@ -223,13 +225,26 @@ fn timeline_svg(clock: &crate::time::Clock, entries: &[en::Entry], s: &Value, no
         future / 3600
     );
     svg += &format!(r#"<rect x="{:.1}" y="4" width="{:.1}" height="{:.1}" class="future"/>"#, x(now), x(to) - x(now), h - 22.0);
+    // Night (00–08) and day as a band under the hour numbers.
+    let night = |t: i64| clock.zoned(t).hour() < TL_NIGHT_UNTIL;
+    let mut seg = from;
+    while seg < to {
+        let n = night(seg);
+        let mut end = seg - seg.rem_euclid(3600) + 3600;
+        while end < to && night(end) == n {
+            end += 3600;
+        }
+        let end = end.min(to);
+        svg += &format!(r#"<rect x="{:.1}" y="{:.1}" width="{:.1}" height="17" class="{}"/>"#, x(seg), h - 17.0, x(end) - x(seg), if n { "night" } else { "day" });
+        seg = end;
+    }
     // Hour lines, labelled every two hours.
     let mut hr = from - from.rem_euclid(3600) + 3600;
     while hr < to {
         svg += &format!(r#"<line x1="{0:.1}" x2="{0:.1}" y1="6" y2="{1:.1}" class="hour"/>"#, x(hr), h - 18.0);
         let hh = clock.zoned(hr).strftime("%H").to_string();
         if hh.parse::<i64>().unwrap_or(0) % 2 == 0 {
-            svg += &format!(r#"<text x="{:.1}" y="{}" text-anchor="middle">{hh}</text>"#, x(hr), h - 4.0);
+            svg += &format!(r#"<text x="{:.1}" y="{}" text-anchor="middle" class="{}">{hh}</text>"#, x(hr), h - 4.0, if night(hr) { "hn" } else { "hd" });
         }
         hr += 3600;
     }
@@ -1483,7 +1498,7 @@ mod tests {
         assert!(html.contains("10:30 🍼 80 ml formula") && html.contains("💩") && html.contains("💊"));
         assert!(html.contains("13:30 feed (overdue)") && html.contains(r#"class="ring""#), "overdue feed ringed");
         assert!(html.contains("15:00 wet diaper (expected)") && html.contains(r#"opacity=".45""#), "expected wet diaper faded");
-        assert!(html.contains(">10<") && html.contains(">16<"), "hour labels");
+        assert!(html.contains(r#"class="hd">10<"#) && html.contains(r#"class="hd">16<"#), "hour labels, by day");
         // With a preparation time the expected feed is the start; one wide, scrolling strip.
         let mut s2 = s.clone();
         s2["next_feed_estimate"] = json!({"at": "2025-11-07 15:30"});
@@ -1492,6 +1507,7 @@ mod tests {
         assert!(all.contains("15:15 start (feed ~15:30) (expected)"), "{all}");
         assert!(all.contains(r#"id="tl" data-now="1836""#), "{all}");
         assert!(all.contains("07:00 🍼 60 ml formula"), "reaches back 48 hours");
+        assert!(all.contains(r#"class="night""#) && all.contains(r#"class="hn">04<"#) && all.contains(r#"class="hd">08<"#), "night band 00–08");
         // Feeds every 3h30 after 15:30, as starts; ends within the 12 hours ahead.
         assert!(all.contains("18:45 start (feed ~19:00)") && all.contains("01:45 start (feed ~02:00)") && !all.contains("feed ~05:30"), "{all}");
     }
