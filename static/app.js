@@ -22,7 +22,12 @@ if ('setAppBadge' in navigator || 'serviceWorker' in navigator) {
       }
       const reg = 'serviceWorker' in navigator && await navigator.serviceWorker.getRegistration();
       if (reg && reg.getNotifications && Array.isArray(j.groups)) {
-        for (const n of await reg.getNotifications()) if (!j.groups.includes((n.data && n.data.group) || n.tag)) n.close();
+        // Not one that just arrived (with the app open it isn't shown as a
+        // banner, and the page reloads every minute).
+        const fresh = (n) => n.data && n.data.at > Date.now() - 60 * 1000;
+        for (const n of await reg.getNotifications()) {
+          if (!fresh(n) && !j.groups.includes((n.data && n.data.group) || n.tag)) n.close();
+        }
       }
     })
     .catch(() => {});

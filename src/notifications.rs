@@ -285,7 +285,7 @@ self.addEventListener('push', (e) => {
     // Only show: closing notifications from here on iOS also suppressed
     // the new one (and iOS revokes a subscription whose pushes show
     // nothing). Stale ones are closed by the page when the app opens.
-    await self.registration.showNotification(msg.title, {body: msg.body, tag: group, renotify: true, icon: '/icon-192.png', data: {url: msg.url, group}});
+    await self.registration.showNotification(msg.title, {body: msg.body, tag: group, renotify: true, icon: '/icon-192.png', data: {url: msg.url, group, at: Date.now()}});
   })());
 });
 self.addEventListener('notificationclick', (e) => {
