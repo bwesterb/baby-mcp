@@ -191,24 +191,25 @@ fn sleep_line(v: &Value) -> String {
     format!(r#"<div class="side">😴 face {} {}{assumed}</div>"#, side_arrow(next), esc(next))
 }
 
-/// The timeline above "what's next": how far back it can show (the widest).
-const TL_PAST: i64 = 12 * 3600;
-
-/// The timeline in three widths, the stylesheet showing the one that fits:
-/// (hours back, hours ahead, class). The same space per hour in each.
-const TL_SIZES: [(i64, i64, &str); 3] = [(6, 4, "tl-s"), (9, 6, "tl-m"), (12, 8, "tl-l")];
+/// The timeline above "what's next": how far back and ahead it goes. It is
+/// wider than the screen and scrolls sideways, opening with "now" at
+/// TL_NOW_AT of the width (the script restores a recent scroll position).
+const TL_PAST: i64 = 24 * 3600;
+const TL_FUTURE: i64 = 12 * 3600;
+const TL_NOW_AT: f64 = 0.6;
 const TL_UNITS_PER_HOUR: f64 = 38.0;
 
 fn timeline(clock: &crate::time::Clock, entries: &[en::Entry], s: &Value, now: i64) -> String {
-    let svgs: String = TL_SIZES.iter().map(|(back, ahead, class)| timeline_svg(clock, entries, s, now, back * 3600, ahead * 3600, class)).collect();
-    format!(r#"<div class="card timeline">{svgs}</div>"#)
+    let (svg, now_x) = timeline_svg(clock, entries, s, now, TL_PAST, TL_FUTURE);
+    format!(r#"<div class="card timeline"><div class="tl-scroll" id="tl" data-now="{now_x:.0}" data-at="{TL_NOW_AT}">{svg}</div></div>"#)
 }
 
 /// A strip with the last hours' entries and the next hours' expectations as
 /// emojis on three lanes (feeds, diapers, the rest): logged ones solid,
 /// expected ones faded, overdue ones just after "now" with an orange ring.
-/// The expected feed is when to start (diaper first).
-fn timeline_svg(clock: &crate::time::Clock, entries: &[en::Entry], s: &Value, now: i64, past: i64, future: i64, class: &str) -> String {
+/// The expected feed is when to start (diaper first). Returns the svg and
+/// the x of "now" (in pixels: one unit is one pixel).
+fn timeline_svg(clock: &crate::time::Clock, entries: &[en::Entry], s: &Value, now: i64, past: i64, future: i64) -> (String, f64) {
     let (l, r) = (12.0, 12.0);
     let w = l + r + (past + future) as f64 / 3600.0 * TL_UNITS_PER_HOUR;
     let h = 92.0;
@@ -217,7 +218,7 @@ fn timeline_svg(clock: &crate::time::Clock, entries: &[en::Entry], s: &Value, no
     let lanes = [26.0, 50.0, 74.0]; // feeds, diapers, other (text baselines)
     let hm = |t: i64| clock.zoned(t).strftime("%H:%M").to_string();
     let mut svg = format!(
-        r#"<svg class="tl {class}" viewBox="0 0 {w:.0} {h}" width="100%" role="img" aria-label="The last {} hours and the next {}">"#,
+        r#"<svg class="tl" viewBox="0 0 {w:.0} {h}" width="{w:.0}" height="{h}" role="img" aria-label="The last {} hours and the next {}">"#,
         past / 3600,
         future / 3600
     );
@@ -265,7 +266,7 @@ fn timeline_svg(clock: &crate::time::Clock, entries: &[en::Entry], s: &Value, no
         }
     }
     // What's expected: overdue ones just after now, with a ring.
-    let soon = now + future / 40;
+    let soon = now + 8 * 60;
     let mut expect = |lane: usize, emoji: &str, at: Option<i64>, label: String| {
         let Some(t) = at else { return };
         if t > to {
@@ -291,7 +292,7 @@ fn timeline_svg(clock: &crate::time::Clock, entries: &[en::Entry], s: &Value, no
         expect(2, "🛁", at(&s["bath"]["due"]), "bath".into());
     }
     svg += "</svg>";
-    svg
+    (svg, x(now))
 }
 
 /// One diaper tile: the earliest expected diaper (wet or dirty) as the
@@ -1446,20 +1447,21 @@ mod tests {
                        e("2025-11-07 10:30", json!({"bottle_formula_ml": 80, "wet": true, "dirty": true})),
                        e("2025-11-07 12:00", json!({"vitamin_d": true, "vitamin_k": true}))];
         let s = json!({"next_feed_estimate": {"at": "2025-11-07 13:30"}, "next_wet_diaper_estimate": {"at": "2025-11-07 15:00"}});
-        let html = timeline_svg(&clock, &entries, &s, now, 6 * 3600, 4 * 3600, "tl-s");
+        let (html, now_x) = timeline_svg(&clock, &entries, &s, now, 6 * 3600, 4 * 3600);
+        assert_eq!(now_x, 12.0 + 6.0 * TL_UNITS_PER_HOUR);
         assert_eq!(html.matches(">🍼</text>").count(), 2, "one logged feed in the window, one expected: {html}");
         assert!(html.contains("10:30 🍼 80 ml formula") && html.contains("💩") && html.contains("💊"));
         assert!(html.contains("13:30 feed (overdue)") && html.contains(r#"class="ring""#), "overdue feed ringed");
         assert!(html.contains("15:00 wet diaper (expected)") && html.contains(r#"opacity=".45""#), "expected wet diaper faded");
         assert!(html.contains(">10<") && html.contains(">16<"), "hour labels");
-        // With a preparation time the expected feed is the start; three widths.
+        // With a preparation time the expected feed is the start; one wide, scrolling strip.
         let mut s2 = s.clone();
         s2["next_feed_estimate"] = json!({"at": "2025-11-07 15:30"});
         s2["next_feed_start"] = json!({"at": "2025-11-07 15:15", "feed_at": "2025-11-07 15:30", "prep": "15m"});
         let all = timeline(&clock, &entries, &s2, now);
         assert!(all.contains("15:15 start (feed ~15:30) (expected)"), "{all}");
-        assert!(all.contains("tl-s") && all.contains("tl-m") && all.contains("tl-l"));
-        assert!(all.contains(">08<"), "the wide one reaches back 12 hours");
+        assert!(all.contains(r#"id="tl" data-now="924""#), "{all}");
+        assert!(all.contains("07:00 🍼 60 ml formula"), "reaches back 24 hours");
     }
 
     #[test]

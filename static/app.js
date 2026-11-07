@@ -152,3 +152,23 @@ if ($('push')) {
     dist = 0;
   });
 })();
+
+// The timeline scrolls sideways: open with "now" in view, or where it was
+// scrolled to (relative to now) before a recent reload.
+(() => {
+  const tl = document.getElementById('tl');
+  if (!tl) return;
+  const now = Number(tl.dataset.now), at = Number(tl.dataset.at);
+  let off = null;
+  try {
+    const saved = JSON.parse(sessionStorage.getItem('tl') || 'null');
+    if (saved && Date.now() - saved.t < 3 * 60 * 1000) off = saved.off;
+  } catch (e) { /* no storage */ }
+  tl.scrollLeft = now - (off ?? tl.clientWidth * at);
+  let touched = false;
+  for (const ev of ['touchstart', 'pointerdown', 'wheel']) tl.addEventListener(ev, () => { touched = true; }, {passive: true});
+  tl.addEventListener('scroll', () => {
+    if (!touched) return;
+    try { sessionStorage.setItem('tl', JSON.stringify({t: Date.now(), off: now - tl.scrollLeft})); } catch (e) { /* no storage */ }
+  }, {passive: true});
+})();
