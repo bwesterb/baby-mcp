@@ -340,11 +340,14 @@ fn diaper_tile(s: &Value) -> Next {
     let kinds = [("💧", &s["last_wet_diaper"]), ("💩", &s["last_dirty_diaper"])];
     let latest = kinds.iter().filter(|k| k.1["at"].is_string()).max_by_key(|k| k.1["at"].as_str().unwrap_or("").to_string());
     let when = latest.and_then(|k| k.1["ago"].as_str()).map(|a| format!("{a} ago")).unwrap_or_else(|| "—".to_string());
+    // What the last diaper was; a kind from an earlier one with its time.
+    let latest_at = latest.and_then(|k| k.1["at"].as_str());
     let parts: Vec<String> = kinds
         .iter()
         .filter_map(|(emoji, last)| {
             let color = last["value"].as_str().map(stool_emoji).unwrap_or("");
-            last["ago"].as_str().map(|a| format!("{emoji}{color} {a} ago"))
+            let ago = last["ago"].as_str()?;
+            Some(if last["at"].as_str() == latest_at { format!("{emoji}{color}") } else { format!("{emoji}{color} {ago} ago") })
         })
         .collect();
     let sub = if parts.is_empty() { "nothing logged yet".to_string() } else { parts.join(" · ") };
@@ -1568,7 +1571,10 @@ mod tests {
         });
         let t = diaper_tile(&s);
         assert!(t.at.is_none(), "not predicted");
-        assert!(t.html.contains(">4h54m ago<") && t.html.contains("💧 4h54m ago · 💩🟡 10h46m ago") && t.html.contains(r#"class="next""#), "{}", t.html);
+        assert!(t.html.contains(">4h54m ago<") && t.html.contains(">💧 · 💩🟡 10h46m ago<") && t.html.contains(r#"class="next""#), "{}", t.html);
+        // Both in the last diaper: just what it was.
+        let both = json!({"last_wet_diaper": {"ago": "1h", "at": "2025-11-07 13:00"}, "last_dirty_diaper": {"ago": "1h", "at": "2025-11-07 13:00", "value": "yellow"}});
+        assert!(diaper_tile(&both).html.contains(">1h ago<") && diaper_tile(&both).html.contains(">💧 · 💩🟡<"));
         // The warning makes the tile orange.
         let mut s2 = s.clone();
         s2["wet_diaper_warning"] = json!({"text": "Only 4 wet diapers in the last 24 h (usually at least 6 from day 6)"});
