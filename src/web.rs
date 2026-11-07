@@ -196,7 +196,7 @@ fn sleep_line(v: &Value) -> String {
 /// TL_NOW_AT of the width (the script restores a recent scroll position).
 const TL_PAST: i64 = 24 * 3600;
 const TL_FUTURE: i64 = 12 * 3600;
-const TL_NOW_AT: f64 = 0.6;
+const TL_NOW_AT: f64 = 0.7;
 const TL_UNITS_PER_HOUR: f64 = 38.0;
 
 fn timeline(clock: &crate::time::Clock, entries: &[en::Entry], s: &Value, now: i64) -> String {
