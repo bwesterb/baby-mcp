@@ -114,6 +114,15 @@ pub enum Outcome {
     Failed(String),
 }
 
+/// The push `Topic` for a notification group: at most 32 characters of
+/// base64url (RFC 8030), and decodable as such (Apple's push service rejects
+/// "attention", 9 characters, with BadWebPushTopic). A hash of the group:
+/// 18 bytes, 24 characters.
+pub fn topic(group: &str) -> String {
+    use sha2::Digest;
+    B64.encode(&Sha256::digest(group.as_bytes())[..18])
+}
+
 /// Sends one push carrying `payload` (encrypted) to a subscription.
 pub async fn send(client: &reqwest::Client, v: &Vapid, s: &Subscription, payload: &[u8], ttl: u32, topic: &str, sub: &str, now: i64) -> Outcome {
     let (Ok(p256dh), Ok(auth)) = (B64.decode(s.p256dh.trim_end_matches('=')), B64.decode(s.auth.trim_end_matches('='))) else {
@@ -133,7 +142,7 @@ pub async fn send(client: &reqwest::Client, v: &Vapid, s: &Subscription, payload
         .post(&s.endpoint)
         .header("TTL", ttl.to_string())
         .header("Urgency", "high")
-        .header("Topic", topic)
+        .header("Topic", self::topic(topic))
         .header("Content-Encoding", "aes128gcm")
         .header("Content-Type", "application/octet-stream")
         .header("Authorization", authz)
@@ -184,6 +193,17 @@ mod tests {
         let mut want = d("DGv6ra1nlYgDCS1FRnbzlwAAEABBBP4z9KsN6nGRTbVYI_c7VJSPQTBtkgcy27mlmlMoZIIgDll6e3vCYLocInmYWAmS6TlzAC8wEqKK6PBru3jl7A8");
         want.extend(d("8pfeW0KbunFT06SuDKoJH9Ql87S1QUrdirN6GcG7sFz1y1sqLgVi1VhjVkHsUoEsbI_0LpXMuGvnzQ"));
         assert_eq!(out, want);
+    }
+
+    #[test]
+    fn topics_are_valid() {
+        for g in ["feed", "attention", "changes", "vitamins", "test", "other"] {
+            let t = topic(g);
+            assert_eq!(t.len(), 24, "{g}");
+            assert!(t.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'), "{g}: {t}");
+            assert_eq!(B64.decode(&t).unwrap().len(), 18);
+        }
+        assert_ne!(topic("feed"), topic("attention"));
     }
 
     #[test]

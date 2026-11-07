@@ -453,7 +453,7 @@ async fn push_notifications() {
     assert_eq!(t.app.db.with(|c| c.query_row("SELECT count(*) FROM push_subscription", [], |r| r.get::<_, i64>(0))).unwrap(), 1, "410 removes it");
     let (h, b) = seen.lock().unwrap().pop().unwrap();
     assert_eq!(h["content-encoding"], "aes128gcm");
-    assert_eq!(h["topic"], "test");
+    assert_eq!(h["topic"], crate::push::topic("test").as_str(), "a valid base64url topic");
     assert!(h["authorization"].to_str().unwrap().starts_with("vapid t=ey"));
     let pt: Value = serde_json::from_slice(&push_decrypt(&ua, &[7u8; 16], &b)).unwrap();
     let id = pt["m"].as_str().unwrap();
