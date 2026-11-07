@@ -194,7 +194,7 @@ fn sleep_line(v: &Value) -> String {
 /// The timeline above "what's next": how far back and ahead it goes. It is
 /// wider than the screen and scrolls sideways, opening with "now" at
 /// TL_NOW_AT of the width (the script restores a recent scroll position).
-const TL_PAST: i64 = 24 * 3600;
+const TL_PAST: i64 = 48 * 3600;
 const TL_FUTURE: i64 = 12 * 3600;
 const TL_NOW_AT: f64 = 0.7;
 const TL_UNITS_PER_HOUR: f64 = 38.0;
@@ -1490,8 +1490,8 @@ mod tests {
         s2["next_feed_start"] = json!({"at": "2025-11-07 15:15", "feed_at": "2025-11-07 15:30", "prep": "15m"});
         let all = timeline(&clock, &entries, &s2, now);
         assert!(all.contains("15:15 start (feed ~15:30) (expected)"), "{all}");
-        assert!(all.contains(r#"id="tl" data-now="924""#), "{all}");
-        assert!(all.contains("07:00 🍼 60 ml formula"), "reaches back 24 hours");
+        assert!(all.contains(r#"id="tl" data-now="1836""#), "{all}");
+        assert!(all.contains("07:00 🍼 60 ml formula"), "reaches back 48 hours");
         // Feeds every 3h30 after 15:30, as starts; ends within the 12 hours ahead.
         assert!(all.contains("18:45 start (feed ~19:00)") && all.contains("01:45 start (feed ~02:00)") && !all.contains("feed ~05:30"), "{all}");
     }
