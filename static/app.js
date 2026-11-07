@@ -9,11 +9,22 @@ async function post(url, body) {
 const say = (m) => document.getElementById('status').textContent = m;
 const $ = (id) => document.getElementById(id);
 
-// The home-screen icon's badge: things that need you now (see /push/badge).
-if ('setAppBadge' in navigator) {
+// The home-screen icon's badge: things that need you now (see /push/badge);
+// and close notifications that no longer apply (a cleared attention, a feed
+// that happened).
+if ('setAppBadge' in navigator || 'serviceWorker' in navigator) {
   fetch('/push/badge', {cache: 'no-store'})
     .then((r) => r.ok ? r.json() : null)
-    .then((j) => { if (j) return j.count ? navigator.setAppBadge(j.count) : navigator.clearAppBadge(); })
+    .then(async (j) => {
+      if (!j) return;
+      if ('setAppBadge' in navigator) {
+        try { await (j.count ? navigator.setAppBadge(j.count) : navigator.clearAppBadge()); } catch (e) { /* not allowed */ }
+      }
+      const reg = 'serviceWorker' in navigator && await navigator.serviceWorker.getRegistration();
+      if (reg && reg.getNotifications && Array.isArray(j.groups)) {
+        for (const n of await reg.getNotifications()) if (!j.groups.includes(n.tag)) n.close();
+      }
+    })
     .catch(() => {});
 }
 

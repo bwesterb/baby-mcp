@@ -239,9 +239,11 @@ pub async fn message(State(app): State<Arc<App>>, Path(id): Path<String>) -> Res
     });
     match r {
         Ok(Some(mut v)) => {
-            // The current badge, so the icon updates with the notification.
-            if let Ok(items) = notify::current_badge(&app, now()) {
+            // The current badge, so the icon updates with the notification, and
+            // the groups that still apply, so stale notifications are closed.
+            if let Ok((items, groups)) = notify::current(&app, now()) {
                 v["badge"] = json!(items.len());
+                v["groups"] = json!(groups);
             }
             ([(header::CACHE_CONTROL, "no-store")], Json::<Value>(v)).into_response()
         }
@@ -254,8 +256,8 @@ pub async fn badge(State(app): State<Arc<App>>, headers: HeaderMap) -> Response 
     if session_user(&app, &headers).is_none() {
         return json_err(StatusCode::UNAUTHORIZED, "log in first");
     }
-    match notify::current_badge(&app, now()) {
-        Ok(items) => ([(header::CACHE_CONTROL, "no-store")], Json(json!({ "count": items.len(), "items": items }))).into_response(),
+    match notify::current(&app, now()) {
+        Ok((items, groups)) => ([(header::CACHE_CONTROL, "no-store")], Json(json!({ "count": items.len(), "items": items, "groups": groups }))).into_response(),
         Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, &e),
     }
 }
@@ -278,6 +280,13 @@ self.addEventListener('push', (e) => {
     try {
       if ('setAppBadge' in self.navigator && typeof msg.badge === 'number') {
         await (msg.badge ? self.navigator.setAppBadge(msg.badge) : self.navigator.clearAppBadge());
+      }
+    } catch (_) {}
+    // One notification per group: close the older one of this group (not
+    // every platform replaces by tag), and any that no longer apply.
+    try {
+      for (const n of await self.registration.getNotifications()) {
+        if (n.tag === tag || (Array.isArray(msg.groups) && !msg.groups.includes(n.tag))) n.close();
       }
     } catch (_) {}
     await self.registration.showNotification(msg.title, {body: msg.body, tag, renotify: true, icon: '/icon-192.png', data: {url: msg.url}});

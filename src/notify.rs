@@ -128,11 +128,12 @@ pub fn due(c: &Connection, clock: &Clock, status: &Value, name: &str, now: i64) 
         .query_map([now - ATTENTION_WINDOW], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?, r.get::<_, String>(3)?, r.get::<_, Option<String>>(4)?)))
         .map_err(|e| e.to_string())?;
     for row in rows {
-        let (id, version, at, text, why) = row.map_err(|e| e.to_string())?;
+        let (id, _version, at, text, why) = row.map_err(|e| e.to_string())?;
         let short: String = text.chars().take(80).collect();
         out.push(Notice {
             kind: "attention",
-            key: format!("{id}:{version}"),
+            // Once per entry and reason: not again for each edit.
+            key: format!("{id}:{}", why.as_deref().unwrap_or("")),
             title: format!("🙋 {name}: needs your attention"),
             body: match why {
                 Some(w) => format!("{w} — {} {short}", clock.zoned(at).strftime("%H:%M")),
@@ -202,10 +203,31 @@ pub fn badge(clock: &Clock, status: &Value, now: i64) -> Vec<String> {
 }
 
 /// The badge for the current state.
-pub fn current_badge(app: &App, now: i64) -> Result<Vec<String>, String> {
+/// The badge items, and the notification groups that still apply: those with
+/// a notice due now, and attention while an entry needs a parent. A shown
+/// notification of any other group is stale (changes and tests are once).
+pub fn current(app: &App, now: i64) -> Result<(Vec<String>, Vec<&'static str>), String> {
     let baby = app.baby();
-    let status = app.db.with(|c| Ok(crate::entries::status(c, &app.clock, &baby, now))).map_err(|e| e.to_string())??;
-    Ok(badge(&app.clock, &status, now))
+    app.db
+        .with(|c| {
+            Ok((|| {
+                let status = crate::entries::status(c, &app.clock, &baby, now)?;
+                let mut groups: Vec<&'static str> = vec![];
+                for n in due(c, &app.clock, &status, &baby.name, now)? {
+                    let g = group(n.kind);
+                    if !matches!(g, "changes" | "test") && !groups.contains(&g) {
+                        groups.push(g);
+                    }
+                }
+                let needs_user = status["needs_attention"].as_array().into_iter().flatten()
+                    .any(|e| e["needs_attention"]["by"].as_array().is_some_and(|b| b.iter().any(|x| x == "user")));
+                if needs_user && !groups.contains(&"attention") {
+                    groups.push("attention");
+                }
+                Ok::<_, String>((badge(&app.clock, &status, now), groups))
+            })())
+        })
+        .map_err(|e| e.to_string())?
 }
 
 /// Kinds that are off until a user turns them on.
@@ -430,13 +452,19 @@ mod tests {
         let ns = due(&c, &clock, &status, "Eva", at("2025-11-07 12:44")).unwrap();
         let attention: Vec<&Notice> = ns.iter().filter(|n| n.kind == "attention").collect();
         assert_eq!(attention.len(), 1);
-        assert_eq!((attention[0].key.clone(), attention[0].url.as_str()), (format!("{}:1", spit.entry_id), "/day?date=2025-11-07"));
+        assert_eq!((attention[0].key.clone(), attention[0].url.as_str()), (format!("{}:check this", spit.entry_id), "/day?date=2025-11-07"));
         // Any change: both new entries, each with its author (not sent to them).
         let changes: Vec<&Notice> = ns.iter().filter(|n| n.kind == "changes").collect();
         assert_eq!(changes.len(), 2);
         assert_eq!((changes[0].title.as_str(), changes[0].body.as_str(), changes[0].by), ("✏️ Eva: Anna logged 12:40", "🤢", Some(1)));
         assert_eq!(changes[1].title, "✏️ Eva: Tom logged 12:40");
         assert!(due(&c, &clock, &status, "Eva", at("2025-11-07 13:10")).unwrap().is_empty(), "only recent changes");
+        // Editing it with the same reason is not news: the same key.
+        let mut edited = spit.clone();
+        edited.text = "Spit up a lot, twice".into();
+        crate::entries::save(&c, 1, &edited, at("2025-11-07 12:42")).unwrap();
+        let keys: Vec<String> = due(&c, &clock, &status, "Eva", at("2025-11-07 12:44")).unwrap().into_iter().filter(|n| n.kind == "attention").map(|n| n.key).collect();
+        assert_eq!(keys, [format!("{}:check this", spit.entry_id)]);
 
         let vit = json!({"vitamins": {"to_give_today": ["K", "D"], "remind_at": "2025-11-07 18:00"}});
         assert!(due(&c, &clock, &vit, "Eva", at("2025-11-07 17:59")).unwrap().is_empty());

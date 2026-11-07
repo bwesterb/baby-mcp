@@ -464,10 +464,12 @@ async fn push_notifications() {
     assert_eq!(r.status, StatusCode::OK);
     assert_eq!(r.json()["title"], "🔔 Baby: test");
     assert!(r.json()["badge"].is_number(), "the badge travels with the message");
+    assert!(r.json()["groups"].is_array(), "and the groups that still apply");
     assert_eq!(send(&t, get("/push/badge").body(Body::empty()).unwrap()).await.status, StatusCode::UNAUTHORIZED);
     let b = send(&t, get("/push/badge").header(header::COOKIE, &t.cookie).body(Body::empty()).unwrap()).await;
     assert_eq!(b.status, StatusCode::OK);
     assert_eq!(b.json()["count"].as_u64().unwrap() as usize, b.json()["items"].as_array().unwrap().len());
+    assert!(b.json()["groups"].as_array().is_some_and(|g| !g.iter().any(|x| x == "test")), "a test notification never stays: {}", b.body);
     assert_eq!(send(&t, get("/push/message/nope").body(Body::empty()).unwrap()).await.status, StatusCode::NOT_FOUND);
 
     // The service worker.
