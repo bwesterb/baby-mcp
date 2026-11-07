@@ -464,7 +464,6 @@ async fn push_notifications() {
     assert_eq!(r.status, StatusCode::OK);
     assert_eq!(r.json()["title"], "🔔 Baby: test");
     assert!(r.json()["badge"].is_number(), "the badge travels with the message");
-    assert!(r.json()["groups"].is_array(), "and the groups that still apply");
     assert_eq!(send(&t, get("/push/badge").body(Body::empty()).unwrap()).await.status, StatusCode::UNAUTHORIZED);
     let b = send(&t, get("/push/badge").header(header::COOKIE, &t.cookie).body(Body::empty()).unwrap()).await;
     assert_eq!(b.status, StatusCode::OK);

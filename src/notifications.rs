@@ -239,11 +239,9 @@ pub async fn message(State(app): State<Arc<App>>, Path(id): Path<String>) -> Res
     });
     match r {
         Ok(Some(mut v)) => {
-            // The current badge, so the icon updates with the notification, and
-            // the groups that still apply, so stale notifications are closed.
-            if let Ok((items, groups)) = notify::current(&app, now()) {
+            // The current badge, so the icon updates with the notification.
+            if let Ok((items, _)) = notify::current(&app, now()) {
                 v["badge"] = json!(items.len());
-                v["groups"] = json!(groups);
             }
             ([(header::CACHE_CONTROL, "no-store")], Json::<Value>(v)).into_response()
         }
@@ -268,9 +266,9 @@ self.addEventListener('activate', (e) => e.waitUntil(self.clients.claim()));
 self.addEventListener('push', (e) => {
   e.waitUntil((async () => {
     let msg = {title: NAME, body: 'Open the app for details.', url: '/'};
-    let group = 'baby-mcp', id = '';
+    let group = 'baby-mcp';
     try {
-      id = (e.data && e.data.json().m) || '';
+      const id = e.data && e.data.json().m;
       if (id) {
         const r = await fetch('/push/message/' + encodeURIComponent(id), {cache: 'no-store', credentials: 'omit'});
         if (r.ok) msg = await r.json();
@@ -282,23 +280,10 @@ self.addEventListener('push', (e) => {
         await (msg.badge ? self.navigator.setAppBadge(msg.badge) : self.navigator.clearAppBadge());
       }
     } catch (_) {}
-    // One notification per group: close the older one of this group (iOS
-    // doesn't replace by tag) and any whose group no longer applies. Each
-    // has a tag of its own, so closing an older one can't hit the new one;
-    // the group is in its data.
-    let report = '';
-    try {
-      const shown = await self.registration.getNotifications();
-      let closed = 0;
-      for (const n of shown) {
-        const g = (n.data && n.data.group) || n.tag;
-        if (g === group || (Array.isArray(msg.groups) && !msg.groups.includes(g))) { n.close(); closed++; }
-      }
-      report = 'seen=' + shown.length + '&closed=' + closed;
-    } catch (err) { report = 'err=' + encodeURIComponent(String(err).slice(0, 80)); }
-    // Diagnostic (in the access log only): what the worker could see.
-    if (id) { try { await fetch('/push/message/' + encodeURIComponent(id) + '?' + report, {cache: 'no-store', credentials: 'omit'}); } catch (_) {} }
-    await self.registration.showNotification(msg.title, {body: msg.body, tag: group + ':' + id, icon: '/icon-192.png', data: {url: msg.url, group, at: Date.now()}});
+    // Only show, one tag per group. Closing older ones from here is ignored
+    // on iOS (tested: the worker sees them and calls close(), they stay);
+    // the page closes stale ones when the app is opened.
+    await self.registration.showNotification(msg.title, {body: msg.body, tag: group, renotify: true, icon: '/icon-192.png', data: {url: msg.url, group, at: Date.now()}});
   })());
 });
 self.addEventListener('notificationclick', (e) => {
