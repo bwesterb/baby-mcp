@@ -1267,10 +1267,6 @@ fn changes(clock: &crate::time::Clock, old: &en::Entry, new: &en::Entry) -> Vec<
             _ => {}
         }
     }
-    if old.text != new.text {
-        let was: String = old.text.chars().take(200).collect();
-        out.push(format!("text changed; was: “{was}{}”", if old.text.chars().count() > 200 { "…" } else { "" }));
-    }
     if (old.attention_by, &old.attention_why) != (new.attention_by, &new.attention_why) {
         match (new.attention_by, &new.attention_why) {
             (0, _) => out.push(format!("attention cleared{}", old.attention_why.as_ref().map(|w| format!(" (was: {w})")).unwrap_or_default())),
@@ -1286,6 +1282,72 @@ fn changes(clock: &crate::time::Clock, old: &en::Entry, new: &en::Entry) -> Vec<
     out
 }
 
+/// Words and the whitespace between them, as separate tokens.
+fn tokens(s: &str) -> Vec<&str> {
+    let mut out = vec![];
+    let mut start = 0;
+    let mut space = None;
+    for (i, c) in s.char_indices() {
+        let sp = c.is_whitespace();
+        if space.is_some_and(|w| w != sp) {
+            out.push(&s[start..i]);
+            start = i;
+        }
+        space = Some(sp);
+    }
+    if start < s.len() {
+        out.push(&s[start..]);
+    }
+    out
+}
+
+/// The new text with the words removed from the old one struck through and
+/// the added ones marked, by the longest common subsequence of words. A
+/// long text (unlikely here) falls back to old and new as a whole.
+fn word_diff(old: &str, new: &str) -> String {
+    let (a, b) = (tokens(old), tokens(new));
+    if a.len() * b.len() > 250_000 {
+        return format!("<del>{}</del> <ins>{}</ins>", esc(old), esc(new));
+    }
+    // lcs[i][j]: of a[i..] and b[j..].
+    let mut lcs = vec![vec![0u32; b.len() + 1]; a.len() + 1];
+    for i in (0..a.len()).rev() {
+        for j in (0..b.len()).rev() {
+            lcs[i][j] = if a[i] == b[j] { lcs[i + 1][j + 1] + 1 } else { lcs[i + 1][j].max(lcs[i][j + 1]) };
+        }
+    }
+    // Ops: 0 same, 1 removed, 2 added; runs merged, with whitespace between
+    // two changes of the same kind folded into them.
+    let mut ops: Vec<(u8, String)> = vec![];
+    let mut push = |op: u8, t: &str| match ops.last_mut() {
+        Some((o, s)) if *o == op => s.push_str(t),
+        _ => ops.push((op, t.to_string())),
+    };
+    let (mut i, mut j) = (0, 0);
+    while i < a.len() || j < b.len() {
+        if i < a.len() && j < b.len() && a[i] == b[j] {
+            push(0, a[i]);
+            i += 1;
+            j += 1;
+        } else if i < a.len() && (j == b.len() || lcs[i + 1][j] >= lcs[i][j + 1]) {
+            push(1, a[i]);
+            i += 1;
+        } else {
+            push(2, b[j]);
+            j += 1;
+        }
+    }
+    let mut out = String::new();
+    for (op, t) in &ops {
+        match op {
+            1 => out += &format!("<del>{}</del>", esc(t)),
+            2 => out += &format!("<ins>{}</ins>", esc(t)),
+            _ => out += &esc(t),
+        }
+    }
+    out
+}
+
 /// One line of an entry's history, coloured: added green, removed red, a
 /// change as the old value struck through and the new one green.
 fn history_line(l: &str) -> String {
@@ -1295,7 +1357,7 @@ fn history_line(l: &str) -> String {
     if l.starts_with("− ") || l == "deleted" {
         return format!(r#"<div><span class="del">{}</span></div>"#, esc(l));
     }
-    if l.starts_with("text changed") || l.starts_with("attention cleared") {
+    if l.starts_with("attention cleared") {
         return format!(r#"<div class="note">{}</div>"#, esc(l));
     }
     if let Some((key, rest)) = l.split_once(": ") {
@@ -1361,7 +1423,10 @@ pub async fn entry_page(State(app): State<Arc<App>>, headers: HeaderMap, axum::e
             }
             _ => changes(clock, &versions[i - 1], v),
         };
-        let items: String = lines.iter().map(|l| history_line(l)).collect();
+        let mut items: String = lines.iter().map(|l| history_line(l)).collect();
+        if i > 0 && versions[i - 1].text != v.text {
+            items += &format!(r#"<div class="tdiff">{}</div>"#, word_diff(&versions[i - 1].text, &v.text));
+        }
         body += &format!(
             r#"<tr><td class="time">v{}<div class="sub">{}</div></td><td class="hist">{}{}</td></tr>"#,
             v.version,
@@ -1477,6 +1542,15 @@ mod tests {
         s2["wet_diaper_warning"] = json!({"text": "Only 4 wet diapers in the last 24 h (usually at least 6 from day 6)"});
         let t = diaper_tile(&s2);
         assert!(t.html.contains(">~14:00<") && t.html.contains("💩 dirty · in 10m") && t.html.contains("⚠️ Only 4 wet") && t.html.contains(r#"class="next overdue""#), "{}", t.html);
+    }
+
+    #[test]
+    fn word_diffs() {
+        assert_eq!(word_diff("drank 60 ml formula", "drank 80 ml formula and a wet diaper"),
+                   "drank <del>60</del><ins>80</ins> ml formula<ins> and a wet diaper</ins>");
+        assert_eq!(word_diff("same", "same"), "same");
+        assert_eq!(word_diff("", "new <text>"), "<ins>new &lt;text&gt;</ins>");
+        assert_eq!(word_diff("a b c", "a c"), "a <del>b </del>c");
     }
 
     #[test]
