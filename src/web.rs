@@ -504,7 +504,9 @@ fn totals_card(heading: &str, t: &en::Totals, weight: Option<(f64, Option<String
     s + "</div></div>"
 }
 
-/// A day's entries, newest first.
+const AGENT_HINT: &str = r#"<p class="mut">🤖 waiting for Claude: ask Claude to “process the entries that need attention”. 🙋 needs you.</p>"#;
+
+/// A day's entries, newest first; one needing attention with the reason.
 fn log_card(heading: &str, entries: &[en::Entry], loggers: &HashMap<i64, String>, clock: &crate::time::Clock, empty: &str) -> String {
     let mut s = format!(r#"<div class="card">{heading}<table>"#);
     for e in entries.iter().rev() {
@@ -517,17 +519,22 @@ fn log_card(heading: &str, entries: &[en::Entry], loggers: &HashMap<i64, String>
         let who = loggers.get(&e.entry_id).map(|n| format!(r#"<div class="sub">{}</div>"#, esc(n))).unwrap_or_default();
         let edited = if e.version > 1 { format!(r#"<div class="sub">✎ v{}</div>"#, e.version) } else { String::new() };
         s += &format!(
-            "<tr><td class=\"time\"><a href=\"/entry/{}\">{}</a>{flag}{who}{edited}</td><td>{}{}</td></tr>",
+            "<tr><td class=\"time\"><a href=\"/entry/{}\">{}</a>{flag}{who}{edited}</td><td>{}{}{}</td></tr>",
             e.entry_id,
             esc(&clock.fmt_time(e.at)),
             esc(&e.text),
-            sub_line(&entry_summary(e))
+            sub_line(&entry_summary(e)),
+            e.attention_why.as_deref().filter(|_| e.attention_by != 0).map(|w| format!(r#"<div class="sub warn">{}</div>"#, esc(w))).unwrap_or_default()
         );
     }
     if entries.is_empty() {
         s += &format!(r#"<tr><td class="mut">{}</td></tr>"#, esc(empty));
     }
-    s + "</table></div>"
+    s += "</table>";
+    if entries.iter().any(|e| e.attention_by & BY_AGENT != 0) {
+        s += AGENT_HINT;
+    }
+    s + "</div>"
 }
 
 /// The smaller second line under an entry's text (nothing when empty).
@@ -647,10 +654,16 @@ pub async fn status(State(app): State<Arc<App>>, headers: HeaderMap) -> Response
         weight,
     );
 
-    // Needs attention.
-    if let Some(list) = s["needs_attention"].as_array().filter(|l| !l.is_empty()) {
+    // Needs attention: today's entries are marked in the log below (with the
+    // reason); a card only for older ones.
+    let day_start = clock.day_start(t);
+    let older: Vec<&Value> = s["needs_attention"]
+        .as_array()
+        .map(|l| l.iter().filter(|e| e["at"].as_str().and_then(|a| clock.parse(a, t).ok()).is_some_and(|at| at < day_start)).collect())
+        .unwrap_or_default();
+    if !older.is_empty() {
         body += r#"<div class="card"><h2 class="warn">Needs attention</h2><table>"#;
-        for e in list {
+        for e in &older {
             let by: Vec<&str> = e["needs_attention"]["by"].as_array().map(|v| v.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
             body += &format!(
                 "<tr><td class=\"time\"><a href=\"/entry/{}\">{}</a> <span title=\"{}\">{}</span></td><td>{}{}</td></tr>",
@@ -663,8 +676,8 @@ pub async fn status(State(app): State<Arc<App>>, headers: HeaderMap) -> Response
             );
         }
         body += "</table>";
-        if list.iter().any(|e| e["needs_attention"]["by"].as_array().is_some_and(|v| v.iter().any(|x| x == "agent"))) {
-            body += r#"<p class="mut">🤖 waiting for Claude: ask Claude to “process the entries that need attention”. 🙋 needs you.</p>"#;
+        if older.iter().any(|e| e["needs_attention"]["by"].as_array().is_some_and(|v| v.iter().any(|x| x == "agent"))) {
+            body += AGENT_HINT;
         }
         body += "</div>";
     }
