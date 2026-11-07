@@ -34,6 +34,21 @@ pub const CSS: &str = include_str!("../static/app.css");
 
 pub const JS: &str = include_str!("../static/app.js");
 
+/// The running version: `git describe` at build time.
+pub const VERSION: &str = env!("BABY_MCP_VERSION");
+const REPO: &str = "https://github.com/bwesterb/baby-mcp";
+
+/// The footer: the source on GitHub and the version, linked to its commit.
+fn footer() -> String {
+    let commit = VERSION.trim_end_matches("-dirty").rsplit("-g").next().unwrap_or(VERSION);
+    let version = if commit.starts_with('v') {
+        esc(VERSION)
+    } else {
+        format!(r#"<a href="{REPO}/commit/{}">{}</a>"#, esc(commit), esc(VERSION))
+    };
+    format!(r#"<footer><a href="{REPO}">baby-mcp on GitHub</a> · {version}</footer>"#)
+}
+
 pub struct Page<'a> {
     pub title: &'a str,
     pub body: String,
@@ -54,8 +69,9 @@ pub fn render(p: Page) -> Response {
         .map(|s| format!(r#"<meta http-equiv="refresh" content="{s}">"#))
         .unwrap_or_default();
     let html = format!(
-        r#"<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">{refresh}{head}<title>{title}</title><link rel="stylesheet" href="/app.css?v={v}"><script src="/app.js?v={v}" defer></script></head><body><main>{nav}{body}<footer><a href="https://github.com/bwesterb/baby-mcp">baby-mcp on GitHub</a></footer></main></body></html>"#,
+        r#"<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">{refresh}{head}<title>{title}</title><link rel="stylesheet" href="/app.css?v={v}"><script src="/app.js?v={v}" defer></script></head><body><main>{nav}{body}{footer}</main></body></html>"#,
         title = esc(p.title),
+        footer = footer(),
         head = app_head(),
         v = version(),
         body = p.body
