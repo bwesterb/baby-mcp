@@ -25,6 +25,7 @@ Logging ("drank 60 ml of pumped milk and had a wet diaper"):
 - One `log` per moment, with everything that happened then; events at different times are separate entries.
 - Text: the user's own words (any language), or a short faithful paraphrase of a conversation.
 - Fields: fill in every field the user mentions. Leave out what wasn't said; null means deliberately nothing ("no bottle this time"). Sleep itself isn't tracked, only the side the baby is put down facing.
+- After logging a feed, say which side to put her down facing: `status` sleep_facing.assumed_current (it counts that feed).
 - Times are local; a bare clock time means today, or yesterday if that would be in the future. Tell the user the time you logged.
 - Partial information ("she's drinking now, I'll tell you how much later"): log it now with needs_attention_by=["user"] and say in needs_attention_why what is missing. The parents see it on the status page and get a notification, so nothing is lost if this conversation is forgotten. Complete it later with `update` and clear the attention.
 - If `log` reports a likely duplicate (someone else may already have logged it), ask before logging again with confirm=true.
