@@ -286,12 +286,18 @@ self.addEventListener('push', (e) => {
     // doesn't replace by tag) and any whose group no longer applies. Each
     // has a tag of its own, so closing an older one can't hit the new one;
     // the group is in its data.
+    let report = '';
     try {
-      for (const n of await self.registration.getNotifications()) {
+      const shown = await self.registration.getNotifications();
+      let closed = 0;
+      for (const n of shown) {
         const g = (n.data && n.data.group) || n.tag;
-        if (g === group || (Array.isArray(msg.groups) && !msg.groups.includes(g))) n.close();
+        if (g === group || (Array.isArray(msg.groups) && !msg.groups.includes(g))) { n.close(); closed++; }
       }
-    } catch (_) {}
+      report = 'seen=' + shown.length + '&closed=' + closed;
+    } catch (err) { report = 'err=' + encodeURIComponent(String(err).slice(0, 80)); }
+    // Diagnostic (in the access log only): what the worker could see.
+    if (id) { try { await fetch('/push/message/' + encodeURIComponent(id) + '?' + report, {cache: 'no-store', credentials: 'omit'}); } catch (_) {} }
     await self.registration.showNotification(msg.title, {body: msg.body, tag: group + ':' + id, icon: '/icon-192.png', data: {url: msg.url, group, at: Date.now()}});
   })());
 });
