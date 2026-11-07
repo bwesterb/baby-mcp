@@ -425,44 +425,6 @@ fn estimate(clock: &Clock, times: &[i64], min_gap: i64, what: &str, now: i64) ->
     v
 }
 
-/// Diapers are checked at feeds. Of the last (up to) `window` feeds with a
-/// diaper logged (wet or dirty, yes or no, within an hour: a feed without one
-/// was probably just not logged), those with a `field` diaper; None with
-/// fewer than 4. (Backtested on the first weeks: wet over 10 feeds, Brier
-/// 0.07 against 0.25 for a coin; dirty is close to a steady rate, so over 20.)
-pub fn diapers_at_feeds(es: &[Entry], field: &str, window: usize) -> Option<(usize, usize)> {
-    let near = |f: &Entry, e: &Entry| (e.at - f.at).abs() <= 3600;
-    let logged = |f: &Entry| es.iter().any(|e| near(f, e) && (e.fields.contains_key("wet") || e.fields.contains_key("dirty")));
-    let feeds: Vec<&Entry> = es.iter().filter(|e| e.is_feed() && logged(e)).rev().take(window).collect();
-    if feeds.len() < 4 {
-        return None;
-    }
-    let hit = feeds.iter().filter(|f| es.iter().any(|e| near(f, e) && e.is(field))).count();
-    Some((hit, feeds.len()))
-}
-
-/// The next `field` diaper, checked at feeds: at the next feed's start
-/// (`check`) with the chance from the last feeds; a less likely one at the
-/// first feed by which it has probably happened (chance over 50%).
-fn at_feeds(clock: &Clock, es: &[Entry], field: &str, what: &str, check: Option<i64>, gap: Option<i64>, now: i64) -> Option<Value> {
-    let (hit, n) = diapers_at_feeds(es, field, if field == "dirty" { 20 } else { 10 })?;
-    let check = check?;
-    let basis = format!("diapers are checked at feeds: a {what} at {hit} of the last {n} feeds with a diaper logged");
-    if hit == 0 {
-        return Some(json!({"chance": 0.0, "basis": basis}));
-    }
-    let p = hit as f64 / n as f64;
-    let k = if p >= 0.5 { 1 } else { ((0.5f64).ln() / (1.0 - p).ln()).ceil().max(1.0) as i64 };
-    let at = check + (k - 1) * gap.unwrap_or(3 * 3600);
-    let mut v = json!({"at": clock.fmt(at), "chance": (p * 100.0).round() / 100.0, "at_feed": k, "basis": basis});
-    if at >= now {
-        v["due_in"] = json!(fmt_dur(at - now));
-    } else {
-        v["overdue_by"] = json!(fmt_dur(now - at));
-    }
-    Some(v)
-}
-
 fn recent_gaps(times: &[i64], min_gap: i64) -> Vec<i64> {
     times.windows(2).map(|w| w[1] - w[0]).filter(|g| *g >= min_gap).rev().take(8).collect()
 }
@@ -477,7 +439,6 @@ const ESTIMATE_MIN_GAP: i64 = 30 * 60;
 
 /// How far back the estimates look: feeds and wet diapers, dirty diapers.
 pub const ESTIMATE_BACK: i64 = 36 * 3600;
-pub const ESTIMATE_BACK_DIRTY: i64 = 72 * 3600;
 
 /// Fewer wet diapers in the last 24 hours than usual for her age: at least as
 /// many as the day of life up to day 5, then at least 6 (breastfeeding and
@@ -544,20 +505,11 @@ pub fn status(c: &Connection, clock: &Clock, baby: &Baby, now: i64) -> Result<Va
     let last_temp = last_where(c, "temp_c IS NOT NULL")?;
     let last_weight = last_where(c, "weight_g IS NOT NULL")?;
     let recent = list(c, now - ESTIMATE_BACK, now + 1, false)?;
-    let three_days = list(c, now - ESTIMATE_BACK_DIRTY, now + 1, false)?;
     let today = list(c, clock.day_start(now), now + 1, false)?;
     let day = list(c, now - 24 * 3600, now + 1, false)?;
 
     let times = |es: &[Entry], f: fn(&Entry) -> bool| es.iter().filter(|e| f(e)).map(|e| e.at).collect::<Vec<_>>();
     let next_feed = estimate(clock, &times(&recent, Entry::is_feed), ESTIMATE_MIN_GAP, "feed", now);
-    // Diapers are checked at feeds: the next feed's start, with the chance
-    // from the last feeds; the median gap until there are enough feeds.
-    let check = next_feed["at"].as_str().and_then(|a| clock.parse(a, now).ok()).map(|t| t - baby.feed_prep_s);
-    let feed_gap = usual_gap(&times(&recent, Entry::is_feed));
-    let next_wet = at_feeds(clock, &recent, "wet", "wet diaper", check, feed_gap, now)
-        .unwrap_or_else(|| estimate(clock, &times(&recent, |e| e.is("wet")), ESTIMATE_MIN_GAP, "wet diaper", now));
-    let next_dirty = at_feeds(clock, &three_days, "dirty", "dirty diaper", check, feed_gap, now)
-        .unwrap_or_else(|| estimate(clock, &times(&three_days, |e| e.is("dirty")), ESTIMATE_MIN_GAP, "dirty diaper", now));
 
     let mut out = json!({
         "now": clock.fmt(now),
@@ -566,10 +518,8 @@ pub fn status(c: &Connection, clock: &Clock, baby: &Baby, now: i64) -> Result<Va
         "next_feed_estimate": next_feed,
         "next_feed_start": feed_start(clock, &next_feed, baby.feed_prep_s, now),
         "last_wet_diaper": since(&last_wet, clock, now, None),
-        "next_wet_diaper_estimate": next_wet,
         "wet_diaper_warning": wet_warning(clock, baby, &day, now),
         "last_dirty_diaper": since(&last_dirty, clock, now, last_dirty.as_ref().and_then(|e| e.fields.get("stool_color").cloned())),
-        "next_dirty_diaper_estimate": next_dirty,
         "last_temperature": since(&last_temp, clock, now, last_temp.as_ref().and_then(|e| e.fields.get("temp_c").cloned())),
         "last_weight": since(&last_weight, clock, now, last_weight.as_ref().and_then(|e| e.fields.get("weight_g").cloned())),
         "today": totals(&today),
@@ -769,42 +719,6 @@ pub mod tests {
     }
 
     #[test]
-    fn diapers_checked_at_feeds() {
-        let clock = Clock::new("Europe/Amsterdam").unwrap();
-        let at = |s: &str| clock.parse(s, 0).unwrap();
-        let e = |t: &str, f: Value| Entry { entry_id: 0, version: 1, at: at(t), duration_s: None, text: String::new(),
-            fields: fields(f), attention_by: 0, attention_why: None, deleted: false, changed_at: 0, changed_by: 1, superseded_at: None };
-        // Five feeds, 3 h apart: wet at four (one logged 20 minutes after the
-        // feed), dirty at two; a change between feeds doesn't count.
-        let es = [
-            e("2025-11-07 01:00", json!({"bottle_formula_ml": 80, "wet": true, "dirty": true})),
-            e("2025-11-07 04:00", json!({"bottle_formula_ml": 80, "wet": false})),
-            e("2025-11-07 05:30", json!({"wet": true})),
-            e("2025-11-07 07:00", json!({"bottle_formula_ml": 80})),
-            e("2025-11-07 07:20", json!({"wet": true})),
-            e("2025-11-07 10:00", json!({"bottle_formula_ml": 80, "wet": true, "dirty": true})),
-            e("2025-11-07 13:00", json!({"bottle_formula_ml": 80, "wet": true})),
-        ];
-        assert_eq!(diapers_at_feeds(&es, "wet", 10), Some((4, 5)));
-        assert_eq!(diapers_at_feeds(&es, "dirty", 20), Some((2, 5)));
-        assert_eq!(diapers_at_feeds(&es[..3], "wet", 10), None, "too few feeds");
-        assert_eq!(diapers_at_feeds(&es, "wet", 4), Some((3, 4)), "the last four");
-        // A feed without any diaper logged doesn't count (probably not logged).
-        let mut more = es.to_vec();
-        more.push(e("2025-11-07 20:00", json!({"bottle_formula_ml": 20})));
-        more.push(e("2025-11-07 23:00", json!({"bottle_formula_ml": 80})));
-        assert_eq!(diapers_at_feeds(&more, "wet", 10), Some((4, 5)));
-        let now = at("2025-11-07 14:00");
-        let (check, gap) = (Some(at("2025-11-07 15:45")), Some(3 * 3600));
-        let wet = at_feeds(&clock, &es, "wet", "wet diaper", check, gap, now).unwrap();
-        assert_eq!((wet["at"].as_str(), wet["chance"].as_f64(), wet["at_feed"].as_i64()), (Some("2025-11-07 15:45"), Some(0.8), Some(1)));
-        assert_eq!(wet["basis"], "diapers are checked at feeds: a wet diaper at 4 of the last 5 feeds with a diaper logged");
-        // 40%: by the second feed it has probably happened (64%).
-        let dirty = at_feeds(&clock, &es, "dirty", "dirty diaper", check, gap, now).unwrap();
-        assert_eq!((dirty["at"].as_str(), dirty["at_feed"].as_i64(), dirty["due_in"].as_str()), (Some("2025-11-07 18:45"), Some(2), Some("4h45m")));
-    }
-
-    #[test]
     fn wet_diapers() {
         let clock = Clock::new("Europe/Amsterdam").unwrap();
         let birth = clock.parse("2025-10-31 16:40", 0).unwrap();
@@ -903,17 +817,8 @@ pub mod tests {
             }
             assert_eq!(s["next_feed_estimate"]["at"], "2025-11-06 12:00");
             assert_eq!(s["next_feed_estimate"]["due_in"], "0m");
-            assert!(s["next_wet_diaper_estimate"].is_null(), "one wet diaper gives no gap");
-            for t in ["07:00", "08:30"] {
-                insert(c, u, &NewEntry { at: clock.parse(t, now).unwrap(), duration_s: None, text: t.into(),
-                    fields: fields(json!({"wet": true, "dirty": true})), attention_by: 0, attention_why: None }, now).unwrap();
-            }
-            // wet at 06:00, 07:00, 08:30: median gap 1h15 → 09:45, overdue at 12:00
-            let s = status(c, &clock, &baby, now).unwrap();
-            assert_eq!(s["next_wet_diaper_estimate"]["at"], "2025-11-06 09:45");
-            assert_eq!(s["next_wet_diaper_estimate"]["overdue_by"], "2h15m");
-            // dirty at 07:00, 08:30, 09:00: gaps 1h30 and (30m) → median 1h00 → 10:00
-            assert_eq!(s["next_dirty_diaper_estimate"]["at"], "2025-11-06 10:00");
+            // Diapers are checked at feeds; they aren't predicted.
+            assert!(s.get("next_wet_diaper_estimate").is_none() && s.get("next_dirty_diaper_estimate").is_none());
             let d = stats(c, &clock, &baby, clock.date_start("2025-11-05").unwrap(), now).unwrap();
             assert_eq!(d.len(), 2);
             assert_eq!(d[1].totals.total_ml, 130.0);

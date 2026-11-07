@@ -323,46 +323,6 @@ fn timeline_svg(clock: &crate::time::Clock, entries: &[en::Entry], s: &Value, no
     for t in later(feed_at, usual(en::ESTIMATE_BACK, en::Entry::is_feed), prep) {
         expect(0, "🍼", Some(t), feed_label(t), ".25");
     }
-    let wet_at = at(&s["next_wet_diaper_estimate"]);
-    let dirty_at = at(&s["next_dirty_diaper_estimate"]);
-    let chance = |v: &Value| v["chance"].as_f64();
-    match (chance(&s["next_wet_diaper_estimate"]), chance(&s["next_dirty_diaper_estimate"]), feed_at) {
-        // Diapers are checked at feeds: at each expected feed's start, spread
-        // over the feeds at their rate (80%: four feeds in five).
-        (Some(pw), Some(pd), Some(first)) => {
-            let checks: Vec<i64> = std::iter::once(first - prep).chain(later(feed_at, usual(en::ESTIMATE_BACK, en::Entry::is_feed), prep)).collect();
-            // From the feed the estimate names (at_feed), then at the rate:
-            // the count so far is ceil((j + 1) × p).
-            let first_at = |v: &Value| v["at_feed"].as_i64().unwrap_or(1).max(1) as usize - 1;
-            let (kw, kd) = (first_at(&s["next_wet_diaper_estimate"]), first_at(&s["next_dirty_diaper_estimate"]));
-            let count = |p: f64, j: usize| (p * j as f64 - 1e-9).ceil().max(0.0);
-            let hit = |p: f64, k: usize, i: usize| i >= k && count(p, i - k + 1) > count(p, i - k);
-            let pct = |p: f64| format!("{:.0}%", p * 100.0);
-            for (i, &t) in checks.iter().enumerate() {
-                let op = if i == 0 { ".45" } else { ".25" };
-                let shown = if t < now { soon } else { t };
-                match (hit(pw, kw, i), hit(pd, kd, i)) {
-                    (true, true) => {
-                        let both = format!(r#"💩<tspan x="{:.1}" y="{:.1}" class="badge">💧</tspan>"#, x(shown) + 7.0, lanes[1] - 8.0);
-                        expect(1, &both, Some(t), format!("wet ({}) and dirty ({}) diaper", pct(pw), pct(pd)), op);
-                    }
-                    (false, true) => expect(1, "💩", Some(t), format!("dirty diaper ({})", pct(pd)), op),
-                    (true, false) => expect(1, "💧", Some(t), format!("wet diaper ({})", pct(pw)), op),
-                    _ => {}
-                }
-            }
-        }
-        _ => {
-            expect(1, "💧", wet_at, "wet diaper".into(), ".45");
-            expect(1, "💩", dirty_at, "dirty diaper".into(), ".45");
-            for t in later(wet_at, usual(en::ESTIMATE_BACK, |e| e.is("wet")), 0) {
-                expect(1, "💧", Some(t), "wet diaper".into(), ".25");
-            }
-            for t in later(dirty_at, usual(en::ESTIMATE_BACK_DIRTY, |e| e.is("dirty")), 0) {
-                expect(1, "💩", Some(t), "dirty diaper".into(), ".25");
-            }
-        }
-    }
     if s["vitamins"]["to_give_today"].as_array().is_some_and(|a| !a.is_empty()) {
         expect(2, "💊", s["vitamins"]["remind_at"].as_str().and_then(|a| clock.parse(a, now).ok()), "vitamins".into(), ".45");
     }
@@ -373,59 +333,29 @@ fn timeline_svg(clock: &crate::time::Clock, entries: &[en::Entry], s: &Value, no
     (svg, x(now))
 }
 
-/// One diaper tile: the earliest expected diaper (wet or dirty) as the
-/// headline, the other on a line below, and the wet diaper warning.
+/// One diaper tile: when the last diapers were, and the wet diaper warning.
+/// Not predicted: diapers are checked at feeds, wet at nearly every one and
+/// dirty at most, with nothing in the log telling which (backtested).
 fn diaper_tile(s: &Value) -> Next {
-    let wet = ("💧", "wet", &s["next_wet_diaper_estimate"], &s["last_wet_diaper"]);
-    let dirty = ("💩", "dirty", &s["next_dirty_diaper_estimate"], &s["last_dirty_diaper"]);
-    let at = |e: &Value| e["at"].as_str().map(str::to_string);
-    // The earliest first; one without an estimate last.
-    let (first, second) = match (at(wet.2), at(dirty.2)) {
-        (Some(a), Some(b)) if b < a => (dirty, wet),
-        (None, Some(_)) => (dirty, wet),
-        _ => (wet, dirty),
-    };
-    let hm = |e: &Value| e["at"].as_str().filter(|a| a.len() >= 16).map(|a| a[11..16].to_string());
-    // The chance at that feed (diapers are checked at feeds), if known.
-    let pct = |e: &Value| e["chance"].as_f64().map(|p| format!(" · {:.0}%", p * 100.0)).unwrap_or_default();
-    let (when, sub, overdue) = match hm(first.2) {
-        None => ("—".to_string(), "not enough data yet".to_string(), false),
-        Some(t) => match (first.2["due_in"].as_str(), first.2["overdue_by"].as_str()) {
-            (_, Some(d)) => (format!("~{t}"), format!("{} {} · ⏰ {d} overdue{}", first.0, first.1, pct(first.2)), true),
-            (Some(d), _) => (format!("~{t}"), format!("{} {} · in {d}{}", first.0, first.1, pct(first.2)), false),
-            _ => (format!("~{t}"), format!("{} {}{}", first.0, first.1, pct(first.2)), false),
-        },
-    };
-    let other = match hm(second.2) {
-        Some(t) => {
-            let state = match (second.2["due_in"].as_str(), second.2["overdue_by"].as_str()) {
-                (_, Some(d)) => format!("{d} overdue"),
-                (Some(d), _) => format!("in {d}"),
-                _ => String::new(),
-            };
-            format!(r#"<div class="side">{} {} ~{t} <span class="mut">({state}{})</span></div>"#, second.0, second.1, pct(second.2))
-        }
-        None => String::new(),
-    };
-    let warning = s["wet_diaper_warning"]["text"].as_str().map(|t| format!(r#"<div class="side warn">⚠️ {}</div>"#, esc(t))).unwrap_or_default();
-    let last = |x: &(&str, &str, &Value, &Value)| {
-        x.3["ago"].as_str().map(|a| {
-            let color = x.3["value"].as_str().map(stool_emoji).unwrap_or("");
-            format!("{}{color} {a} ago", x.0)
+    let kinds = [("💧", &s["last_wet_diaper"]), ("💩", &s["last_dirty_diaper"])];
+    let latest = kinds.iter().filter(|k| k.1["at"].is_string()).max_by_key(|k| k.1["at"].as_str().unwrap_or("").to_string());
+    let when = latest.and_then(|k| k.1["ago"].as_str()).map(|a| format!("{a} ago")).unwrap_or_else(|| "—".to_string());
+    let parts: Vec<String> = kinds
+        .iter()
+        .filter_map(|(emoji, last)| {
+            let color = last["value"].as_str().map(stool_emoji).unwrap_or("");
+            last["ago"].as_str().map(|a| format!("{emoji}{color} {a} ago"))
         })
-    };
-    let lasts: Vec<String> = [&wet, &dirty].iter().filter_map(|x| last(x)).collect();
-    let last_line = if lasts.is_empty() { "nothing logged yet".to_string() } else { format!("last {}", lasts.join(" · ")) };
-    let alarm = overdue || !warning.is_empty();
+        .collect();
+    let sub = if parts.is_empty() { "nothing logged yet".to_string() } else { parts.join(" · ") };
+    let warning = s["wet_diaper_warning"]["text"].as_str().map(|t| format!(r#"<div class="side warn">⚠️ {}</div>"#, esc(t))).unwrap_or_default();
     let html = format!(
-        r#"<div class="next{}"><div class="t">🧷 Diaper</div><div class="v">{}</div><div class="{}">{}</div>{other}{warning}<div class="last">{}</div></div>"#,
-        if alarm { " overdue" } else { "" },
+        r#"<div class="next{}"><div class="t">🧷 Diaper</div><div class="v">{}</div><div class="mut">{}</div>{warning}<div class="last">checked at feeds</div></div>"#,
+        if warning.is_empty() { "" } else { " overdue" },
         esc(&when),
-        if overdue { "warn" } else { "mut" },
-        esc(&sub),
-        esc(&last_line)
+        esc(&sub)
     );
-    Next { title: "🧷 Diaper", at: at(first.2), html }
+    Next { title: "🧷 Diaper", at: None, html }
 }
 
 /// The vitamins tile: what is still to give today (orange from 18:00), or
@@ -626,7 +556,7 @@ pub async fn status(State(app): State<Arc<App>>, headers: HeaderMap) -> Response
             let s = en::status(c, clock, &app.baby(), t)?;
             let today = en::list(c, clock.day_start(t), t + 1, false)?;
             let loggers = en::loggers(c, &today)?;
-            let recent = en::list(c, t - TL_PAST.max(en::ESTIMATE_BACK_DIRTY), t + 1, false)?;
+            let recent = en::list(c, t - TL_PAST, t + 1, false)?;
             Ok::<_, String>((s, today, loggers, recent))
         })())
     });
@@ -1633,21 +1563,18 @@ mod tests {
     fn one_diaper_tile() {
         use serde_json::json;
         let s = json!({
-            "next_wet_diaper_estimate": {"at": "2025-11-07 15:38", "overdue_by": "1h33m"},
-            "next_dirty_diaper_estimate": {"at": "2025-11-07 18:05", "due_in": "1h"},
-            "last_wet_diaper": {"ago": "4h54m"}, "last_dirty_diaper": {"ago": "10h46m", "value": "yellow"},
+            "last_wet_diaper": {"ago": "4h54m", "at": "2025-11-07 09:00"},
+            "last_dirty_diaper": {"ago": "10h46m", "at": "2025-11-07 03:08", "value": "yellow"},
         });
         let t = diaper_tile(&s);
-        assert_eq!(t.at.as_deref(), Some("2025-11-07 15:38"));
-        assert!(t.html.contains(">~15:38<") && t.html.contains("💧 wet · ⏰ 1h33m overdue") && t.html.contains(r#"class="next overdue""#), "{}", t.html);
-        assert!(t.html.contains("💩 dirty ~18:05 <span class=\"mut\">(in 1h)</span>") && t.html.contains("last 💧 4h54m ago · 💩🟡 10h46m ago"), "{}", t.html);
-        // Dirty first when it is earlier; the warning makes the tile orange.
+        assert!(t.at.is_none(), "not predicted");
+        assert!(t.html.contains(">4h54m ago<") && t.html.contains("💧 4h54m ago · 💩🟡 10h46m ago") && t.html.contains(r#"class="next""#), "{}", t.html);
+        // The warning makes the tile orange.
         let mut s2 = s.clone();
-        s2["next_dirty_diaper_estimate"] = json!({"at": "2025-11-07 14:00", "due_in": "10m"});
-        s2["next_wet_diaper_estimate"] = json!({"at": "2025-11-07 16:00", "due_in": "2h"});
         s2["wet_diaper_warning"] = json!({"text": "Only 4 wet diapers in the last 24 h (usually at least 6 from day 6)"});
         let t = diaper_tile(&s2);
-        assert!(t.html.contains(">~14:00<") && t.html.contains("💩 dirty · in 10m") && t.html.contains("⚠️ Only 4 wet") && t.html.contains(r#"class="next overdue""#), "{}", t.html);
+        assert!(t.html.contains("⚠️ Only 4 wet") && t.html.contains(r#"class="next overdue""#), "{}", t.html);
+        assert!(diaper_tile(&json!({})).html.contains("nothing logged yet"));
     }
 
     #[test]
@@ -1663,28 +1590,6 @@ mod tests {
         for f in crate::registry::FIELDS {
             assert!(!field_chip(f.name, &json!(1)).0.is_empty(), "{}", f.name);
         }
-    }
-
-    #[test]
-    fn timeline_diapers_at_feeds() {
-        use serde_json::json;
-        let clock = crate::time::Clock::new("Europe/Amsterdam").unwrap();
-        let at = |s: &str| clock.parse(s, 0).unwrap();
-        let now = at("2025-11-07 14:00");
-        let e = |t: &str| en::Entry { entry_id: 1, version: 1, at: at(t), duration_s: None, text: String::new(),
-            fields: json!({"bottle_formula_ml": 80}).as_object().cloned().unwrap(), attention_by: 0, attention_why: None, deleted: false, changed_at: 0, changed_by: 1, superseded_at: None };
-        let entries = [e("2025-11-07 07:00"), e("2025-11-07 10:00"), e("2025-11-07 13:00")];
-        let s = json!({
-            "next_feed_estimate": {"at": "2025-11-07 16:00"},
-            "next_wet_diaper_estimate": {"at": "2025-11-07 16:00", "chance": 0.8, "at_feed": 1},
-            "next_dirty_diaper_estimate": {"at": "2025-11-07 19:00", "chance": 0.4, "at_feed": 2},
-        });
-        let (html, _) = timeline_svg(&clock, &entries, &s, now, 3600, 8 * 3600);
-        // Feeds every 3 h from 16:00: wet at four in five, dirty from the
-        // second feed (as the estimate says) at two in five.
-        assert!(html.contains("16:00 wet diaper (80%) (expected)") && html.contains("19:00 wet (80%) and dirty (40%) diaper (expected)"), "{html}");
-        assert!(html.contains("22:00 wet diaper (80%) (expected)"), "{html}");
-        assert_eq!(html.matches("💩").count(), 1, "the next dirty one after 19:00 is past the window: {html}");
     }
 
     #[test]
@@ -1707,7 +1612,7 @@ mod tests {
         let entries = [e("2025-11-07 07:00", json!({"bottle_formula_ml": 60})),   // before the window
                        e("2025-11-07 10:30", json!({"bottle_formula_ml": 80, "wet": true, "dirty": true})),
                        e("2025-11-07 12:00", json!({"vitamin_d": true, "vitamin_k": true}))];
-        let s = json!({"next_feed_estimate": {"at": "2025-11-07 13:30"}, "next_wet_diaper_estimate": {"at": "2025-11-07 15:00"}});
+        let s = json!({"next_feed_estimate": {"at": "2025-11-07 13:30"}});
         let (html, now_x) = timeline_svg(&clock, &entries, &s, now, 6 * 3600, 4 * 3600);
         assert_eq!(now_x, 12.0 + 6.0 * TL_UNITS_PER_HOUR);
         assert_eq!(html.matches(">🍼</text>").count(), 3, "one logged feed in the window, one expected, one later: {html}");
@@ -1715,7 +1620,7 @@ mod tests {
         assert!(html.contains("10:30 🍼 80 ml formula") && html.contains("💩") && html.contains("💊"));
         assert!(html.contains(r#"💩<tspan x="114.0" y="42.0" class="badge">💧</tspan>"#), "wet and dirty: a drop on the poo: {html}");
         assert!(html.contains("13:30 feed (overdue)") && html.contains(r#"class="ring""#), "overdue feed ringed");
-        assert!(html.contains("15:00 wet diaper (expected)") && html.contains(r#"opacity=".45""#), "expected wet diaper faded");
+        assert!(!html.contains("diaper (expected)"), "diapers aren't predicted");
         assert!(html.contains(r#"class="hd">10<"#) && html.contains(r#"class="hd">16<"#), "hour labels, by day");
         // With a preparation time the expected feed is the start; one wide, scrolling strip.
         let mut s2 = s.clone();
