@@ -3,7 +3,8 @@
 //!
 //! - `feed_soon`: 15 minutes before the next-feed estimate (the feed tile's);
 //! - `feed_overdue`: 30 minutes after it (not after 3 hours: then nobody is logging);
-//! - `attention`: an entry was marked as needing the user (🙋), within 15 minutes.
+//! - `attention`: an entry needs the user (🙋) and was left unchanged for 10
+//!   minutes (whoever just made it knows; finished in time, nothing is sent).
 //!
 //! Each (user, kind, key) is sent once; the key is the last feed's time or
 //! the entry and its version.
@@ -18,7 +19,7 @@ use std::sync::Arc;
 pub const KINDS: [(&str, &str, &str); 6] = [
     ("feed_soon", "Feed soon", "15 minutes before it's time to start (diaper first)"),
     ("feed_overdue", "Feed overdue", "30 minutes after the next feed was expected"),
-    ("attention", "Entries need attention", "when an entry is marked as needing you (🙋)"),
+    ("attention", "Entries need attention", "when an entry needing you (🙋) is left for 10 minutes"),
     ("vitamins", "Vitamins", "at 18:00 if vitamin K or D hasn't been given that day"),
     ("changes", "Any change", "when someone else logs, changes or deletes an entry"),
     ("feed_warning", "Feeding minimum", "when it gets close to the longest pause without a feed, or to only the minimum number of feeds in 24 hours (NVK)"),
@@ -28,6 +29,8 @@ const SOON: i64 = 15 * 60;
 const OVERDUE: i64 = 30 * 60;
 const STALE: i64 = 3 * 3600;
 const ATTENTION_WINDOW: i64 = 15 * 60;
+/// An entry needing the user notifies once it has been left this long.
+const ATTENTION_QUIET: i64 = 10 * 60;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Notice {
@@ -121,11 +124,11 @@ pub fn due(c: &Connection, clock: &Clock, status: &Value, name: &str, now: i64) 
     let mut st = c
         .prepare(
             "SELECT entry_id, version, at, text, needs_attention_why FROM entry \
-             WHERE deleted = 0 AND needs_attention_by != 0 AND needs_attention_by & 1 AND changed_at >= ?1 ORDER BY at",
+             WHERE deleted = 0 AND needs_attention_by != 0 AND needs_attention_by & 1 AND changed_at >= ?1 AND changed_at <= ?2 ORDER BY at",
         )
         .map_err(|e| e.to_string())?;
     let rows = st
-        .query_map([now - ATTENTION_WINDOW], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?, r.get::<_, String>(3)?, r.get::<_, Option<String>>(4)?)))
+        .query_map([now - ATTENTION_QUIET - ATTENTION_WINDOW, now - ATTENTION_QUIET], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?, r.get::<_, String>(3)?, r.get::<_, Option<String>>(4)?)))
         .map_err(|e| e.to_string())?;
     for row in rows {
         let (id, _version, at, text, why) = row.map_err(|e| e.to_string())?;
@@ -450,8 +453,10 @@ mod tests {
         let spit = new("Spit up a lot", json!({"vomit": true}), 1, 1);
         new("agent only", json!({}), 2, 2);
         let ns = due(&c, &clock, &status, "Eva", at("2025-11-07 12:44")).unwrap();
-        let attention: Vec<&Notice> = ns.iter().filter(|n| n.kind == "attention").collect();
-        assert_eq!(attention.len(), 1);
+        assert!(!ns.iter().any(|n| n.kind == "attention"), "not while it was just made (whoever did knows)");
+        let later = due(&c, &clock, &status, "Eva", at("2025-11-07 12:51")).unwrap();
+        let attention: Vec<&Notice> = later.iter().filter(|n| n.kind == "attention").collect();
+        assert_eq!(attention.len(), 1, "left for 10 minutes: only the one needing the user");
         assert_eq!((attention[0].key.clone(), attention[0].url.as_str()), (format!("{}:check this", spit.entry_id), "/day?date=2025-11-07"));
         // Any change: both new entries, each with its author (not sent to them).
         let changes: Vec<&Notice> = ns.iter().filter(|n| n.kind == "changes").collect();
@@ -459,12 +464,19 @@ mod tests {
         assert_eq!((changes[0].title.as_str(), changes[0].body.as_str(), changes[0].by), ("✏️ Eva: Anna logged 12:40", "🤢", Some(1)));
         assert_eq!(changes[1].title, "✏️ Eva: Tom logged 12:40");
         assert!(due(&c, &clock, &status, "Eva", at("2025-11-07 13:10")).unwrap().is_empty(), "only recent changes");
-        // Editing it with the same reason is not news: the same key.
+        // An edit starts the 10 minutes again; the same reason keeps the key.
+        let keys = |t: &str| due(&c, &clock, &status, "Eva", at(t)).unwrap().into_iter().filter(|n| n.kind == "attention").map(|n| n.key).collect::<Vec<_>>();
         let mut edited = spit.clone();
         edited.text = "Spit up a lot, twice".into();
         crate::entries::save(&c, 1, &edited, at("2025-11-07 12:42")).unwrap();
-        let keys: Vec<String> = due(&c, &clock, &status, "Eva", at("2025-11-07 12:44")).unwrap().into_iter().filter(|n| n.kind == "attention").map(|n| n.key).collect();
-        assert_eq!(keys, [format!("{}:check this", spit.entry_id)]);
+        assert!(keys("2025-11-07 12:51").is_empty());
+        assert_eq!(keys("2025-11-07 12:53"), [format!("{}:check this", spit.entry_id)]);
+        // Finished within the 10 minutes: nothing is sent.
+        let mut done = crate::entries::get(&c, spit.entry_id).unwrap();
+        done.attention_by = 0;
+        done.attention_why = None;
+        crate::entries::save(&c, 1, &done, at("2025-11-07 12:45")).unwrap();
+        assert!(keys("2025-11-07 12:56").is_empty());
 
         let vit = json!({"vitamins": {"to_give_today": ["K", "D"], "remind_at": "2025-11-07 18:00"}});
         assert!(due(&c, &clock, &vit, "Eva", at("2025-11-07 17:59")).unwrap().is_empty());
