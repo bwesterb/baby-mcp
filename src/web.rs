@@ -265,7 +265,11 @@ fn timeline_svg(clock: &crate::time::Clock, entries: &[en::Entry], s: &Value, no
         if e.is_feed() {
             put(0, "🍼", e.at, None, false, title.clone());
         }
-        if e.is("dirty") {
+        if e.is("dirty") && e.is("wet") {
+            // Both: the poo with a small drop at its top right.
+            let both = format!(r#"💩<tspan x="{:.1}" y="{:.1}" class="badge">💧</tspan>"#, x(e.at) + 10.0, lanes[1] - 10.0);
+            put(1, &both, e.at, None, false, title.clone());
+        } else if e.is("dirty") {
             put(1, "💩", e.at, None, false, title.clone());
         } else if e.is("wet") {
             put(1, "💧", e.at, None, false, title.clone());
@@ -1655,6 +1659,7 @@ mod tests {
         assert_eq!(html.matches(">🍼</text>").count(), 3, "one logged feed in the window, one expected, one later: {html}");
         assert!(html.contains(r#"opacity=".25"><title>17:30 feed"#), "the next after an overdue one: now + the usual gap (3h30), fainter: {html}");
         assert!(html.contains("10:30 🍼 80 ml formula") && html.contains("💩") && html.contains("💊"));
+        assert!(html.contains(r#"💩<tspan x="117.0" y="40.0" class="badge">💧</tspan>"#), "wet and dirty: a drop on the poo: {html}");
         assert!(html.contains("13:30 feed (overdue)") && html.contains(r#"class="ring""#), "overdue feed ringed");
         assert!(html.contains("15:00 wet diaper (expected)") && html.contains(r#"opacity=".45""#), "expected wet diaper faded");
         assert!(html.contains(r#"class="hd">10<"#) && html.contains(r#"class="hd">16<"#), "hour labels, by day");

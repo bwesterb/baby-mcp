@@ -43,3 +43,5 @@ footer{text-align:center;font-size:13px;margin:20px 0 4px}footer a{color:var(--m
 .tdiff del{color:var(--del);background:var(--del-bg);text-decoration:line-through}.tdiff ins{color:var(--add);background:var(--add-bg);text-decoration:none}
 .chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}.chip{border:1px solid var(--bd);border-radius:999px;padding:2px 10px;font-size:14px;white-space:nowrap}.chip.no{color:var(--mut);border-style:dashed}
 .chip.add,.hist .chip.add{color:var(--add);background:var(--add-bg);border:1px solid color-mix(in srgb,var(--add) 45%,transparent);border-radius:999px;padding:2px 10px}.chip.del,.hist .chip.del{color:var(--del);background:var(--del-bg);border:1px solid color-mix(in srgb,var(--del) 45%,transparent);border-radius:999px;padding:2px 10px;text-decoration:line-through}.hist .chips{margin:2px 0}.chg{white-space:nowrap}
+.tl .badge{font-size:11px}
+.sub.warn{color:var(--warn)}
