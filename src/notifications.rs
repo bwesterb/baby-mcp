@@ -268,13 +268,13 @@ self.addEventListener('activate', (e) => e.waitUntil(self.clients.claim()));
 self.addEventListener('push', (e) => {
   e.waitUntil((async () => {
     let msg = {title: NAME, body: 'Open the app for details.', url: '/'};
-    let tag = 'baby-mcp';
+    let group = 'baby-mcp', id = '';
     try {
-      const id = e.data && e.data.json().m;
+      id = (e.data && e.data.json().m) || '';
       if (id) {
         const r = await fetch('/push/message/' + encodeURIComponent(id), {cache: 'no-store', credentials: 'omit'});
         if (r.ok) msg = await r.json();
-        tag = msg.tag || msg.url;
+        group = msg.tag || msg.url;
       }
     } catch (_) {}
     try {
@@ -282,14 +282,17 @@ self.addEventListener('push', (e) => {
         await (msg.badge ? self.navigator.setAppBadge(msg.badge) : self.navigator.clearAppBadge());
       }
     } catch (_) {}
-    // One notification per group: close the older one of this group (not
-    // every platform replaces by tag), and any that no longer apply.
+    // One notification per group: close the older one of this group (iOS
+    // doesn't replace by tag), and any that no longer apply. Each has a tag
+    // of its own (closing an older one with the same tag on iOS also removed
+    // the new one); the group is in its data.
     try {
       for (const n of await self.registration.getNotifications()) {
-        if (n.tag === tag || (Array.isArray(msg.groups) && !msg.groups.includes(n.tag))) n.close();
+        const g = (n.data && n.data.group) || n.tag;
+        if (g === group || (Array.isArray(msg.groups) && !msg.groups.includes(g))) n.close();
       }
     } catch (_) {}
-    await self.registration.showNotification(msg.title, {body: msg.body, tag, renotify: true, icon: '/icon-192.png', data: {url: msg.url}});
+    await self.registration.showNotification(msg.title, {body: msg.body, tag: group + ':' + id, icon: '/icon-192.png', data: {url: msg.url, group}});
   })());
 });
 self.addEventListener('notificationclick', (e) => {

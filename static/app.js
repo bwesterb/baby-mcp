@@ -22,7 +22,7 @@ if ('setAppBadge' in navigator || 'serviceWorker' in navigator) {
       }
       const reg = 'serviceWorker' in navigator && await navigator.serviceWorker.getRegistration();
       if (reg && reg.getNotifications && Array.isArray(j.groups)) {
-        for (const n of await reg.getNotifications()) if (!j.groups.includes(n.tag)) n.close();
+        for (const n of await reg.getNotifications()) if (!j.groups.includes((n.data && n.data.group) || n.tag)) n.close();
       }
     })
     .catch(() => {});
