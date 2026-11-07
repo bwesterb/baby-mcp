@@ -1245,6 +1245,46 @@ fn field_value(name: &str, v: &Value) -> String {
     }
 }
 
+/// One field as a short chip with its emoji: "🍼 55 ml formula", "💧 wet".
+/// An explicit no (false, or null: deliberately nothing) is flagged, for a
+/// muted chip: "💩 no dirty diaper".
+fn field_chip(name: &str, v: &Value) -> (String, bool) {
+    let (emoji, label) = match name {
+        "sleep_facing" => ("😴", "facing"),
+        "bottle_breastmilk_ml" => ("🍼", "breast milk"),
+        "bottle_formula_ml" => ("🍼", "formula"),
+        "breast_left_min" => ("🤱", "left"),
+        "breast_right_min" => ("🤱", "right"),
+        "latch" => ("🤱", "latch"),
+        "pump_ml" => ("🥛", "pumped"),
+        "wet" => ("💧", "wet diaper"),
+        "dirty" => ("💩", "dirty diaper"),
+        "stool_color" => (v.as_str().map(stool_emoji).filter(|e| !e.is_empty()).unwrap_or("💩"), "stool"),
+        "vomit" => ("🤢", "spit-up"),
+        "temp_c" => ("🌡️", ""),
+        "weight_g" => ("⚖️", ""),
+        "bath" => (if v.as_str() == Some("sponge") { "🧽" } else { "🛁" }, "bath"),
+        "vitamin_k" => ("💊", "vitamin K"),
+        "vitamin_d" => ("💊", "vitamin D"),
+        _ => ("", name),
+    };
+    let label = if label.is_empty() { name } else { label };
+    let text = match (name, v) {
+        (_, Value::Bool(false)) | (_, Value::Null) => return (format!("{emoji} no {label}").trim().to_string(), true),
+        (_, Value::Bool(true)) => format!("{emoji} {label}"),
+        ("temp_c" | "weight_g", _) => format!("{emoji} {}", field_value(name, v)),
+        ("breast_left_min" | "breast_right_min", _) => format!("{emoji} {label} {}", field_value(name, v)),
+        ("sleep_facing", Value::String(s)) => format!("{emoji} facing {s} {}", side_arrow(s)),
+        ("bath", Value::String(s)) if s == "sponge" => format!("{emoji} sponge wash"),
+        ("bath", Value::String(_)) => format!("{emoji} bath {}", field_value(name, v)),
+        ("latch", _) => format!("{emoji} latch {}", field_value(name, v)),
+        ("stool_color", _) => format!("{emoji} {} stool", field_value(name, v)),
+        (_, Value::Number(_)) => format!("{emoji} {} {label}", field_value(name, v)),
+        _ => format!("{emoji} {label}: {}", field_value(name, v)),
+    };
+    (text.trim().to_string(), false)
+}
+
 /// What changed from one version to the next, as short lines.
 fn changes(clock: &crate::time::Clock, old: &en::Entry, new: &en::Entry) -> Vec<String> {
     let mut out = vec![];
@@ -1387,12 +1427,11 @@ pub async fn entry_page(State(app): State<Arc<App>>, headers: HeaderMap, axum::e
     let day = clock.day(cur.at);
     let who = |u: i64| names.get(&u).cloned().unwrap_or_else(|| format!("user {u}"));
     let mut body = format!(
-        r#"<div class="card"><h1>{} {}</h1><p class="mut"><a href="/day?date={day}">📅 {day}</a> · entry {id}{}</p><p>{}</p>{}"#,
+        r#"<div class="card"><h1>{} {}</h1><p class="mut"><a href="/day?date={day}">📅 {day}</a> · entry {id}{}</p><p>{}</p>"#,
         if cur.deleted { "🗑️" } else { "📝" },
         esc(&clock.fmt(cur.at)),
         if cur.deleted { " · deleted" } else { "" },
         esc(&cur.text),
-        sub_line(&entry_summary(cur))
     );
     if cur.attention_by != 0 {
         let (u, a) = (cur.attention_by & en::BY_USER != 0, cur.attention_by & BY_AGENT != 0);
@@ -1400,14 +1439,15 @@ pub async fn entry_page(State(app): State<Arc<App>>, headers: HeaderMap, axum::e
             cur.attention_why.as_ref().map(|w| format!(": {}", esc(w))).unwrap_or_default());
     }
     if !cur.fields.is_empty() {
-        body += "<table>";
         let order = |k: &str| crate::registry::FIELDS.iter().position(|f| f.name == k).unwrap_or(usize::MAX);
         let mut keys: Vec<&String> = cur.fields.keys().collect();
         keys.sort_by_key(|k| order(k));
+        body += r#"<div class="chips">"#;
         for k in keys {
-            body += &format!(r#"<tr><td class="time">{}</td><td>{}</td></tr>"#, esc(k), esc(&field_value(k, &cur.fields[k])));
+            let (text, no) = field_chip(k, &cur.fields[k]);
+            body += &format!(r#"<span class="chip{}" title="{}">{}</span>"#, if no { " no" } else { "" }, esc(&format!("{k}: {}", field_value(k, &cur.fields[k]))), esc(&text));
         }
-        body += "</table>";
+        body += "</div>";
     }
     body += "</div>";
     body += &format!(r#"<div class="card"><h2>History · {} version{}</h2><table>"#, versions.len(), if versions.len() == 1 { "" } else { "s" });
@@ -1542,6 +1582,21 @@ mod tests {
         s2["wet_diaper_warning"] = json!({"text": "Only 4 wet diapers in the last 24 h (usually at least 6 from day 6)"});
         let t = diaper_tile(&s2);
         assert!(t.html.contains(">~14:00<") && t.html.contains("💩 dirty · in 10m") && t.html.contains("⚠️ Only 4 wet") && t.html.contains(r#"class="next overdue""#), "{}", t.html);
+    }
+
+    #[test]
+    fn field_chips() {
+        use serde_json::json;
+        assert_eq!(field_chip("bottle_formula_ml", &json!(55)), ("🍼 55 ml formula".into(), false));
+        assert_eq!(field_chip("dirty", &json!(false)), ("💩 no dirty diaper".into(), true));
+        assert_eq!(field_chip("bottle_formula_ml", &Value::Null), ("🍼 no formula".into(), true));
+        assert_eq!(field_chip("wet", &json!(true)), ("💧 wet diaper".into(), false));
+        assert_eq!(field_chip("breast_left_min", &json!(12)), ("🤱 left 12 min".into(), false));
+        assert_eq!(field_chip("weight_g", &json!(3900)), ("⚖️ 3900 g".into(), false));
+        assert_eq!(field_chip("bath", &json!("with_soap")), ("🛁 bath with soap".into(), false));
+        for f in crate::registry::FIELDS {
+            assert!(!field_chip(f.name, &json!(1)).0.is_empty(), "{}", f.name);
+        }
     }
 
     #[test]
