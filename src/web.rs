@@ -253,15 +253,26 @@ fn timeline_svg(clock: &crate::time::Clock, entries: &[en::Entry], s: &Value, no
         svg += &format!(r#"<rect x="{:.1}" y="{:.1}" width="{:.1}" height="17" class="{}"/>"#, x(seg), h - 17.0, x(end) - x(seg), if n { "night" } else { "day" });
         seg = end;
     }
-    // Hour lines, labelled every two hours.
+    // Hour lines, labelled every two hours; midnight with the day ("Sun 9")
+    // instead of 00, and an hour label that would overlap a day left out.
+    let mut labels: Vec<(f64, String, bool, &str)> = vec![]; // x, text, is a day, class
     let mut hr = from - from.rem_euclid(3600) + 3600;
     while hr < to {
         svg += &format!(r#"<line x1="{0:.1}" x2="{0:.1}" y1="6" y2="{1:.1}" class="hour"/>"#, x(hr), h - 18.0);
-        let hh = clock.zoned(hr).strftime("%H").to_string();
-        if hh.parse::<i64>().unwrap_or(0) % 2 == 0 {
-            svg += &format!(r#"<text x="{:.1}" y="{}" text-anchor="middle" class="{}">{hh}</text>"#, x(hr), h - 4.0, if night(hr) { "hn" } else { "hd" });
+        let z = clock.zoned(hr);
+        if z.hour() % 2 == 0 {
+            let day = z.hour() == 0;
+            let text = if day { z.strftime("%a %-d").to_string() } else { z.strftime("%H").to_string() };
+            labels.push((x(hr), text, day, if night(hr) { "hn" } else { "hd" }));
         }
         hr += 3600;
+    }
+    let half = |t: &str| t.chars().count() as f64 * 3.5; // about 7 px a character
+    for (lx, text, day, class) in &labels {
+        let overlaps = !day && labels.iter().any(|(dx, dt, d, _)| *d && (lx - dx).abs() < half(text) + half(dt) + 4.0);
+        if !overlaps {
+            svg += &format!(r#"<text x="{lx:.1}" y="{}" text-anchor="middle" class="{class}">{text}</text>"#, h - 4.0);
+        }
     }
     svg += &format!(r#"<line x1="{0:.1}" x2="{0:.1}" y1="2" y2="{1:.1}" class="now"/>"#, x(now), h - 16.0);
     let mut put = |lane: usize, emoji: &str, t: i64, opacity: Option<&str>, ring: bool, title: String| {
@@ -1711,6 +1722,7 @@ mod tests {
         assert!(all.contains(r#"id="tl" data-now="1836""#), "{all}");
         assert!(all.contains("07:00 🍼 60 ml formula"), "reaches back 48 hours");
         assert!(all.contains(r#"class="night""#) && all.contains(r#"class="hn">04<"#) && all.contains(r#"class="hd">08<"#), "night band 00–08");
+        assert!(all.contains(r#"class="hn">Fri 7<"#) && !all.contains(r#">00<"#), "midnight: the day instead of 00");
         // Feeds every 3h30 after 15:30, as starts; ends within the 12 hours ahead.
         assert!(all.contains("18:45 start (feed ~19:00)") && all.contains("01:45 start (feed ~02:00)") && !all.contains("feed ~05:30"), "{all}");
     }
