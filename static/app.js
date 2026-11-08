@@ -326,6 +326,12 @@ if ($('push')) {
     });
   }
 
+  // A tap on another day in the timeline goes there too (a swipe gives no click).
+  tl.addEventListener('click', (e) => {
+    const date = dayAt(tAt(tl.scrollLeft + e.clientX - tl.getBoundingClientRect().left)).date;
+    if (date !== shown) goTo(date, true);
+  });
+
   // Where to open.
   let saved = null;
   try {
@@ -381,9 +387,12 @@ if ($('push')) {
     if (best === z && s < 0.8 && z < PXH.length - 1) best = z + 1;
     return best;
   }
-  async function commit(p) {
+  function commit(p) {
     const nz = level(p.s);
     if (nz === z) { unstretch(); return; }
+    zoomTo(nz, p);
+  }
+  async function zoomTo(nz, p) {
     const g = ++gen;
     z = nz;
     measure();
@@ -402,8 +411,23 @@ if ($('push')) {
     tl.scrollLeft = left;
     fill();
     save();
+    buttons();
     show(inView()).then(setUrl);
   }
+  // Buttons, for those without pinch (shown with a mouse or trackpad).
+  const zb = document.querySelectorAll('.tl-zoom button');
+  function buttons() {
+    for (const b of zb) b.disabled = Number(b.dataset.zoom) > 0 ? z === 0 : z === PXH.length - 1;
+  }
+  for (const b of zb) {
+    b.addEventListener('click', () => {
+      const nz = z - Number(b.dataset.zoom);
+      if (nz < 0 || nz >= PXH.length) return;
+      touched = true;
+      zoomTo(nz, {sx: AT * W(), t: tAt(ref())});
+    });
+  }
+  buttons();
   const start = (sx) => ({sx, ax: tl.scrollLeft + sx, t: tAt(tl.scrollLeft + sx), s: 1});
   const left0 = () => tl.getBoundingClientRect().left;
   let pinch = null;

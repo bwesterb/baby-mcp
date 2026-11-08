@@ -300,7 +300,7 @@ fn timeline(clock: &crate::time::Clock, tr: &Track, days: &str, now: i64, focus:
     let list: Vec<String> = tl_days(clock, tr, now).iter().map(|(a, _)| format!("{}:{a}", clock.day(*a))).collect();
     let pxh: Vec<String> = TL_ZOOM.iter().map(|z| z.pxh.to_string()).collect();
     format!(
-        r#"<div class="card timeline"><div class="tl-scroll" id="tl" data-from="{}" data-to="{}" data-now="{now}" data-today="{}" data-at="{TL_NOW_AT}" data-z="{}" data-pxh="{}" data-pad="{TL_PAD}" data-days="{}" data-focus="{}"><svg class="tl" width="{:.0}" height="{}" role="img" aria-label="Timeline: feeds, diapers and the rest, by day">{days}</svg></div></div>"#,
+        r#"<div class="card timeline"><div class="tl-zoom"><button type="button" data-zoom="-1" aria-label="Zoom out" title="Zoom out">−</button><button type="button" data-zoom="1" aria-label="Zoom in" title="Zoom in">+</button></div><div class="tl-scroll" id="tl" data-from="{}" data-to="{}" data-now="{now}" data-today="{}" data-at="{TL_NOW_AT}" data-z="{}" data-pxh="{}" data-pad="{TL_PAD}" data-days="{}" data-focus="{}"><svg class="tl" width="{:.0}" height="{}" role="img" aria-label="Timeline: feeds, diapers and the rest, by day">{days}</svg></div></div>"#,
         tr.from,
         tr.to,
         clock.day(now),
