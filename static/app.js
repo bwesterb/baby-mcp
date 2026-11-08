@@ -181,6 +181,7 @@ if ($('push')) {
   const SVGNS = 'http://www.w3.org/2000/svg';
   const PXH = d.pxh.split(',').map(Number), PAD = Number(d.pad);
   const FROM = Number(d.from), TO = Number(d.to), NOW = Number(d.now), TODAY = d.today;
+  const TODAY_END = Number(d.todayEnd);
   const days = d.days.split(',').map((s) => { const [date, start] = s.split(':'); return {date, start: Number(start)}; });
   days.forEach((day, i) => { day.end = i + 1 < days.length ? days[i + 1].start : TO; });
   let z = Number(d.z);
@@ -193,7 +194,7 @@ if ($('push')) {
 
   // Days in date order, so a later one paints over an earlier one's edge.
   function place(el) {
-    const after = [...svg.children].find((o) => o.dataset.day > el.dataset.day);
+    const after = [...svg.children].find((o) => o.dataset.day && o.dataset.day > el.dataset.day);
     svg.insertBefore(el, after || null);
   }
   async function fetchDay(day, zz) {
@@ -243,11 +244,27 @@ if ($('push')) {
     return logs.get(date);
   };
   const near = (date, k) => { const i = days.findIndex((dd) => dd.date === date); return days[i + k] && days[i + k].date; };
+  // A bar under the day the log shows.
+  const bar = document.createElementNS(SVGNS, 'rect');
+  bar.setAttribute('class', 'on');
+  bar.setAttribute('height', '3');
+  bar.setAttribute('rx', '1.5');
+  bar.setAttribute('y', String(Number(svg.getAttribute('height')) - 4));
+  function mark(date) {
+    const day = days.find((dd) => dd.date === date);
+    if (!day) return;
+    const a = x(day.start) + 2, b = x(date === TODAY ? Math.min(day.end, TODAY_END) : day.end) - 2;
+    bar.setAttribute('x', String(a));
+    bar.setAttribute('width', String(Math.max(0, b - a)));
+    svg.appendChild(bar);
+  }
   let shown = log ? log.dataset.day : TODAY, seq = 0;
+  mark(shown);
   async function show(date) {
     if (!log || date === shown) return;
     const was = shown, my = ++seq;
     shown = date;
+    mark(date);
     try {
       const html = await getLog(date);
       if (my !== seq) return;
@@ -257,7 +274,7 @@ if ($('push')) {
       // The days next to it, for scrolling on.
       for (const k of [-1, 1]) { const n = near(date, k); if (n) getLog(n).catch(() => {}); }
     } catch (e) {
-      if (my === seq) shown = was;
+      if (my === seq) { shown = was; mark(was); }
     }
   }
   // The address follows when scrolling stops (Safari limits how often).
@@ -345,10 +362,11 @@ if ($('push')) {
     const els = await Promise.all(need.map((day) => fetchDay(day, z).catch(() => null)));
     if (g !== gen) return;
     loaded.clear();
-    for (const el of [...svg.children]) el.remove();
+    for (const el of [...svg.querySelectorAll(':scope > svg')]) el.remove();
     svg.setAttribute('width', String(Math.round(x(TO) + PAD)));
     unstretch();
     els.forEach((el, i) => { if (el) { loaded.set(need[i].date, el); place(el); } });
+    mark(shown);
     tl.scrollLeft = left;
     fill();
     save();

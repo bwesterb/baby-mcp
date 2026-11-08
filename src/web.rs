@@ -218,6 +218,8 @@ const TL_NOW_AT: f64 = 0.7;
 const TL_NIGHT_UNTIL: i8 = 8;
 const TL_PAD: f64 = 24.0;
 const TL_H: f64 = 92.0;
+/// Room under the strip for the bar marking the day the log shows.
+const TL_ON_H: f64 = 6.0;
 
 /// A zoom level (pinch): pixels per hour, and hours between hour labels and
 /// between hour lines. The widest level summarises each day instead.
@@ -299,15 +301,17 @@ fn timeline(clock: &crate::time::Clock, tr: &Track, days: &str, now: i64, focus:
     let list: Vec<String> = tl_days(clock, tr, now).iter().map(|(a, _)| format!("{}:{a}", clock.day(*a))).collect();
     let pxh: Vec<String> = TL_ZOOM.iter().map(|z| z.pxh.to_string()).collect();
     format!(
-        r#"<div class="card timeline"><div class="tl-scroll" id="tl" data-from="{}" data-to="{}" data-now="{now}" data-today="{}" data-at="{TL_NOW_AT}" data-z="{}" data-pxh="{}" data-pad="{TL_PAD}" data-days="{}" data-focus="{}"><svg class="tl" width="{:.0}" height="{TL_H}" role="img" aria-label="Timeline: feeds, diapers and the rest, by day">{days}</svg></div></div>"#,
+        r#"<div class="card timeline"><div class="tl-scroll" id="tl" data-from="{}" data-to="{}" data-now="{now}" data-today="{}" data-today-end="{}" data-at="{TL_NOW_AT}" data-z="{}" data-pxh="{}" data-pad="{TL_PAD}" data-days="{}" data-focus="{}"><svg class="tl" width="{:.0}" height="{}" role="img" aria-label="Timeline: feeds, diapers and the rest, by day">{days}</svg></div></div>"#,
         tr.from,
         tr.to,
         clock.day(now),
+        clock.next_day_start(now),
         tr.z,
         pxh.join(","),
         list.join(","),
         focus.map(|f| f.to_string()).unwrap_or_default(),
-        tr.width()
+        tr.width(),
+        TL_H + TL_ON_H
     )
 }
 
