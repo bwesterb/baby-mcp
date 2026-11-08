@@ -662,7 +662,7 @@ pub async fn status(State(app): State<Arc<App>>, headers: HeaderMap) -> Response
     // repeated in the log.
     let today_rest: Vec<en::Entry> = today.iter().filter(|e| e.attention_by == 0).cloned().collect();
     body += &log_card("<h2>Today's log</h2>", &today_rest, &loggers, clock, if today.is_empty() { "Nothing logged yet today." } else { "Only entries that need attention so far." });
-    html::render(Page { title: "Status · baby-mcp", body, nav: Some(&user.display_name), refresh: Some(60), viewer: false })
+    html::render(Page { title: "Status · baby-mcp", body, nav: Some(&user.display_name), refresh: Some(60), viewer: false, footer_extra: String::new() })
 }
 
 /// A past (or the current) day: totals and the full log, with navigation.
@@ -705,7 +705,7 @@ pub async fn day(
     body += &totals_card("<h2>Totals</h2>", &day_totals, weight_of(&entries, &app.baby()));
     let loggers = app.db.with(|c| Ok(en::loggers(c, &entries))).ok().and_then(Result::ok).unwrap_or_default();
     body += &log_card("<h2>Log</h2>", &entries, &loggers, clock, "Nothing logged this day.");
-    html::render(Page { title: &format!("{title} · baby-mcp"), body, viewer: false, nav: Some(&user.display_name), refresh: Some(60) })
+    html::render(Page { title: &format!("{title} · baby-mcp"), body, viewer: false, footer_extra: String::new(), nav: Some(&user.display_name), refresh: Some(60) })
 }
 
 // ------------------------------------------------------------- charts
@@ -1151,14 +1151,15 @@ pub async fn charts(
     ], "", project(|t| t.diapers as f64));
     body += &bars("Feeds per day", &days, &[("feeds", "#6b6b70", |d| d.totals.feeds as f64)], "", project(|t| t.feeds as f64));
     // Parents: look at the page as a viewer (say a grandparent) sees it.
+    let mut view_as = String::new();
     if !user.viewer || preview {
-        body += &format!(
+        view_as = format!(
             r#"<div class="viewas"><label for="viewas">View as</label><select id="viewas"><option value="user"{}>user</option><option value="viewer"{}>viewer</option></select></div>"#,
             if preview { "" } else { " selected" },
             if preview { " selected" } else { "" }
         );
     }
-    html::render(Page { title: "Charts · baby-mcp", body, nav: Some(&user.display_name), refresh: Some(60), viewer: user.viewer })
+    html::render(Page { title: "Charts · baby-mcp", body, nav: Some(&user.display_name), refresh: Some(60), viewer: user.viewer, footer_extra: view_as })
 }
 
 // ------------------------------------------------------------- capture
@@ -1176,7 +1177,7 @@ pub async fn add_page(State(app): State<Arc<App>>, headers: HeaderMap) -> Respon
 </form>
 <p class="mut">Saved as you write it. Claude fills in the details later, including the time if you mention one; otherwise it is logged as now.</p></div>"#
     );
-    html::render(Page { title: "Add · baby-mcp", body, nav: Some(&user.display_name), refresh: None, viewer: false })
+    html::render(Page { title: "Add · baby-mcp", body, nav: Some(&user.display_name), refresh: None, viewer: false, footer_extra: String::new() })
 }
 
 #[derive(Deserialize)]
@@ -1529,7 +1530,7 @@ pub async fn entry_page(State(app): State<Arc<App>>, headers: HeaderMap, axum::e
         );
     }
     body += "</table></div>";
-    html::render(Page { title: &format!("Entry {id} · baby-mcp"), body, viewer: false, nav: Some(&user.display_name), refresh: None })
+    html::render(Page { title: &format!("Entry {id} · baby-mcp"), body, viewer: false, footer_extra: String::new(), nav: Some(&user.display_name), refresh: None })
 }
 
 pub async fn not_found() -> Response {

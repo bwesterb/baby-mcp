@@ -119,7 +119,7 @@ pub async fn page(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
         body += "</table>";
     }
     body += "</div>";
-    html::render(Page { title: "Notifications · baby-mcp", body, nav: Some(&user.display_name), refresh: None, viewer: false })
+    html::render(Page { title: "Notifications · baby-mcp", body, nav: Some(&user.display_name), refresh: None, viewer: false, footer_extra: String::new() })
 }
 
 #[derive(Deserialize)]

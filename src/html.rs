@@ -38,11 +38,12 @@ pub const JS: &str = include_str!("../static/app.js");
 pub const VERSION: &str = env!("BABY_MCP_VERSION");
 const REPO: &str = "https://github.com/bwesterb/baby-mcp";
 
-/// The footer: the version, linked to its commit on GitHub (or the repository).
-fn footer() -> String {
+/// The footer: the version, linked to its commit on GitHub (or the repository),
+/// and `extra` on the same line at the right.
+fn footer(extra: &str) -> String {
     let commit = VERSION.trim_end_matches("-dirty").rsplit("-g").next().unwrap_or(VERSION);
     let href = if commit.starts_with('v') { REPO.to_string() } else { format!("{REPO}/commit/{commit}") };
-    format!(r#"<footer><a href="{}" title="baby-mcp on GitHub">{}</a></footer>"#, esc(&href), esc(VERSION))
+    format!(r#"<footer><a href="{}" title="baby-mcp on GitHub">{}</a>{extra}</footer>"#, esc(&href), esc(VERSION))
 }
 
 pub struct Page<'a> {
@@ -50,6 +51,8 @@ pub struct Page<'a> {
     pub body: String,
     /// A viewer: only the charts in the menu.
     pub viewer: bool,
+    /// Extra HTML on the footer's line (at the right), e.g. the view-as menu.
+    pub footer_extra: String,
     pub nav: Option<&'a str>, // logged-in display name
     pub refresh: Option<u32>,
 }
@@ -73,7 +76,7 @@ pub fn render(p: Page) -> Response {
     let html = format!(
         r#"<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">{refresh}{head}<title>{title}</title><link rel="stylesheet" href="/app.css?v={v}"><script src="/app.js?v={v}" defer></script></head><body><main>{nav}{body}{footer}</main></body></html>"#,
         title = esc(p.title),
-        footer = footer(),
+        footer = footer(&p.footer_extra),
         head = app_head(),
         v = version(),
         body = p.body
@@ -101,6 +104,7 @@ pub fn error_page(status: StatusCode, msg: &str) -> Response {
         nav: None,
         refresh: None,
         viewer: false,
+        footer_extra: String::new(),
     });
     *r.status_mut() = status;
     r
