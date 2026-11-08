@@ -891,7 +891,8 @@ fn change_chart(baby: &en::Baby, weights: &[(i64, f64)], now: i64) -> String {
     }
     let mid = table.percentiles.iter().position(|p| *p == 50.0).unwrap_or(n / 2);
     svg += &format!(r##"<polyline points="{}" fill="none" stroke="#4a7fb5" stroke-opacity=".7" stroke-dasharray="4 4"/>"##, line(&col(mid)));
-    if age <= show {
+    // Today, when the last weighing is at least a day ago.
+    if age <= show && pts.last().is_none_or(|p| age - p.0 >= 1.0) {
         svg += &today_marker(x(age), 8.0, h - b, w - 8.0);
     }
     svg += &format!(r##"<polyline points="{}" fill="none" stroke="#c0503e" stroke-width="2"/>"##, line(&pts));
@@ -978,7 +979,11 @@ fn growth_chart(baby: &en::Baby, weights: &[(i64, f64)], now: i64) -> String {
         svg += &format!(r##"<polygon points="{}" fill="#2f6f5e" fill-opacity=".14"/>"##, band(&p15, &p85));
         svg += &format!(r##"<polyline points="{}" fill="none" stroke="#2f6f5e" stroke-opacity=".6" stroke-dasharray="4 4"/>"##, line(&p50));
     }
-    svg += &today_marker(x((now - birth) as f64 / 86400.0), 8.0, h - b, w - 8.0);
+    // Today, when the last weighing is at least a day ago.
+    let age = (now - birth) as f64 / 86400.0;
+    if pts.last().is_none_or(|p| age - p.0 >= 1.0) {
+        svg += &today_marker(x(age), 8.0, h - b, w - 8.0);
+    }
     svg += &format!(r##"<polyline points="{}" fill="none" stroke="#c0503e" stroke-width="2"/>"##, line(&pts));
     for (d, g) in &pts {
         let pct = baby.weight_percentile(*g, birth + (*d * 86400.0) as i64).map(|(p, _)| format!(" · {}", crate::growth::label(p))).unwrap_or_default();
@@ -1642,6 +1647,16 @@ mod tests {
         for f in crate::registry::FIELDS {
             assert!(!field_chip(f.name, &json!(1)).0.is_empty(), "{}", f.name);
         }
+    }
+
+    #[test]
+    fn today_marker_only_a_day_after_the_last_weighing() {
+        let birth = 1_760_000_000;
+        let baby = en::Baby { name: "B".into(), birth: Some(birth), birth_weight_g: Some(3900.0), sex: None, growth: None, delivery: None, change: None,
+                              aim_feeds_per_day: None, feed_prep_s: 0 };
+        let w = [(birth + 3 * 86400, 3700.0)];
+        assert!(!growth_chart(&baby, &w, birth + 3 * 86400 + 12 * 3600).contains("chart-today"), "weighed today");
+        assert!(growth_chart(&baby, &w, birth + 5 * 86400).contains("chart-today"), "two days later");
     }
 
     #[test]
