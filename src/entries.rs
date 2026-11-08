@@ -530,6 +530,10 @@ fn day_plus(clock: &Clock, t: i64, span: jiff::Span) -> i64 {
     clock.date_start(&d.to_string()).expect("valid date")
 }
 
+/// After a feed without a side logged, how long "put her down now facing …"
+/// is shown (she may not be down yet).
+const PUT_DOWN_WITHIN: i64 = 2 * 3600;
+
 /// Two baths a week, alternating with and without soap.
 pub const BATH_EVERY: i64 = 84 * 3600;
 pub const BATH_GOAL: &str = "two baths a week, alternating with and without soap: a bath is due 3.5 days after the last one (a sponge wash doesn't count), of the other kind than the last";
@@ -640,12 +644,18 @@ pub fn status(c: &Connection, clock: &Clock, baby: &Baby, now: i64) -> Result<Va
         if let Some(side) = e.str("sleep_facing") {
             let other = |s: &str| if s == "left" { "right" } else { "left" };
             // Feeds since (a top-up isn't a new feed: no new put-down).
-            let feeds_since = feed_episodes(&list(c, e.at - TOP_UP_WITHIN, now + 1, false)?).iter().filter(|f| f.0 > e.at).count();
+            let since: Vec<(i64, i64)> = feed_episodes(&list(c, e.at - TOP_UP_WITHIN, now + 1, false)?).into_iter().filter(|f| f.0 > e.at).collect();
+            let feeds_since = since.len();
             let current = if feeds_since % 2 == 0 { side } else { other(side) };
             let mut v = json!({"last": side, "last_at": clock.fmt(e.at), "feeds_since": feeds_since, "next": other(current),
                                "note": "alternate the side the face is turned to after every feed; feeds since the last logged side are assumed to have alternated"});
             if feeds_since > 0 {
                 v["assumed_current"] = json!(current);
+            }
+            // Right after a feed without a side logged she may not be down
+            // yet: the side for now (that feed's put-down), besides the next.
+            if since.last().is_some_and(|f| now - f.1 < PUT_DOWN_WITHIN) {
+                v["put_down_now"] = json!(current);
             }
             out["sleep_facing"] = v;
         }
@@ -849,6 +859,11 @@ pub mod tests {
             insert(c, u, &NewEntry { at: clock.parse("2025-11-07 15:20", 0).unwrap(), duration_s: None, text: "+20 ml".into(),
                 fields: fields(json!({"bottle_formula_ml": 20})), attention_by: 0, attention_why: None }, later).unwrap();
             assert_eq!(status(c, &clock, &baby, later).unwrap()["sleep_facing"]["next"], "right", "a top-up doesn't flip the side");
+            // Right after a feed without a side: the side for now as well.
+            let just = clock.parse("2025-11-07 16:00", 0).unwrap();
+            let v = &status(c, &clock, &baby, just).unwrap()["sleep_facing"];
+            assert_eq!((v["put_down_now"].as_str(), v["next"].as_str()), (Some("left"), Some("right")), "{v}");
+            assert!(status(c, &clock, &baby, later).unwrap()["sleep_facing"]["put_down_now"].is_null(), "not hours later");
             if baby.growth.is_some() {
                 assert_eq!(s["birth_weight_percentile"]["label"], "P92");
                 assert!(s["weight_percentile"]["label"].as_str().unwrap().starts_with('P'));

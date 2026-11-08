@@ -181,6 +181,16 @@ fn amount_line(g: &Value) -> String {
 /// "😴 face ➡️ right" (the next side to put her down on) for the feed tile.
 fn sleep_line(v: &Value) -> String {
     let Some(next) = v["next"].as_str() else { return String::new() };
+    // Right after a feed without a side logged: the side for now first.
+    if let Some(now) = v["put_down_now"].as_str() {
+        return format!(
+            r#"<div class="side">😴 now {} {} <span class="mut">· next {} {}</span></div>"#,
+            side_arrow(now),
+            esc(now),
+            side_arrow(next),
+            esc(next)
+        );
+    }
     let assumed = match v["feeds_since"].as_u64() {
         Some(n) if n > 0 => format!(
             r#" <span class="mut">(assumed: alternated after {n} feed{} since the last logged side)</span>"#,
