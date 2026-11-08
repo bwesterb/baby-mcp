@@ -49,6 +49,8 @@ pub fn router(app: Arc<app::App>) -> Router {
     Router::new()
         .route("/", get(web::status))
         .route("/day", get(web::day))
+        .route("/log", get(web::log_part))
+        .route("/timeline", get(web::timeline_day))
         .route("/charts", get(web::charts))
         .route("/entry/{id}", get(web::entry_page))
         .route("/add", get(web::add_page).post(web::add))

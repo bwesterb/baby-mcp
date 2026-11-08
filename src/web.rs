@@ -206,40 +206,129 @@ fn sleep_line(v: &Value) -> String {
     format!(r#"<div class="side">😴 face {} {}{assumed}</div>"#, side_arrow(next), esc(next))
 }
 
-/// The timeline above "what's next": how far back and ahead it goes. It is
-/// wider than the screen and scrolls sideways, opening with "now" at
-/// TL_NOW_AT of the width (the script restores a recent scroll position).
+/// The timeline above "what's next": one long strip from the day of birth
+/// to the hours ahead, wider than the screen. It opens with "now" at
+/// TL_NOW_AT of the width (or on the day shown); the script loads the days
+/// that scroll into view from `/timeline` and swaps the log below for the
+/// day in view.
 const TL_PAST: i64 = 48 * 3600;
 const TL_FUTURE: i64 = 12 * 3600;
 const TL_NOW_AT: f64 = 0.7;
-const TL_UNITS_PER_HOUR: f64 = 38.0;
 /// Night in the timeline's band: from midnight until this hour.
 const TL_NIGHT_UNTIL: i8 = 8;
+const TL_PAD: f64 = 24.0;
+const TL_H: f64 = 92.0;
 
-fn timeline(clock: &crate::time::Clock, entries: &[en::Entry], s: &Value, now: i64) -> String {
-    let (svg, now_x) = timeline_svg(clock, entries, s, now, TL_PAST, TL_FUTURE);
-    format!(r#"<div class="card timeline"><div class="tl-scroll" id="tl" data-now="{now_x:.0}" data-at="{TL_NOW_AT}">{svg}</div></div>"#)
+/// A zoom level (pinch): pixels per hour, and hours between hour labels and
+/// between hour lines. The widest level summarises each day instead.
+struct Zoom {
+    pxh: f64,
+    label: i8,
+    line: i8,
+}
+const TL_ZOOM: [Zoom; 4] = [
+    Zoom { pxh: 76.0, label: 1, line: 1 },
+    Zoom { pxh: 38.0, label: 2, line: 1 },
+    Zoom { pxh: 12.0, label: 6, line: 3 },
+    Zoom { pxh: 3.0, label: 24, line: 24 },
+];
+const TL_Z: usize = 1;
+const TL_SUMMARY: usize = 3;
+/// The cookie keeping the zoom level (so the page opens at it).
+const TL_Z_COOKIE: &str = "tlz";
+
+/// The whole strip: from midnight of the first day to the hours ahead.
+struct Track {
+    from: i64,
+    to: i64,
+    z: usize,
 }
 
-/// A strip with the last hours' entries and the next hours' expectations as
-/// emojis on three lanes (feeds, diapers, the rest): logged ones solid,
-/// expected ones faded, overdue ones just after "now" with an orange ring.
-/// The expected feed is when to start (diaper first). Returns the svg and
-/// the x of "now" (in pixels: one unit is one pixel).
-fn timeline_svg(clock: &crate::time::Clock, entries: &[en::Entry], s: &Value, now: i64, past: i64, future: i64) -> (String, f64) {
-    let (l, r) = (12.0, 12.0);
-    let w = l + r + (past + future) as f64 / 3600.0 * TL_UNITS_PER_HOUR;
-    let h = 92.0;
-    let (from, to) = (now - past, now + future);
-    let x = |t: i64| l + (t - from) as f64 / (to - from) as f64 * (w - l - r);
+impl Track {
+    fn pxh(&self) -> f64 {
+        TL_ZOOM[self.z].pxh
+    }
+    fn x(&self, t: i64) -> f64 {
+        TL_PAD + (t - self.from) as f64 / 3600.0 * self.pxh()
+    }
+    fn width(&self) -> f64 {
+        self.x(self.to) + TL_PAD
+    }
+}
+
+fn zoom(headers: &HeaderMap) -> usize {
+    auth::cookie(headers, TL_Z_COOKIE).and_then(|z| z.parse().ok()).filter(|z| *z < TL_ZOOM.len()).unwrap_or(TL_Z)
+}
+
+/// From the day of birth (or the first entry, or two days back), to the hours ahead.
+fn track(c: &rusqlite::Connection, clock: &crate::time::Clock, baby: &en::Baby, now: i64, z: usize) -> Result<Track, String> {
+    let first: Option<i64> = c.query_row("SELECT MIN(at) FROM entry WHERE deleted = 0", [], |r| r.get(0)).map_err(en::err)?;
+    let start = [baby.birth, first, Some(now - TL_PAST)].into_iter().flatten().min().unwrap_or(now);
+    Ok(Track { from: clock.day_start(start), to: now + TL_FUTURE, z })
+}
+
+/// The days of a track, as (start, end); today's runs on to the hours ahead.
+fn tl_days(clock: &crate::time::Clock, tr: &Track, now: i64) -> Vec<(i64, i64)> {
+    let today = clock.day_start(now);
+    let mut out = vec![];
+    let mut d = tr.from;
+    while d < tr.to {
+        if d >= today {
+            out.push((d, tr.to));
+            break;
+        }
+        let next = clock.next_day_start(d);
+        out.push((d, next));
+        d = next;
+    }
+    out
+}
+
+/// The days of a track overlapping `from..to`, rendered (today's with what's
+/// expected, from the status `s`).
+fn tl_render(clock: &crate::time::Clock, tr: &Track, entries: &[en::Entry], s: &Value, now: i64, from: i64, to: i64) -> String {
+    let today = clock.day_start(now);
+    tl_days(clock, tr, now)
+        .into_iter()
+        .filter(|(a, b)| *b > from && *a < to)
+        .map(|(a, b)| tl_day(clock, tr, entries, (a >= today).then_some(s), now, a, b))
+        .collect()
+}
+
+fn timeline(clock: &crate::time::Clock, tr: &Track, days: &str, now: i64, focus: Option<i64>) -> String {
+    let list: Vec<String> = tl_days(clock, tr, now).iter().map(|(a, _)| format!("{}:{a}", clock.day(*a))).collect();
+    let pxh: Vec<String> = TL_ZOOM.iter().map(|z| z.pxh.to_string()).collect();
+    format!(
+        r#"<div class="card timeline"><div class="tl-scroll" id="tl" data-from="{}" data-to="{}" data-now="{now}" data-today="{}" data-at="{TL_NOW_AT}" data-z="{}" data-pxh="{}" data-pad="{TL_PAD}" data-days="{}" data-focus="{}"><svg class="tl" width="{:.0}" height="{TL_H}" role="img" aria-label="Timeline: feeds, diapers and the rest, by day">{days}</svg></div></div>"#,
+        tr.from,
+        tr.to,
+        clock.day(now),
+        tr.z,
+        pxh.join(","),
+        list.join(","),
+        focus.map(|f| f.to_string()).unwrap_or_default(),
+        tr.width()
+    )
+}
+
+/// One day of the timeline, as an svg at its place in the track: emojis on
+/// three lanes (feeds, diapers, the rest) over a day/night band with the
+/// hours. Today's (`s` given) runs on into the hours ahead with what's
+/// expected: faded, or overdue just after "now" with an orange ring. The
+/// expected feed is when to start (diaper first). At the widest zoom, a
+/// summary of the day instead.
+fn tl_day(clock: &crate::time::Clock, tr: &Track, entries: &[en::Entry], s: Option<&Value>, now: i64, from: i64, to: i64) -> String {
+    let zoom = &TL_ZOOM[tr.z];
+    let h = TL_H;
+    let x = |t: i64| (t - from) as f64 / 3600.0 * zoom.pxh;
+    let w = x(to);
     let lanes = [26.0, 50.0, 74.0]; // feeds, diapers, other (text baselines)
     let hm = |t: i64| clock.zoned(t).strftime("%H:%M").to_string();
-    let mut svg = format!(
-        r#"<svg class="tl" viewBox="0 0 {w:.0} {h}" width="{w:.0}" height="{h}" role="img" aria-label="The last {} hours and the next {}">"#,
-        past / 3600,
-        future / 3600
-    );
-    svg += &format!(r#"<rect x="{:.1}" y="4" width="{:.1}" height="{:.1}" class="future"/>"#, x(now), x(to) - x(now), h - 22.0);
+    let today = s.is_some();
+    let mut svg = format!(r#"<svg x="{:.1}" width="{w:.1}" height="{h}" overflow="visible" data-day="{}">"#, tr.x(from), clock.day(from));
+    if today {
+        svg += &format!(r#"<rect x="{:.1}" y="4" width="{:.1}" height="{:.1}" class="future"/>"#, x(now), x(to) - x(now), h - 22.0);
+    }
     // Night (00–08) and day as a band under the hour numbers.
     let night = |t: i64| clock.zoned(t).hour() < TL_NIGHT_UNTIL;
     let mut seg = from;
@@ -253,14 +342,50 @@ fn timeline_svg(clock: &crate::time::Clock, entries: &[en::Entry], s: &Value, no
         svg += &format!(r#"<rect x="{:.1}" y="{:.1}" width="{:.1}" height="17" class="{}"/>"#, x(seg), h - 17.0, x(end) - x(seg), if n { "night" } else { "day" });
         seg = end;
     }
-    // Hour lines, labelled every two hours; midnight with the day ("Sun 9")
-    // instead of 00, and an hour label that would overlap a day left out.
+    let shown: Vec<&en::Entry> = entries.iter().filter(|e| e.at >= from && e.at < to && e.at <= now).collect();
+    let now_line = |svg: &mut String| {
+        if today {
+            *svg += &format!(r#"<line x1="{0:.1}" x2="{0:.1}" y1="2" y2="{1:.1}" class="now"/>"#, x(now), h - 16.0);
+        }
+    };
+
+    if tr.z == TL_SUMMARY {
+        // The day: a line at midnight, the date in the band, and its totals.
+        let date = clock.zoned(from).strftime("%a %-d").to_string();
+        svg += &format!(r#"<line x1="0" x2="0" y1="6" y2="{:.1}" class="hour"/>"#, h - 18.0);
+        let noon = x(from + 12 * 3600).min(w / 2.0);
+        svg += &format!(r#"<text x="{noon:.1}" y="{}" text-anchor="middle" class="hd">{date}</text>"#, h - 4.0);
+        now_line(&mut svg);
+        let t = en::totals_from(entries.iter().filter(|e| e.at < to && e.at <= now), from);
+        let cx = if today { x(from + (now - from) / 2) } else { noon };
+        let mut lines = vec![];
+        if t.feeds > 0 {
+            lines.push((0, format!("🍼{}", t.feeds)));
+        }
+        let diapers: Vec<String> = [(t.wet, "💧"), (t.dirty, "💩")].iter().filter(|(n, _)| *n > 0).map(|(n, e)| format!("{e}{n}")).collect();
+        if !diapers.is_empty() {
+            lines.push((1, diapers.join(" ")));
+        }
+        if t.total_ml > 0.0 {
+            lines.push((2, format!("{:.0} ml", t.total_ml)));
+        }
+        let title = format!("{date}: {} feeds, {:.0} ml bottle, {} wet, {} dirty", t.feeds, t.total_ml, t.wet, t.dirty);
+        for (lane, text) in lines {
+            svg += &format!(r#"<text x="{cx:.1}" y="{}" text-anchor="middle" class="sum"><title>{}</title>{text}</text>"#, lanes[lane] - 3.0, esc(&title));
+        }
+        return svg + "</svg>";
+    }
+
+    // Hour lines and labels; midnight with the day ("Sun 9") instead of 00,
+    // and an hour label that would overlap a day left out.
     let mut labels: Vec<(f64, String, bool, &str)> = vec![]; // x, text, is a day, class
-    let mut hr = from - from.rem_euclid(3600) + 3600;
+    let mut hr = from + (3600 - from.rem_euclid(3600)) % 3600;
     while hr < to {
-        svg += &format!(r#"<line x1="{0:.1}" x2="{0:.1}" y1="6" y2="{1:.1}" class="hour"/>"#, x(hr), h - 18.0);
         let z = clock.zoned(hr);
-        if z.hour() % 2 == 0 {
+        if z.hour() % zoom.line == 0 {
+            svg += &format!(r#"<line x1="{0:.1}" x2="{0:.1}" y1="6" y2="{1:.1}" class="hour"/>"#, x(hr), h - 18.0);
+        }
+        if z.hour() % zoom.label == 0 {
             let day = z.hour() == 0;
             let text = if day { z.strftime("%a %-d").to_string() } else { z.strftime("%H").to_string() };
             labels.push((x(hr), text, day, if night(hr) { "hn" } else { "hd" }));
@@ -274,26 +399,28 @@ fn timeline_svg(clock: &crate::time::Clock, entries: &[en::Entry], s: &Value, no
             svg += &format!(r#"<text x="{lx:.1}" y="{}" text-anchor="middle" class="{class}">{text}</text>"#, h - 4.0);
         }
     }
-    svg += &format!(r#"<line x1="{0:.1}" x2="{0:.1}" y1="2" y2="{1:.1}" class="now"/>"#, x(now), h - 16.0);
+    now_line(&mut svg);
+    // Smaller emojis when zoomed out.
+    let (k, emo) = if zoom.pxh < 20.0 { (0.72, "emo s") } else { (1.0, "emo") };
     let mut put = |lane: usize, emoji: &str, t: i64, opacity: Option<&str>, ring: bool, title: String| {
         let (cx, cy) = (x(t), lanes[lane]);
         if ring {
-            svg += &format!(r#"<circle cx="{cx:.1}" cy="{:.1}" r="11" class="ring"/>"#, cy - 6.0);
+            svg += &format!(r#"<circle cx="{cx:.1}" cy="{:.1}" r="{:.0}" class="ring"/>"#, cy - 6.0 * k, 11.0 * k);
         }
         svg += &format!(
-            r#"<text x="{cx:.1}" y="{cy}" text-anchor="middle" class="emo"{}><title>{}</title>{emoji}</text>"#,
+            r#"<text x="{cx:.1}" y="{cy}" text-anchor="middle" class="{emo}"{}><title>{}</title>{emoji}</text>"#,
             opacity.map(|o| format!(r#" opacity="{o}""#)).unwrap_or_default(),
             esc(&title)
         );
     };
-    for e in entries.iter().filter(|e| e.at >= from && e.at <= now) {
+    for e in shown {
         let title = format!("{} {}", hm(e.at), entry_summary(e));
         if e.is_feed() {
             put(0, "🍼", e.at, None, false, title.clone());
         }
         if e.is("dirty") && e.is("wet") {
             // Both: the poo with a small drop at its top right.
-            let both = format!(r#"💩<tspan x="{:.1}" y="{:.1}" class="badge">💧</tspan>"#, x(e.at) + 7.0, lanes[1] - 8.0);
+            let both = format!(r#"💩<tspan x="{:.1}" y="{:.1}" class="badge">💧</tspan>"#, x(e.at) + 7.0 * k, lanes[1] - 8.0 * k);
             put(1, &both, e.at, None, false, title.clone());
         } else if e.is("dirty") {
             put(1, "💩", e.at, None, false, title.clone());
@@ -310,6 +437,7 @@ fn timeline_svg(clock: &crate::time::Clock, entries: &[en::Entry], s: &Value, no
             put(2, "🤢", e.at, None, false, title.clone());
         }
     }
+    let Some(s) = s else { return svg + "</svg>" };
     // What's expected: overdue ones just after now, with a ring.
     let soon = now + 8 * 60;
     let mut expect = |lane: usize, emoji: &str, at: Option<i64>, label: String, opacity: &str| {
@@ -342,7 +470,7 @@ fn timeline_svg(clock: &crate::time::Clock, entries: &[en::Entry], s: &Value, no
     };
     let feed_label = |t: i64| if prep > 0 { format!("start (feed ~{})", hm(t + prep)) } else { "feed".to_string() };
     expect(0, "🍼", feed_at.map(|t| t - prep), feed_at.map(|t| feed_label(t - prep)).unwrap_or_default(), ".45");
-    let feed_gap = en::feed_gap(&en::feed_episodes(entries.iter().filter(|e| e.at > now - en::ESTIMATE_BACK)));
+    let feed_gap = en::feed_gap(&en::feed_episodes(entries.iter().filter(|e| e.at > now - en::ESTIMATE_BACK && e.at <= now)));
     for t in later(feed_at, feed_gap, prep) {
         expect(0, "🍼", Some(t), feed_label(t), ".25");
     }
@@ -352,8 +480,36 @@ fn timeline_svg(clock: &crate::time::Clock, entries: &[en::Entry], s: &Value, no
     if s["bath"]["due"]["at"].is_string() && !s["bath"]["due"]["never"].as_bool().unwrap_or(false) {
         expect(2, "🛁", at(&s["bath"]["due"]), "bath".into(), ".45");
     }
-    svg += "</svg>";
-    (svg, x(now))
+    svg + "</svg>"
+}
+
+/// One day of the timeline (`?date=…&z=…`), for the script to place.
+pub async fn timeline_day(State(app): State<Arc<App>>, headers: HeaderMap, Query(q): Query<HashMap<String, String>>) -> Response {
+    if let Err(r) = require(&app, &headers, "/") {
+        return r;
+    }
+    let t = now();
+    let clock = &app.clock;
+    let z = q.get("z").and_then(|z| z.parse().ok()).filter(|z| *z < TL_ZOOM.len()).unwrap_or(TL_Z);
+    let Some(start) = q.get("date").and_then(|d| clock.date_start(d).ok()) else {
+        return (StatusCode::BAD_REQUEST, "bad date").into_response();
+    };
+    let res = app.db.with(|c| {
+        Ok((|| {
+            let tr = track(c, clock, &app.baby(), t, z)?;
+            let Some((a, b)) = tl_days(clock, &tr, t).into_iter().find(|(a, _)| *a == start) else { return Ok(None) };
+            let today = a >= clock.day_start(t);
+            let s = if today { en::status(c, clock, &app.baby(), t)? } else { Value::Null };
+            let entries = en::list(c, a - en::ESTIMATE_BACK, b.min(t + 1), false)?;
+            Ok::<_, String>(Some(tl_day(clock, &tr, &entries, today.then_some(&s), t, a, b)))
+        })())
+    });
+    match res {
+        Ok(Ok(Some(svg))) => ([(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8"), (axum::http::header::CACHE_CONTROL, "no-store")], svg).into_response(),
+        Ok(Ok(None)) => (StatusCode::NOT_FOUND, "no such day").into_response(),
+        Ok(Err(e)) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, en::err(e)).into_response(),
+    }
 }
 
 /// One diaper tile: when the last diapers were, and the wet diaper warning.
@@ -570,24 +726,34 @@ fn weight_of(entries: &[en::Entry], baby: &en::Baby) -> Option<(f64, Option<Stri
     Some((w, (!sub.is_empty()).then(|| sub.join(" · "))))
 }
 
-pub async fn status(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
+pub async fn status(State(app): State<Arc<App>>, headers: HeaderMap, Query(q): Query<HashMap<String, String>>) -> Response {
     let user = match require(&app, &headers, "/") {
         Ok(u) => u,
         Err(r) => return r,
     };
     let t = now();
     let clock = &app.clock;
+    let today_start = clock.day_start(t);
+    // A past day in view (`?day=`): its log below the timeline, the timeline on it.
+    let day = q.get("day").and_then(|d| clock.date_start(d).ok()).filter(|d| *d < today_start);
+    let z = zoom(&headers);
     let res = app.db.with(|c| {
         Ok((|| {
             let s = en::status(c, clock, &app.baby(), t)?;
-            let today = en::list(c, clock.day_start(t), t + 1, false)?;
-            let loggers = en::loggers(c, &today)?;
-            let recent = en::list(c, t - TL_PAST, t + 1, false)?;
-            let today_totals = en::totals_between(c, clock.day_start(t), t + 1)?;
-            Ok::<_, String>((s, today, loggers, recent, today_totals))
+            let tr = track(c, clock, &app.baby(), t, z)?;
+            // The days around the opening view (the script loads the rest).
+            let span = if z == TL_SUMMARY { 7 * 86400 } else { 0 };
+            let (a, b) = match day {
+                Some(d) => (d - 86400 - span, d + 2 * 86400 + span),
+                None => (t - TL_PAST - span, tr.to),
+            };
+            let entries = en::list(c, a - en::ESTIMATE_BACK, t + 1, false)?;
+            let days = tl_render(clock, &tr, &entries, &s, t, a, b);
+            let log = daylog(&app, c, day.unwrap_or(today_start), t, &s)?;
+            Ok::<_, String>((s, tr, days, log))
         })())
     });
-    let (s, today, loggers, recent, today_totals) = match res {
+    let (s, tr, days, log) = match res {
         Ok(Ok(x)) => x,
         Ok(Err(e)) => return html::error_page(StatusCode::INTERNAL_SERVER_ERROR, &e),
         Err(e) => return html::error_page(StatusCode::INTERNAL_SERVER_ERROR, &en::err(e)),
@@ -622,7 +788,7 @@ pub async fn status(State(app): State<Arc<App>>, headers: HeaderMap) -> Response
         body += "</div>";
     }
 
-    body += &timeline(clock, &recent, &s, t);
+    body += &timeline(clock, &tr, &days, t, day.map(|d| d + 12 * 3600));
 
     let feed_what = s["last_feed"]["value"]["fields"].as_object().map(feed_summary).unwrap_or_default();
     let feed_warning = s["feeding_guidance"]["warnings"].as_array().is_some_and(|w| !w.is_empty());
@@ -643,80 +809,99 @@ pub async fn status(State(app): State<Arc<App>>, headers: HeaderMap) -> Response
         bath_tile(clock, &s["bath"], t),
     ];
     tiles.extend(vitamins_tile(clock, &s["vitamins"], t));
-    body += &whats_next(tiles);
-
-    let yesterday = clock.day(clock.day_start(t) - 3600);
-    let weight = s["last_weight"]["value"].as_f64().map(|w| {
-        let mut sub = vec![];
-        if let Some(l) = s["weight_percentile"]["label"].as_str() {
-            sub.push(l.to_string());
-        }
-        let change = &s["weight_change_percentile"];
-        if let (Some(c), Some(l)) = (change["percent_change"].as_f64(), change["label"].as_str()) {
-            let mode = app.cfg.baby.delivery.map(|d| d.describe()).unwrap_or("");
-            sub.push(format!("{c:+.1}% vs birth ({l} for {mode})"));
-        } else if let Some(v) = s["weight_vs_birth"].as_str().and_then(|v| v.split('(').nth(1)) {
-            sub.push(format!("{} vs birth", v.trim_end_matches(')')));
-        }
-        if s["birth_weight_regained"]["regained"] == true {
-            sub.push("✅ birth weight regained".into());
-        }
-        (w, (!sub.is_empty()).then(|| sub.join(" · ")))
-    });
-    body += &totals_card(
-        &format!(r#"<div class="head"><h2>Today</h2><a href="/day?date={yesterday}">← Yesterday</a></div>"#),
-        &today_totals,
-        weight,
-    );
-
-    // Entries needing attention are in their own card at the start, not
-    // repeated in the log.
-    let today_rest: Vec<en::Entry> = today.iter().filter(|e| e.attention_by == 0).cloned().collect();
-    body += &log_card("<h2>Today's log</h2>", &today_rest, &loggers, clock, if today.is_empty() { "Nothing logged yet today." } else { "Only entries that need attention so far." });
+    // What's next is about now: hidden while a past day is in view.
+    body += &format!(r#"<div class="now-only"{}>{}</div>"#, if day.is_some() { " hidden" } else { "" }, whats_next(tiles));
+    body += &format!(r#"<div id="daylog" data-day="{}">{log}</div>"#, clock.day(day.unwrap_or(today_start)));
     html::render(Page { title: "Status · baby-mcp", body, nav: Some(&user.display_name), refresh: Some(60), viewer: false, footer_extra: String::new() })
 }
 
-/// A past (or the current) day: totals and the full log, with navigation.
-pub async fn day(
-    State(app): State<Arc<App>>,
-    headers: HeaderMap,
-    Query(q): Query<std::collections::HashMap<String, String>>,
-) -> Response {
-    let user = match require(&app, &headers, "/day") {
-        Ok(u) => u,
-        Err(r) => return r,
-    };
-    let t = now();
+/// The day below the timeline: today's totals and log so far (entries
+/// needing attention are in their own card at the start, not repeated), or
+/// a past day's, with links to the days around it (`data-day`: the script
+/// scrolls the timeline there instead).
+fn daylog(app: &App, c: &rusqlite::Connection, start: i64, now: i64, s: &Value) -> Result<String, String> {
     let clock = &app.clock;
-    let today = clock.day_start(t);
-    let date = q.get("date").cloned().unwrap_or_else(|| clock.day(today - 3600));
-    let start = match clock.date_start(&date) {
-        Ok(s) => s,
-        Err(e) => return html::error_page(StatusCode::BAD_REQUEST, &e),
+    let today = clock.day_start(now);
+    let end = clock.next_day_start(start);
+    let entries = en::list(c, start, end.min(now + 1), false)?;
+    let loggers = en::loggers(c, &entries)?;
+    let totals = en::totals_between(c, start, end.min(now + 1))?;
+    let link = |d: i64, text: &str| {
+        let date = clock.day(d);
+        let href = if d >= today { "/".to_string() } else { format!("/?day={date}") };
+        format!(r#"<a href="{href}" data-day="{date}">{text}</a>"#)
     };
     if start >= today {
-        return Redirect::to("/").into_response();
+        let yesterday = clock.day_start(start - 3600);
+        let weight = s["last_weight"]["value"].as_f64().map(|w| {
+            let mut sub = vec![];
+            if let Some(l) = s["weight_percentile"]["label"].as_str() {
+                sub.push(l.to_string());
+            }
+            let change = &s["weight_change_percentile"];
+            if let (Some(c), Some(l)) = (change["percent_change"].as_f64(), change["label"].as_str()) {
+                let mode = app.cfg.baby.delivery.map(|d| d.describe()).unwrap_or("");
+                sub.push(format!("{c:+.1}% vs birth ({l} for {mode})"));
+            } else if let Some(v) = s["weight_vs_birth"].as_str().and_then(|v| v.split('(').nth(1)) {
+                sub.push(format!("{} vs birth", v.trim_end_matches(')')));
+            }
+            if s["birth_weight_regained"]["regained"] == true {
+                sub.push("✅ birth weight regained".into());
+            }
+            (w, (!sub.is_empty()).then(|| sub.join(" · ")))
+        });
+        let mut out = totals_card(&format!(r#"<div class="head"><h2>Today</h2>{}</div>"#, link(yesterday, "← Yesterday")), &totals, weight);
+        let rest: Vec<en::Entry> = entries.iter().filter(|e| e.attention_by == 0).cloned().collect();
+        out += &log_card("<h2>Today's log</h2>", &rest, &loggers, clock, if entries.is_empty() { "Nothing logged yet today." } else { "Only entries that need attention so far." });
+        return Ok(out);
     }
-    let end = clock.next_day_start(start);
-    let (entries, day_totals) = match app.db.with(|c| Ok(en::list(c, start, end, false).and_then(|e| Ok((e, en::totals_between(c, start, end)?))))) {
-        Ok(Ok(e)) => e,
-        Ok(Err(e)) => return html::error_page(StatusCode::INTERNAL_SERVER_ERROR, &e),
-        Err(e) => return html::error_page(StatusCode::INTERNAL_SERVER_ERROR, &en::err(e)),
+    let prev = clock.day_start(start - 3600);
+    let short = |d: i64| clock.zoned(d).strftime("%a %-d").to_string();
+    let next = if end >= today { link(today, "Today →") } else { link(end, &format!("{} →", short(end))) };
+    let title = clock.zoned(start).strftime("%a %-d %B").to_string();
+    let age = app.baby().birth.map(|b| format!(r#"<p class="mut">day {} of life</p>"#, (start - clock.day_start(b)) / 86400 + 1)).unwrap_or_default();
+    let head = format!(r#"<div class="head">{}<h2>{}</h2>{next}</div>{age}"#, link(prev, &format!("← {}", short(prev))), esc(&title));
+    let mut out = totals_card(&head, &totals, weight_of(&entries, &app.baby()));
+    out += &log_card("<h2>Log</h2>", &entries, &loggers, clock, "Nothing logged this day.");
+    Ok(out)
+}
+
+/// The day log of one day (`?date=…`), for the script to swap in.
+pub async fn log_part(State(app): State<Arc<App>>, headers: HeaderMap, Query(q): Query<HashMap<String, String>>) -> Response {
+    if let Err(r) = require(&app, &headers, "/") {
+        return r;
+    }
+    let t = now();
+    let clock = &app.clock;
+    let Some(start) = q.get("date").and_then(|d| clock.date_start(d).ok()).map(|d| d.min(clock.day_start(t))) else {
+        return (StatusCode::BAD_REQUEST, "bad date").into_response();
     };
-    let prev = clock.day(start - 3600);
-    let next = if end >= today { r#"<a href="/">Today →</a>"#.to_string() } else { format!(r#"<a href="/day?date={}">{} →</a>"#, clock.day(end), &clock.day(end)[5..]) };
-    let title = clock.zoned(start).strftime("%A %-d %B %Y").to_string();
-    let age = app.baby().birth.map(|b| format!("day {} of life", (start - clock.day_start(b)) / 86400 + 1)).unwrap_or_default();
-    let mut body = format!(
-        r#"<div class="card"><div class="head"><a href="/day?date={prev}">← {}</a><h1>{}</h1>{next}</div><p class="mut">{}</p></div>"#,
-        &prev[5..],
-        esc(&title),
-        esc(&age)
-    );
-    body += &totals_card("<h2>Totals</h2>", &day_totals, weight_of(&entries, &app.baby()));
-    let loggers = app.db.with(|c| Ok(en::loggers(c, &entries))).ok().and_then(Result::ok).unwrap_or_default();
-    body += &log_card("<h2>Log</h2>", &entries, &loggers, clock, "Nothing logged this day.");
-    html::render(Page { title: &format!("{title} · baby-mcp"), body, viewer: false, footer_extra: String::new(), nav: Some(&user.display_name), refresh: Some(60) })
+    let res = app.db.with(|c| {
+        Ok((|| {
+            let s = if start >= clock.day_start(t) { en::status(c, clock, &app.baby(), t)? } else { Value::Null };
+            daylog(&app, c, start, t, &s)
+        })())
+    });
+    match res {
+        Ok(Ok(h)) => ([(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8"), (axum::http::header::CACHE_CONTROL, "no-store")], h).into_response(),
+        Ok(Err(e)) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, en::err(e)).into_response(),
+    }
+}
+
+/// A day: the status page with that day in view (yesterday by default).
+pub async fn day(State(app): State<Arc<App>>, headers: HeaderMap, Query(q): Query<HashMap<String, String>>) -> Response {
+    if let Err(r) = require(&app, &headers, "/day") {
+        return r;
+    }
+    let clock = &app.clock;
+    let today = clock.day_start(now());
+    let date = q.get("date").cloned().unwrap_or_else(|| clock.day(today - 3600));
+    match clock.date_start(&date) {
+        Ok(s) if s < today => Redirect::to(&format!("/?day={date}")).into_response(),
+        Ok(_) => Redirect::to("/").into_response(),
+        Err(e) => html::error_page(StatusCode::BAD_REQUEST, &e),
+    }
 }
 
 // ------------------------------------------------------------- charts
@@ -1496,7 +1681,7 @@ pub async fn entry_page(State(app): State<Arc<App>>, headers: HeaderMap, axum::e
     let day = clock.day(cur.at);
     let who = |u: i64| names.get(&u).cloned().unwrap_or_else(|| format!("user {u}"));
     let mut body = format!(
-        r#"<div class="card"><h1>{} {}</h1><p class="mut"><a href="/day?date={day}">📅 {day}</a> · entry {id}{}</p><p>{}</p>"#,
+        r#"<div class="card"><h1>{} {}</h1><p class="mut"><a href="/?day={day}">📅 {day}</a> · entry {id}{}</p><p>{}</p>"#,
         if cur.deleted { "🗑️" } else { "📝" },
         esc(&clock.fmt(cur.at)),
         if cur.deleted { " · deleted" } else { "" },
@@ -1700,31 +1885,45 @@ mod tests {
         let now = at("2025-11-07 14:00");
         let e = |t: &str, f: serde_json::Value| en::Entry { entry_id: 1, version: 1, at: at(t), duration_s: None, text: String::new(),
             fields: f.as_object().cloned().unwrap(), attention_by: 0, attention_why: None, deleted: false, changed_at: 0, changed_by: 1, superseded_at: None };
-        let entries = [e("2025-11-07 07:00", json!({"bottle_formula_ml": 60})),   // before the window
+        let entries = [e("2025-11-05 09:00", json!({"bottle_formula_ml": 50})),
+                       e("2025-11-07 07:00", json!({"bottle_formula_ml": 60})),
                        e("2025-11-07 10:30", json!({"bottle_formula_ml": 80, "wet": true, "dirty": true})),
                        e("2025-11-07 12:00", json!({"vitamin_d": true, "vitamin_k": true}))];
         let s = json!({"next_feed_estimate": {"at": "2025-11-07 13:30"}});
-        let (html, now_x) = timeline_svg(&clock, &entries, &s, now, 6 * 3600, 4 * 3600);
-        assert_eq!(now_x, 12.0 + 6.0 * TL_UNITS_PER_HOUR);
-        assert_eq!(html.matches(">🍼</text>").count(), 3, "one logged feed in the window, one expected, one later: {html}");
-        assert!(html.contains(r#"opacity=".25"><title>17:30 feed"#), "the next after an overdue one: now + the usual gap (3h30), fainter: {html}");
-        assert!(html.contains("10:30 🍼 80 ml formula") && html.contains("💩") && html.contains("💊"));
-        assert!(html.contains(r#"💩<tspan x="114.0" y="42.0" class="badge">💧</tspan>"#), "wet and dirty: a drop on the poo: {html}");
-        assert!(html.contains("13:30 feed (overdue)") && html.contains(r#"class="ring""#), "overdue feed ringed");
-        assert!(!html.contains("diaper (expected)"), "diapers aren't predicted");
-        assert!(html.contains(r#"class="hd">10<"#) && html.contains(r#"class="hd">16<"#), "hour labels, by day");
-        // With a preparation time the expected feed is the start; one wide, scrolling strip.
+        let tr = Track { from: at("2025-11-05 00:00"), to: now + TL_FUTURE, z: TL_Z };
+        let days = tl_days(&clock, &tr, now);
+        assert_eq!(days, vec![(tr.from, at("2025-11-06 00:00")), (at("2025-11-06 00:00"), at("2025-11-07 00:00")), (at("2025-11-07 00:00"), tr.to)], "today runs on");
+        let today = tl_day(&clock, &tr, &entries, Some(&s), now, days[2].0, days[2].1);
+        assert!(today.starts_with(&format!(r#"<svg x="{:.1}" width="{:.1}""#, TL_PAD + 48.0 * 38.0, 26.0 * 38.0)) && today.contains(r#"data-day="2025-11-07""#), "{today}");
+        assert_eq!(today.matches(">🍼</text>").count(), 6, "two logged feeds, one overdue, three later (until 02:00): {today}");
+        assert!(today.contains(r#"opacity=".25"><title>17:30 feed"#), "the next after an overdue one: now + the usual gap, fainter: {today}");
+        assert!(today.contains("10:30 🍼 80 ml formula") && today.contains("💩") && today.contains("💊"));
+        assert!(today.contains(r#"💩<tspan x="406.0" y="42.0" class="badge">💧</tspan>"#), "wet and dirty: a drop on the poo: {today}");
+        assert!(today.contains("13:30 feed (overdue)") && today.contains(r#"class="ring""#), "overdue feed ringed");
+        assert!(!today.contains("diaper (expected)"), "diapers aren't predicted");
+        assert!(today.contains(r#"class="hd">10<"#) && today.contains(r#"class="hn">04<"#) && today.contains(r#"class="night""#), "hours over the night band");
+        assert!(today.contains(r#"x="0.0" y="88" text-anchor="middle" class="hn">Fri 7<"#) && !today.contains(r#">00<"#), "midnight: the day instead of 00");
+        assert!(today.contains(r#"class="hn">Sat 8<"#) && today.contains(r#"class="now""#), "on into tomorrow, with now");
+        // A past day: what was logged, nothing expected.
+        let past = tl_day(&clock, &tr, &entries, None, now, days[0].0, days[0].1);
+        assert!(past.contains("09:00 🍼 50 ml formula") && !past.contains("expected") && !past.contains(r#"class="now""#), "{past}");
+        // With a preparation time the expected feed is the start.
         let mut s2 = s.clone();
         s2["next_feed_estimate"] = json!({"at": "2025-11-07 15:30"});
         s2["next_feed_start"] = json!({"at": "2025-11-07 15:15", "feed_at": "2025-11-07 15:30", "prep": "15m"});
-        let all = timeline(&clock, &entries, &s2, now);
+        let all = tl_render(&clock, &tr, &entries, &s2, now, now - TL_PAST, tr.to);
         assert!(all.contains("15:15 start (feed ~15:30) (expected)"), "{all}");
-        assert!(all.contains(r#"id="tl" data-now="1836""#), "{all}");
-        assert!(all.contains("07:00 🍼 60 ml formula"), "reaches back 48 hours");
-        assert!(all.contains(r#"class="night""#) && all.contains(r#"class="hn">04<"#) && all.contains(r#"class="hd">08<"#), "night band 00–08");
-        assert!(all.contains(r#"class="hn">Fri 7<"#) && !all.contains(r#">00<"#), "midnight: the day instead of 00");
-        // Feeds every 3h30 after 15:30, as starts; ends within the 12 hours ahead.
         assert!(all.contains("18:45 start (feed ~19:00)") && all.contains("01:45 start (feed ~02:00)") && !all.contains("feed ~05:30"), "{all}");
+        assert_eq!(all.matches("<svg ").count(), 3, "the last 48 hours: three days");
+        let page = timeline(&clock, &tr, &all, now, None);
+        assert!(page.contains(&format!(r#"data-days="2025-11-05:{},2025-11-06:"#, tr.from)) && page.contains(&format!(r#"width="{:.0}""#, tr.width())), "{page}");
+        // Zoomed out: smaller emojis, fewer labels; widest: a summary per day.
+        let tr2 = Track { z: 2, ..tr };
+        let out = tl_day(&clock, &tr2, &entries, Some(&s), now, days[2].0, days[2].1);
+        assert!(out.contains(r#"class="emo s""#) && out.contains(r#"class="hd">12<"#) && !out.contains(r#"class="hd">10<"#), "{out}");
+        let tr3 = Track { z: TL_SUMMARY, ..tr };
+        let sum = tl_day(&clock, &tr3, &entries, Some(&s), now, days[2].0, days[2].1);
+        assert!(sum.contains(">🍼2<") && sum.contains(">💧1 💩1<") && sum.contains(">140 ml<") && sum.contains(">Fri 7<") && !sum.contains("expected"), "{sum}");
     }
 
     #[test]

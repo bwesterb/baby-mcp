@@ -350,11 +350,18 @@ async fn web_pages() {
     let clock = &t.app.clock;
     let day3 = clock.zoned(t.birth).date().checked_add(jiff::Span::new().days(2)).unwrap();
     let r = send(&t, get(&format!("/day?date={day3}")).header(header::COOKIE, &t.cookie).body(Body::empty()).unwrap()).await;
+    assert_eq!(r.location(), format!("/?day={day3}"), "a day is the status page with that day in view");
+    let r = send(&t, get(&format!("/?day={day3}")).header(header::COOKIE, &t.cookie).body(Body::empty()).unwrap()).await;
     assert_eq!(r.status, StatusCode::OK);
-    let heading = day3.strftime("%A %-d %B %Y").to_string();
+    let heading = day3.strftime("%a %-d %B").to_string();
     assert!(r.body.contains(&heading) && r.body.contains("day 3 of life") && r.body.contains("Nothing logged this day"), "{heading}");
+    assert!(r.body.contains(r#"<div class="now-only" hidden>"#) && r.body.contains(&format!(r#"id="daylog" data-day="{day3}""#)), "what's next hidden on a past day");
     let (prev, next) = (day3.yesterday().unwrap(), day3.tomorrow().unwrap());
-    assert!(r.body.contains(&format!(r#"href="/day?date={prev}""#)) && r.body.contains(&format!(r#"href="/day?date={next}""#)));
+    assert!(r.body.contains(&format!(r#"href="/?day={prev}" data-day="{prev}""#)) && r.body.contains(&format!(r#"href="/?day={next}""#)));
+    let part = send(&t, get(&format!("/log?date={day3}")).header(header::COOKIE, &t.cookie).body(Body::empty()).unwrap()).await;
+    assert!(part.body.starts_with(r#"<div class="card">"#) && part.body.contains("day 3 of life") && !part.body.contains("<html"), "{}", part.body);
+    let tl = send(&t, get(&format!("/timeline?date={day3}&z=3")).header(header::COOKIE, &t.cookie).body(Body::empty()).unwrap()).await;
+    assert!(tl.body.starts_with("<svg x=") && tl.body.contains(&format!(r#"data-day="{day3}""#)), "{}", tl.body);
     let r = send(&t, get("/day?date=2099-01-01").header(header::COOKIE, &t.cookie).body(Body::empty()).unwrap()).await;
     assert_eq!(r.location(), "/", "future day should go to today");
 }

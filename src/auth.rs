@@ -49,7 +49,7 @@ fn json_err(status: StatusCode, code: &str, desc: &str) -> Response {
     (status, Json(json!({"error": code, "error_description": desc}))).into_response()
 }
 
-fn cookie(headers: &HeaderMap, name: &str) -> Option<String> {
+pub(crate) fn cookie(headers: &HeaderMap, name: &str) -> Option<String> {
     headers
         .get_all(header::COOKIE)
         .iter()

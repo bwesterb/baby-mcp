@@ -142,7 +142,7 @@ pub fn due(c: &Connection, clock: &Clock, status: &Value, name: &str, now: i64) 
                 Some(w) => format!("{w} — {} {short}", clock.zoned(at).strftime("%H:%M")),
                 None => format!("{} {short}", clock.zoned(at).strftime("%H:%M")),
             },
-            url: format!("/day?date={}", clock.day(at)),
+            url: format!("/?day={}", clock.day(at)),
             ttl: 6 * 3600,
             by: None,
         });
@@ -457,7 +457,7 @@ mod tests {
         let later = due(&c, &clock, &status, "Eva", at("2025-11-07 12:51")).unwrap();
         let attention: Vec<&Notice> = later.iter().filter(|n| n.kind == "attention").collect();
         assert_eq!(attention.len(), 1, "left for 10 minutes: only the one needing the user");
-        assert_eq!((attention[0].key.clone(), attention[0].url.as_str()), (format!("{}:check this", spit.entry_id), "/day?date=2025-11-07"));
+        assert_eq!((attention[0].key.clone(), attention[0].url.as_str()), (format!("{}:check this", spit.entry_id), "/?day=2025-11-07"));
         // Any change: both new entries, each with its author (not sent to them).
         let changes: Vec<&Notice> = ns.iter().filter(|n| n.kind == "changes").collect();
         assert_eq!(changes.len(), 2);

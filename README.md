@@ -36,7 +36,9 @@ parents log in with their own passkeys.
   feeding guidance, the next sleeping side, baths and vitamins due, and growth
   against references.
 - **Web app** (installable on the home screen): what's next, today's totals and
-  log, days, charts, entry history, and a free-text form.
+  log, charts, entry history, and a free-text form. A timeline of emojis runs
+  from birth to the hours ahead: swipe back and the log below follows the day
+  in view; pinch to zoom out to a summary per day.
 - **Push notifications** (Web Push) and an app-icon badge for feeds, entries
   that need a parent, vitamins and the feeding minimum.
 
