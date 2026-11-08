@@ -308,9 +308,13 @@ if ($('push')) {
     if (location.pathname + location.search !== url) try { history.replaceState(null, '', url); } catch (e) { /* too often */ }
   }
   const home = () => x(NOW) - AT * W();
+  // While the timeline glides to a chosen day, the log doesn't follow the
+  // days it passes; touching it again hands back control.
+  let gliding = false;
   function goTo(date, smooth) {
     const day = days.find((dd) => dd.date === date);
     if (!day) return;
+    gliding = smooth;
     const left = date === TODAY ? home() : x((day.start + day.end) / 2) - AT * W();
     tl.scrollTo({left, behavior: smooth ? 'smooth' : 'auto'});
     show(date).then(setUrl);
@@ -345,7 +349,7 @@ if ($('push')) {
     try { sessionStorage.setItem('tl3', JSON.stringify({t: Date.now(), c: tAt(ref()), url: location.pathname + location.search})); } catch (e) { /* no storage */ }
   };
   let touched = false;
-  for (const ev of ['touchstart', 'pointerdown', 'wheel']) tl.addEventListener(ev, () => { touched = true; }, {passive: true});
+  for (const ev of ['touchstart', 'pointerdown', 'wheel']) tl.addEventListener(ev, () => { touched = true; gliding = false; }, {passive: true});
   addEventListener('pagehide', () => { if (touched) save(); });
   let busy = false, idle;
   tl.addEventListener('scroll', () => {
@@ -354,11 +358,12 @@ if ($('push')) {
       requestAnimationFrame(() => {
         busy = false;
         fill();
-        if (touched) show(inView());
+        if (touched && !gliding) show(inView());
       });
     }
     clearTimeout(idle);
     idle = setTimeout(() => {
+      gliding = false;
       if (!touched) return;
       save();
       setUrl();
