@@ -188,3 +188,8 @@ if ($('push')) {
     try { sessionStorage.setItem('tl', JSON.stringify({t: Date.now(), off: now - tl.scrollLeft})); } catch (e) { /* no storage */ }
   }, {passive: true});
 })();
+
+// Charts: view as a user or as a viewer (a parent's preview).
+if ($('viewas')) {
+  $('viewas').onchange = (e) => { location.href = e.target.value === 'viewer' ? '/charts?as=viewer' : '/charts'; };
+}

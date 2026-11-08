@@ -1129,9 +1129,7 @@ pub async fn charts(
         _ => vec![],
     };
     let mut body = String::new();
-    if preview {
-        body += r#"<p class="mut">👁 As a viewer (say a grandparent) sees it. Back: <a href="/charts">Charts</a>.</p>"#;
-    } else if user.viewer {
+    if user.viewer {
         body += r#"<p class="mut">Up to and including yesterday.</p>"#;
     }
     body += &change_chart(&baby, &weights, t);
@@ -1152,8 +1150,13 @@ pub async fn charts(
         ("dirty", "#a5531d", |d| d.totals.dirty_only as f64),
     ], "", project(|t| t.diapers as f64));
     body += &bars("Feeds per day", &days, &[("feeds", "#6b6b70", |d| d.totals.feeds as f64)], "", project(|t| t.feeds as f64));
-    if !user.viewer {
-        body += r#"<p class="mut"><a href="/charts?as=viewer">👁 View as a viewer</a></p>"#;
+    // Parents: look at the page as a viewer (say a grandparent) sees it.
+    if !user.viewer || preview {
+        body += &format!(
+            r#"<div class="viewas"><label for="viewas">View as</label><select id="viewas"><option value="user"{}>user</option><option value="viewer"{}>viewer</option></select></div>"#,
+            if preview { "" } else { " selected" },
+            if preview { " selected" } else { "" }
+        );
     }
     html::render(Page { title: "Charts · baby-mcp", body, nav: Some(&user.display_name), refresh: Some(60), viewer: user.viewer })
 }
