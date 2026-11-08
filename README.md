@@ -126,7 +126,8 @@ Admin commands, run on the server as the service user:
     baby-mcp passkeys                       # passkeys, OAuth clients, active tokens
     baby-mcp remove-passkey ID
     baby-mcp revoke-all                     # end all sessions and tokens
-    baby-mcp suggestions                    # features the agent asked for
+    baby-mcp suggestions [--all]            # features the agent asked for
+    baby-mcp done ID [--note TEXT]          # mark a suggestion done (or: reject)
     baby-mcp status                         # what `status` returns, as JSON
     baby-mcp push-test NAME                 # a test notification to a user's devices
     baby-mcp export                         # everything, with all versions, as JSON
