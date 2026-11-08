@@ -891,6 +891,9 @@ fn change_chart(baby: &en::Baby, weights: &[(i64, f64)], now: i64) -> String {
     }
     let mid = table.percentiles.iter().position(|p| *p == 50.0).unwrap_or(n / 2);
     svg += &format!(r##"<polyline points="{}" fill="none" stroke="#4a7fb5" stroke-opacity=".7" stroke-dasharray="4 4"/>"##, line(&col(mid)));
+    if age <= show {
+        svg += &today_marker(x(age), 8.0, h - b, w - 8.0);
+    }
     svg += &format!(r##"<polyline points="{}" fill="none" stroke="#c0503e" stroke-width="2"/>"##, line(&pts));
     for (a, v) in pts.iter().skip(1) {
         let p = table.percentile(d, *a, *v).map(|p| format!(" · {}", table.label(p))).unwrap_or_default();
@@ -901,6 +904,17 @@ fn change_chart(baby: &en::Baby, weights: &[(i64, f64)], now: i64) -> String {
     format!(
         r#"<div class="card"><h2>📉 Weight change since birth</h2>{svg}<p class="mut">Red: her weighings. Bands: {}–{} and {}–{}, dashed: median, for newborns after {} (Paul et al., Pediatrics 2016, all feeding types; read from the published figure, so approximate, especially in the first two days). A reference, not a diagnosis.</p></div>"#,
         lbl(0), lbl(n - 1), lbl(2), lbl(n - 3), d.describe()
+    )
+}
+
+/// A dashed vertical line at today, labelled, from `top` to `bottom`.
+fn today_marker(x: f64, top: f64, bottom: f64, right_edge: f64) -> String {
+    let anchor = if x > right_edge - 40.0 { "end" } else { "start" };
+    let dx = if anchor == "end" { -4.0 } else { 4.0 };
+    format!(
+        r#"<line x1="{x:.1}" x2="{x:.1}" y1="{top:.1}" y2="{bottom:.1}" class="chart-today"/><text x="{:.1}" y="{:.1}" text-anchor="{anchor}" class="chart-today-l">today</text>"#,
+        x + dx,
+        top + 10.0
     )
 }
 
@@ -964,6 +978,7 @@ fn growth_chart(baby: &en::Baby, weights: &[(i64, f64)], now: i64) -> String {
         svg += &format!(r##"<polygon points="{}" fill="#2f6f5e" fill-opacity=".14"/>"##, band(&p15, &p85));
         svg += &format!(r##"<polyline points="{}" fill="none" stroke="#2f6f5e" stroke-opacity=".6" stroke-dasharray="4 4"/>"##, line(&p50));
     }
+    svg += &today_marker(x((now - birth) as f64 / 86400.0), 8.0, h - b, w - 8.0);
     svg += &format!(r##"<polyline points="{}" fill="none" stroke="#c0503e" stroke-width="2"/>"##, line(&pts));
     for (d, g) in &pts {
         let pct = baby.weight_percentile(*g, birth + (*d * 86400.0) as i64).map(|(p, _)| format!(" · {}", crate::growth::label(p))).unwrap_or_default();
