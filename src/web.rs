@@ -297,10 +297,6 @@ fn timeline_svg(clock: &crate::time::Clock, entries: &[en::Entry], s: &Value, no
     };
     // After the next one, more at the usual gap (the same rule as the
     // estimates), from the next one or, if that is overdue, from now: fainter.
-    let usual = |back: i64, f: fn(&en::Entry) -> bool| {
-        let times: Vec<i64> = entries.iter().filter(|e| e.at > now - back && f(e)).map(|e| e.at).collect();
-        en::usual_gap(&times)
-    };
     let later = |next: Option<i64>, gap: Option<i64>, shift: i64| -> Vec<i64> {
         let (Some(next), Some(gap)) = (next, gap) else { return vec![] };
         let mut out = vec![];
@@ -320,7 +316,8 @@ fn timeline_svg(clock: &crate::time::Clock, entries: &[en::Entry], s: &Value, no
     };
     let feed_label = |t: i64| if prep > 0 { format!("start (feed ~{})", hm(t + prep)) } else { "feed".to_string() };
     expect(0, "🍼", feed_at.map(|t| t - prep), feed_at.map(|t| feed_label(t - prep)).unwrap_or_default(), ".45");
-    for t in later(feed_at, usual(en::ESTIMATE_BACK, en::Entry::is_feed), prep) {
+    let feed_gap = en::feed_gap(&en::feed_episodes(entries.iter().filter(|e| e.at > now - en::ESTIMATE_BACK)));
+    for t in later(feed_at, feed_gap, prep) {
         expect(0, "🍼", Some(t), feed_label(t), ".25");
     }
     if s["vitamins"]["to_give_today"].as_array().is_some_and(|a| !a.is_empty()) {

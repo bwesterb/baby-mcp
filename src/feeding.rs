@@ -233,6 +233,8 @@ pub fn guidance(clock: &Clock, i: &Inputs) -> Value {
     let dol = day_of_life(clock, i.birth, i.now);
     let kg = i.weight_g / 1000.0;
 
+    // Feeds as episodes: a top-up within 1h30 counts with its feed.
+    let eps = crate::entries::feed_episodes(i.entries.iter().filter(|e| e.at <= i.now));
     // Feeds per day: median over the last three full local days since birth.
     let today = clock.day_start(i.now);
     let mut per_day = vec![];
@@ -242,7 +244,7 @@ pub fn guidance(clock: &Clock, i: &Inputs) -> Value {
         if prev < clock.day_start(i.birth) {
             break;
         }
-        let n = i.entries.iter().filter(|e| e.at >= prev && e.at < start && e.is_feed()).count();
+        let n = eps.iter().filter(|f| f.0 >= prev && f.0 < start).count();
         if n > 0 {
             per_day.push(n as f64);
         }
@@ -263,7 +265,7 @@ pub fn guidance(clock: &Clock, i: &Inputs) -> Value {
     // What was given in the last 24 hours.
     let last: Vec<&Entry> = i.entries.iter().filter(|e| e.at > i.now - 86400 && e.at <= i.now).collect();
     let given: f64 = last.iter().map(|e| bottle_ml(e)).sum();
-    let feeds_24h = last.iter().filter(|e| e.is_feed()).count();
+    let feeds_24h = eps.iter().filter(|f| f.0 > i.now - 86400).count();
     let breast_24h = last.iter().filter(|e| at_breast(e)).count();
     let shortfall = target - given;
 
@@ -271,9 +273,10 @@ pub fn guidance(clock: &Clock, i: &Inputs) -> Value {
     // minimum number of feeds allows) and an amount of target / feeds, plus
     // part of a shortfall (at most +20%). At the latest: the NVK's longest pause.
     let gap_max = ((86400.0 / floor) as i64).min(min.max_pause);
-    let feed_times: Vec<i64> = i.entries.iter().filter(|e| e.is_feed() && e.at <= i.now).map(|e| e.at).collect();
-    let gaps: Vec<f64> = feed_times.windows(2).map(|w| (w[1] - w[0]) as f64).filter(|g| *g >= 1800.0).rev().take(8).collect();
-    let gap = median_f(gaps).map(|g| (g as i64).clamp(GAP_MIN, gap_max)).unwrap_or((86400.0 / feeds) as i64);
+    // Feed times for the NVK limits: the starts (the cautious side); the next
+    // feed after the end of the last one (its last top-up).
+    let feed_times: Vec<i64> = eps.iter().map(|f| f.0).collect();
+    let gap = crate::entries::feed_gap(&eps).map(|g| g.clamp(GAP_MIN, gap_max)).unwrap_or((86400.0 / feeds) as i64);
     let per_feed = target / feeds;
     let extra = (shortfall / feeds).clamp(0.0, per_feed * CATCH_UP_MAX);
     let next_amount = round5(per_feed + extra);
@@ -304,8 +307,8 @@ pub fn guidance(clock: &Clock, i: &Inputs) -> Value {
     if let Some(aim) = i.aim_feeds {
         out["aim_feeds_per_day"] = json!(aim);
     }
-    if let Some(&last_feed) = feed_times.last() {
-        out["next_feed"]["at"] = json!(clock.fmt(last_feed + gap));
+    if let Some(&(_, last_end)) = eps.last() {
+        out["next_feed"]["at"] = json!(clock.fmt(last_end + gap));
         let (latest, why) = latest(&min, &feed_times);
         out["next_feed"]["latest_at"] = json!(clock.fmt(latest));
         out["next_feed"]["latest_reason"] = json!(why);
@@ -473,6 +476,30 @@ mod tests {
         // Regular feeds every 3 h: no warnings.
         let regular: Vec<i64> = (0..8).map(|k| at("2025-11-07 00:30") + k * 3 * 3600).collect();
         assert!(warnings(&clock, &min, Some(7.0), &regular, birth, at("2025-11-07 23:59")).is_empty());
+    }
+
+    #[test]
+    fn top_ups_count_with_their_feed() {
+        let clock = Clock::new("Europe/Amsterdam").unwrap();
+        let birth = clock.parse("2025-10-31 16:40", 0).unwrap();
+        let at = |s: &str| clock.parse(s, 0).unwrap();
+        // Every 3 h from 02:00 to 20:00, then 23:00 with top-ups at 00:30 and
+        // 01:00 (one feed), as last night.
+        let mut es: Vec<Entry> = (0..7).map(|k| entry(at("2025-11-07 02:00") + k * 3 * 3600, json!({"bottle_formula_ml": 80}))).collect();
+        for (t, ml) in [("2025-11-07 23:00", 50), ("2025-11-08 00:30", 30), ("2025-11-08 01:00", 40)] {
+            es.push(entry(at(t), json!({"bottle_formula_ml": ml})));
+        }
+        let eps = crate::entries::feed_episodes(&es);
+        assert_eq!(eps.len(), 8);
+        assert_eq!(*eps.last().unwrap(), (at("2025-11-07 23:00"), at("2025-11-08 01:00")));
+        assert_eq!(crate::entries::totals(&es).feeds, 8, "top-ups aren't feeds of their own");
+        let now = at("2025-11-08 01:30");
+        let g = guidance(&clock, &Inputs { now, birth, birth_weight_g: Some(3900.0), aim_feeds: None, prep_s: 0, weight_g: 3720.0, entries: &es });
+        assert_eq!(g["last_24h"]["feeds"], 8);
+        // The next feed after the last top-up (01:00) + the usual gap (3 h);
+        // the NVK pause from the start of the feed (23:00 + 6 h).
+        assert_eq!(g["next_feed"]["at"], "2025-11-08 04:00");
+        assert_eq!(g["next_feed"]["latest_at"], "2025-11-08 05:00");
     }
 
     #[test]

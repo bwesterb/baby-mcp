@@ -299,14 +299,20 @@ pub struct Totals {
     pub pump_ml: f64,
 }
 
+/// Totals; feeds counted as episodes (a top-up counts with its feed; at the
+/// start of the entries, one belonging to an earlier feed counts as its own).
 pub fn totals<'a>(entries: impl IntoIterator<Item = &'a Entry>) -> Totals {
     let mut t = Totals::default();
+    let mut last_feed: Option<i64> = None;
     for e in entries {
         if e.deleted {
             continue;
         }
         if e.is_feed() {
-            t.feeds += 1;
+            if last_feed.is_none_or(|l| e.at - l > TOP_UP_WITHIN) {
+                t.feeds += 1;
+            }
+            last_feed = Some(e.at);
         }
         t.breastmilk_ml += e.num("bottle_breastmilk_ml").unwrap_or(0.0);
         t.formula_ml += e.num("bottle_formula_ml").unwrap_or(0.0);
@@ -405,17 +411,40 @@ fn since(e: &Option<Entry>, clock: &Clock, now: i64, extra: Option<Value>) -> Va
     }
 }
 
-/// Estimates the next occurrence from event times (oldest first): the last
-/// one plus the median of up to 8 recent gaps of at least `min_gap`.
-fn estimate(clock: &Clock, times: &[i64], min_gap: i64, what: &str, now: i64) -> Value {
-    let gaps = recent_gaps(times, min_gap);
-    let (Some(m), Some(last)) = (median(gaps.clone()), times.last()) else {
+
+/// A feed entry at most this long after the previous one is a top-up: part of
+/// the same feed.
+pub const TOP_UP_WITHIN: i64 = 90 * 60;
+
+/// Feeds as episodes (start, end): feed entries within TOP_UP_WITHIN of the
+/// previous one are top-ups of the same feed. Entries oldest first.
+pub fn feed_episodes<'a>(es: impl IntoIterator<Item = &'a Entry>) -> Vec<(i64, i64)> {
+    let mut out: Vec<(i64, i64)> = vec![];
+    for e in es.into_iter().filter(|e| e.is_feed() && !e.deleted) {
+        match out.last_mut() {
+            Some(last) if e.at - last.1 <= TOP_UP_WITHIN => last.1 = e.at,
+            _ => out.push((e.at, e.at)),
+        }
+    }
+    out
+}
+
+/// The usual gap between feeds: the median of up to 8 recent gaps from the end
+/// of one feed (its last top-up) to the start of the next.
+pub fn feed_gap(eps: &[(i64, i64)]) -> Option<i64> {
+    median(eps.windows(2).map(|w| w[1].0 - w[0].1).filter(|g| *g >= ESTIMATE_MIN_GAP).rev().take(8).collect())
+}
+
+/// The next feed: the end of the last one (its last top-up) plus the usual gap.
+fn estimate_feed(clock: &Clock, eps: &[(i64, i64)], now: i64) -> Value {
+    let (Some(gap), Some(&(_, last))) = (feed_gap(eps), eps.last()) else {
         return Value::Null;
     };
-    let at = last + m;
+    let at = last + gap;
+    let n = eps.len().min(9);
     let mut v = json!({
         "at": clock.fmt(at),
-        "basis": format!("last {what} + median gap ({}) of the last {} {what}s", fmt_dur(m), gaps.len() + 1),
+        "basis": format!("last feed + median gap ({}) of the last {n} feeds (a top-up within {} counts with its feed)", fmt_dur(gap), fmt_dur(TOP_UP_WITHIN)),
     });
     if at >= now {
         v["due_in"] = json!(fmt_dur(at - now));
@@ -425,19 +454,10 @@ fn estimate(clock: &Clock, times: &[i64], min_gap: i64, what: &str, now: i64) ->
     v
 }
 
-fn recent_gaps(times: &[i64], min_gap: i64) -> Vec<i64> {
-    times.windows(2).map(|w| w[1] - w[0]).filter(|g| *g >= min_gap).rev().take(8).collect()
-}
-
-/// The typical gap between events (oldest first), as `estimate` uses it.
-pub fn usual_gap(times: &[i64]) -> Option<i64> {
-    median(recent_gaps(times, ESTIMATE_MIN_GAP))
-}
-
-/// Gaps shorter than this don't count for estimates (a feed in two parts).
+/// Gaps shorter than this don't count for the feed estimate.
 const ESTIMATE_MIN_GAP: i64 = 30 * 60;
 
-/// How far back the estimates look: feeds and wet diapers, dirty diapers.
+/// How far back the feed estimate looks.
 pub const ESTIMATE_BACK: i64 = 36 * 3600;
 
 /// Fewer wet diapers in the last 24 hours than usual for her age: at least as
@@ -508,8 +528,7 @@ pub fn status(c: &Connection, clock: &Clock, baby: &Baby, now: i64) -> Result<Va
     let today = list(c, clock.day_start(now), now + 1, false)?;
     let day = list(c, now - 24 * 3600, now + 1, false)?;
 
-    let times = |es: &[Entry], f: fn(&Entry) -> bool| es.iter().filter(|e| f(e)).map(|e| e.at).collect::<Vec<_>>();
-    let next_feed = estimate(clock, &times(&recent, Entry::is_feed), ESTIMATE_MIN_GAP, "feed", now);
+    let next_feed = estimate_feed(clock, &feed_episodes(&recent), now);
 
     let mut out = json!({
         "now": clock.fmt(now),
@@ -604,7 +623,8 @@ pub fn status(c: &Connection, clock: &Clock, baby: &Baby, now: i64) -> Result<Va
     if let Some(e) = last_where(c, "sleep_facing IS NOT NULL")? {
         if let Some(side) = e.str("sleep_facing") {
             let other = |s: &str| if s == "left" { "right" } else { "left" };
-            let feeds_since = list(c, e.at + 1, now + 1, false)?.iter().filter(|x| x.is_feed()).count();
+            // Feeds since (a top-up isn't a new feed: no new put-down).
+            let feeds_since = feed_episodes(&list(c, e.at - TOP_UP_WITHIN, now + 1, false)?).iter().filter(|f| f.0 > e.at).count();
             let current = if feeds_since % 2 == 0 { side } else { other(side) };
             let mut v = json!({"last": side, "last_at": clock.fmt(e.at), "feeds_since": feeds_since, "next": other(current),
                                "note": "alternate the side the face is turned to after every feed; feeds since the last logged side are assumed to have alternated"});
@@ -809,6 +829,10 @@ pub mod tests {
             insert(c, u, &NewEntry { at: clock.parse("2025-11-07 15:00", 0).unwrap(), duration_s: None, text: "70 ml".into(),
                 fields: fields(json!({"bottle_formula_ml": 70})), attention_by: 0, attention_why: None }, later).unwrap();
             assert_eq!(status(c, &clock, &baby, later).unwrap()["sleep_facing"]["next"], "right", "two feeds: back to the logged side's opposite");
+            // A top-up 20 minutes later is part of that feed: no new put-down.
+            insert(c, u, &NewEntry { at: clock.parse("2025-11-07 15:20", 0).unwrap(), duration_s: None, text: "+20 ml".into(),
+                fields: fields(json!({"bottle_formula_ml": 20})), attention_by: 0, attention_why: None }, later).unwrap();
+            assert_eq!(status(c, &clock, &baby, later).unwrap()["sleep_facing"]["next"], "right", "a top-up doesn't flip the side");
             if baby.growth.is_some() {
                 assert_eq!(s["birth_weight_percentile"]["label"], "P92");
                 assert!(s["weight_percentile"]["label"].as_str().unwrap().starts_with('P'));
