@@ -11,7 +11,7 @@ pub static APP_NAME: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 fn app_head() -> String {
     let name = esc(APP_NAME.get().map(String::as_str).unwrap_or("baby-mcp"));
     format!(
-        r##"<link rel="manifest" href="/manifest.webmanifest"><link rel="icon" href="/icon-192.png"><link rel="apple-touch-icon" href="/icon-180.png"><meta name="theme-color" content="#2f6f5e"><meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-title" content="{name}">"##
+        r##"<link rel="manifest" href="/manifest.webmanifest"><link rel="icon" href="/icon.svg" type="image/svg+xml"><link rel="icon" href="/icon-32.png" sizes="32x32"><link rel="apple-touch-icon" href="/icon-180.png"><meta name="theme-color" content="#2f6f5e"><meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-title" content="{name}">"##
     )
 }
 

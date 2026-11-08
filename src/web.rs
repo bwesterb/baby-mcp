@@ -1240,6 +1240,15 @@ fn png(bytes: &'static [u8]) -> Response {
     ([(axum::http::header::CONTENT_TYPE, "image/png"), (axum::http::header::CACHE_CONTROL, "max-age=86400")], bytes).into_response()
 }
 
+/// The tab icon: the app icon as SVG (crisp at any size) and a 32 px PNG.
+pub async fn icon_svg() -> Response {
+    ([(axum::http::header::CONTENT_TYPE, "image/svg+xml"), (axum::http::header::CACHE_CONTROL, "max-age=86400")], include_bytes!("../static/icon.svg").as_slice()).into_response()
+}
+
+pub async fn icon_32() -> Response {
+    png(include_bytes!("../static/icon-32.png"))
+}
+
 pub async fn icon_180() -> Response {
     png(include_bytes!("../static/icon-180.png"))
 }
