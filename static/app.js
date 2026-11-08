@@ -181,7 +181,6 @@ if ($('push')) {
   const SVGNS = 'http://www.w3.org/2000/svg';
   const PXH = d.pxh.split(',').map(Number), PAD = Number(d.pad);
   const FROM = Number(d.from), TO = Number(d.to), NOW = Number(d.now), TODAY = d.today;
-  const TODAY_END = Number(d.todayEnd);
   const days = d.days.split(',').map((s) => { const [date, start] = s.split(':'); return {date, start: Number(start)}; });
   days.forEach((day, i) => { day.end = i + 1 < days.length ? days[i + 1].start : TO; });
   let z = Number(d.z);
@@ -250,7 +249,7 @@ if ($('push')) {
   bar.setAttribute('height', '3');
   bar.setAttribute('rx', '1.5');
   bar.setAttribute('y', String(Number(svg.getAttribute('height')) - 4));
-  // With what's next (today), the hours ahead past midnight: dashed.
+  // With what's next (today): solid until now, dashed over the hours ahead.
   const ahead = document.createElementNS(SVGNS, 'line');
   ahead.setAttribute('class', 'on-next');
   ahead.setAttribute('y1', bar.getAttribute('y') * 1 + 1.5);
@@ -258,12 +257,12 @@ if ($('push')) {
   function mark(date) {
     const day = days.find((dd) => dd.date === date);
     if (!day) return;
-    const a = x(day.start) + 2, b = x(date === TODAY ? Math.min(day.end, TODAY_END) : day.end) - 2;
+    const a = x(day.start) + 2, b = x(date === TODAY ? NOW : day.end) - 2;
     bar.setAttribute('x', String(a));
     bar.setAttribute('width', String(Math.max(0, b - a)));
     svg.appendChild(bar);
-    if (date === TODAY && TO > TODAY_END) {
-      ahead.setAttribute('x1', String(x(TODAY_END) + 3.5));
+    if (date === TODAY) {
+      ahead.setAttribute('x1', String(x(NOW) + 3.5));
       ahead.setAttribute('x2', String(x(TO) - 1.5));
       svg.appendChild(ahead);
     } else {
