@@ -80,7 +80,9 @@ takes precedence.
 ## Access
 
 - **People**: passkeys (WebAuthn). An admin command prints a single-use
-  enrollment link per person.
+  enrollment link per person. A *viewer* (say a grandparent) only sees the
+  charts, up to yesterday: no log, no today's running totals, no
+  notifications, no changes and no MCP.
 - **Assistants**: the server is its own OAuth 2.1 authorization server, per the
   MCP authorization spec: dynamic client registration (redirects only to
   `oauth_redirect_hosts` over https, or localhost), authorization code with
@@ -121,7 +123,8 @@ hardened systemd unit and a Caddy snippet.
 
 Admin commands, run on the server as the service user:
 
-    baby-mcp user add NAME "Display name"   # create a user; prints an enrollment link
+    baby-mcp user add NAME "Display name" [--viewer]   # create a user; prints an enrollment link
+    baby-mcp user role NAME parent|viewer   # change what a user may see and do
     baby-mcp enroll NAME                    # a new single-use enrollment link (30 min)
     baby-mcp passkeys                       # passkeys, OAuth clients, active tokens
     baby-mcp remove-passkey ID

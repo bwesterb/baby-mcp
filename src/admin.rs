@@ -13,9 +13,17 @@ use serde_json::{Value, json};
 #[derive(Subcommand)]
 pub enum UserCmd {
     /// Create a user and print a passkey enrollment link.
-    Add { name: String, display_name: String },
+    Add {
+        name: String,
+        display_name: String,
+        /// Only sees the charts, up to yesterday (say a grandparent).
+        #[arg(long)]
+        viewer: bool,
+    },
     /// List users.
     List,
+    /// Set a user's role: parent (everything) or viewer (only the charts).
+    Role { name: String, role: String },
 }
 
 #[derive(Subcommand)]
@@ -85,25 +93,36 @@ pub fn run(cfg: &Config, cmd: Cmd) -> Result<(), String> {
     let db = Db::open(&cfg.db_path())?;
     let clock = Clock::new(&cfg.tz)?;
     match cmd {
-        Cmd::User(UserCmd::Add { name, display_name }) => {
+        Cmd::User(UserCmd::Add { name, display_name, viewer }) => {
+            let role = if viewer { "viewer" } else { "parent" };
             let id = db
                 .with(|c| {
                     c.execute(
-                        "INSERT INTO user (name, display_name, created_at) VALUES (?1, ?2, ?3)",
-                        params![name, display_name, now()],
+                        "INSERT INTO user (name, display_name, created_at, role) VALUES (?1, ?2, ?3, ?4)",
+                        params![name, display_name, now(), role],
                     )?;
                     Ok(c.last_insert_rowid())
                 })
                 .map_err(|e| format!("adding user {name:?}: {e}"))?;
-            println!("Created user {name} (id {id}). Enroll a passkey within 30 minutes, single use:\n\n  {}\n", enroll_link(cfg, &db, id)?);
+            println!("Created {role} {name} (id {id}). Enroll a passkey within 30 minutes, single use:\n\n  {}\n", enroll_link(cfg, &db, id)?);
+        }
+        Cmd::User(UserCmd::Role { name, role }) => {
+            if !matches!(role.as_str(), "parent" | "viewer") {
+                return Err(format!("role must be parent or viewer, not {role:?}"));
+            }
+            let n = db.with(|c| c.execute("UPDATE user SET role = ?1 WHERE name = ?2", params![role, name])).map_err(en::err)?;
+            if n == 0 {
+                return Err(format!("no user {name:?}"));
+            }
+            println!("{name} is now a {role}.");
         }
         Cmd::User(UserCmd::List) => {
             db.with(|c| {
-                let mut st = c.prepare("SELECT id, name, display_name, (SELECT count(*) FROM passkey p WHERE p.user_id = u.id) FROM user u ORDER BY id")?;
-                let rows = st.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, i64>(3)?)))?;
+                let mut st = c.prepare("SELECT id, name, display_name, (SELECT count(*) FROM passkey p WHERE p.user_id = u.id), role FROM user u ORDER BY id")?;
+                let rows = st.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, i64>(3)?, r.get::<_, String>(4)?)))?;
                 for r in rows {
-                    let (id, n, d, k) = r?;
-                    println!("{id:>3}  {n:<16} {d:<24} {k} passkey(s)");
+                    let (id, n, d, k, role) = r?;
+                    println!("{id:>3}  {n:<16} {d:<24} {role:<7} {k} passkey(s)");
                 }
                 Ok(())
             })

@@ -158,6 +158,8 @@ impl Mem {
 pub struct User {
     pub id: i64,
     pub display_name: String,
+    /// Only the charts, up to yesterday; nothing else, no changes, no MCP.
+    pub viewer: bool,
 }
 
 pub fn session_user(app: &App, headers: &HeaderMap) -> Option<User> {
@@ -165,10 +167,10 @@ pub fn session_user(app: &App, headers: &HeaderMap) -> Option<User> {
     app.db
         .with(|c| {
             c.query_row(
-                "SELECT u.id, u.display_name FROM session s JOIN user u ON u.id = s.user_id \
+                "SELECT u.id, u.display_name, u.role = 'viewer' FROM session s JOIN user u ON u.id = s.user_id \
                  WHERE s.hash = ?1 AND s.expires > ?2",
                 params![sha256_hex(&tok), now()],
-                |r| Ok(User { id: r.get(0)?, display_name: r.get(1)? }),
+                |r| Ok(User { id: r.get(0)?, display_name: r.get(1)?, viewer: r.get(2)? }),
             )
             .optional()
         })
@@ -242,6 +244,7 @@ pub async fn login_page(Query(q): Query<HashMap<String, String>>) -> Response {
         ),
         nav: None,
         refresh: None,
+        viewer: false,
     })
 }
 
@@ -382,6 +385,7 @@ pub async fn enroll_page(State(app): State<Arc<App>>, Query(q): Query<HashMap<St
         ),
         nav: None,
         refresh: None,
+        viewer: false,
     })
 }
 
@@ -675,6 +679,9 @@ pub async fn authorize(
     let Some(user) = session_user(&app, &headers) else {
         return to_login(&uri.to_string());
     };
+    if user.viewer {
+        return html::error_page(StatusCode::FORBIDDEN, "This account can only view the charts.");
+    }
     let rid = random_token(16);
     {
         let mut m = app.mem.lock().unwrap();
@@ -709,6 +716,7 @@ pub async fn authorize(
         ),
         nav: None,
         refresh: None,
+        viewer: false,
     })
 }
 
@@ -722,8 +730,8 @@ pub async fn authorize_decide(State(app): State<Arc<App>>, headers: HeaderMap, F
     if !same_origin(&app, &headers) {
         return html::error_page(StatusCode::FORBIDDEN, "Cross-site request refused.");
     }
-    let Some(user) = session_user(&app, &headers) else {
-        return html::error_page(StatusCode::FORBIDDEN, "Not logged in.");
+    let Some(user) = session_user(&app, &headers).filter(|u| !u.viewer) else {
+        return html::error_page(StatusCode::FORBIDDEN, "Not logged in (as a parent).");
     };
     let Some((_, p)) = app.mem.lock().unwrap().authz.remove(&f.rid) else {
         return html::error_page(StatusCode::BAD_REQUEST, "This request expired; start again from Claude.");
@@ -929,7 +937,15 @@ pub fn bearer_user(app: &App, headers: &HeaderMap) -> Result<i64, Response> {
         .filter(|t| !t.is_empty());
     match tok {
         None => Err(unauthorized(app, "missing bearer token", false)),
-        Some(t) => verify_access(app, t).map_err(|e| unauthorized(app, e, true)),
+        Some(t) => {
+            let uid = verify_access(app, t).map_err(|e| unauthorized(app, e, true))?;
+            // A viewer (only the charts) has no MCP access, even with an older token.
+            let viewer = app.db.with(|c| c.query_row("SELECT role = 'viewer' FROM user WHERE id = ?1", [uid], |r| r.get::<_, bool>(0))).unwrap_or(true);
+            if viewer {
+                return Err(unauthorized(app, "this account can only view the charts", true));
+            }
+            Ok(uid)
+        }
     }
 }
 

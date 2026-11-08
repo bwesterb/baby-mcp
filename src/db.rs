@@ -214,6 +214,12 @@ fn migrate(c: &mut Connection) -> rusqlite::Result<()> {
         tx.execute_batch("ALTER TABLE push_message ADD COLUMN tag TEXT; PRAGMA user_version = 3")?;
         tx.commit()?;
     }
+    if version < 4 {
+        // A viewer (say a grandparent) only sees the charts, up to yesterday.
+        let tx = c.transaction()?;
+        tx.execute_batch("ALTER TABLE user ADD COLUMN role TEXT NOT NULL DEFAULT 'parent' CHECK (role IN ('parent', 'viewer')); PRAGMA user_version = 4")?;
+        tx.commit()?;
+    }
     sync_generated_columns(c)
 }
 

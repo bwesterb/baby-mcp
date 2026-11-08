@@ -359,7 +359,7 @@ async fn tick(app: &App, client: &reqwest::Client) -> Result<(), String> {
             let status = crate::entries::status(c, &app.clock, &baby, t).map_err(rusqlite::Error::InvalidParameterName)?;
             let notices = due(c, &app.clock, &status, &baby.name, t).map_err(rusqlite::Error::InvalidParameterName)?;
             let users: Vec<i64> = {
-                let mut st = c.prepare("SELECT DISTINCT user_id FROM push_subscription")?;
+                let mut st = c.prepare("SELECT DISTINCT s.user_id FROM push_subscription s JOIN user u ON u.id = s.user_id WHERE u.role = 'parent'")?;
                 st.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?
             };
             // Per user and group: everything current, and whether any of it is new.

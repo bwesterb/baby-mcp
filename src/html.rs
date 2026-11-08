@@ -48,12 +48,18 @@ fn footer() -> String {
 pub struct Page<'a> {
     pub title: &'a str,
     pub body: String,
+    /// A viewer: only the charts in the menu.
+    pub viewer: bool,
     pub nav: Option<&'a str>, // logged-in display name
     pub refresh: Option<u32>,
 }
 
 pub fn render(p: Page) -> Response {
     let nav = match p.nav {
+        Some(me) if p.viewer => format!(
+            r#"<nav><a href="/charts" class="home" aria-label="Charts"><img src="/elephant.png" width="22" height="22" alt=""><span class="lbl">Charts</span></a><span class="me">{}</span><form method="post" action="/logout"><button>Log out</button></form></nav>"#,
+            esc(me)
+        ),
         Some(me) => format!(
             r#"<nav><a href="/" class="home" aria-label="Status"><img src="/elephant.png" width="22" height="22" alt=""><span class="lbl">Status</span></a><a href="/day" aria-label="Days">📅<span class="lbl"> Days</span></a><a href="/charts" aria-label="Charts">📈<span class="lbl"> Charts</span></a><a href="/add" aria-label="Add">✏️<span class="lbl"> Add</span></a><a href="/notifications" title="Notifications">🔔</a><span class="me">{}</span><form method="post" action="/logout"><button>Log out</button></form></nav>"#,
             esc(me)
@@ -94,6 +100,7 @@ pub fn error_page(status: StatusCode, msg: &str) -> Response {
         body: format!(r#"<div class="card"><h1>Cannot continue</h1><p>{}</p></div>"#, esc(msg)),
         nav: None,
         refresh: None,
+        viewer: false,
     });
     *r.status_mut() = status;
     r

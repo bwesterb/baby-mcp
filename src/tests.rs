@@ -509,3 +509,28 @@ async fn entry_history_page() {
     assert!(day.body.contains(r#"<div class="sub">Bas</div><div class="sub">✎ v2</div>"#), "who logged it, then the edit mark");
     assert_eq!(send(&t, get("/entry/999999").header(header::COOKIE, &t.cookie).body(Body::empty()).unwrap()).await.status, StatusCode::NOT_FOUND);
 }
+
+#[tokio::test]
+async fn viewer_sees_only_charts() {
+    let t = setup();
+    let (_, access, _) = connect(&t).await;
+    let (err, v) = tool(&t, &access, "log", json!({"text": "80 ml formula", "fields": {"bottle_formula_ml": 80}})).await;
+    assert!(!err, "{v}");
+    // The user becomes a viewer (say a grandparent).
+    t.app.db.with(|c| c.execute("UPDATE user SET role = 'viewer' WHERE id = 1", [])).unwrap();
+    assert_eq!(mcp(&t, &access, "tools/list", json!({})).await.status, StatusCode::UNAUTHORIZED, "no MCP, even with an older token");
+    for p in ["/", "/day", "/add", "/entry/1", "/notifications"] {
+        let r = send(&t, get(p).header(header::COOKIE, &t.cookie).body(Body::empty()).unwrap()).await;
+        assert_eq!(r.location(), "/charts", "{p}");
+    }
+    let body = "text=Wet+diaper";
+    let r = send(&t, post_form("/add", body).header(header::COOKIE, &t.cookie).header(header::ORIGIN, ORIGIN).body(Body::from(body)).unwrap()).await;
+    assert_eq!(r.location(), "/charts");
+    let n: i64 = t.app.db.with(|c| c.query_row("SELECT count(*) FROM entry", [], |r| r.get(0))).unwrap();
+    assert_eq!(n, 1, "a viewer can't add");
+    let r = send(&t, get("/charts").header(header::COOKIE, &t.cookie).body(Body::empty()).unwrap()).await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert!(r.body.contains("Up to and including yesterday") && !r.body.contains("expected by midnight"), "{}", r.body);
+    assert!(!r.body.contains(r#"href="/day""#) && !r.body.contains(r#"href="/add""#), "only the charts in the menu");
+    assert_eq!(send(&t, get("/push/badge").header(header::COOKIE, &t.cookie).body(Body::empty()).unwrap()).await.status, StatusCode::UNAUTHORIZED);
+}

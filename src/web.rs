@@ -14,8 +14,13 @@ use serde_json::{Map, Value};
 use std::collections::HashMap;
 use std::sync::Arc;
 
+/// The logged-in user; a viewer only on the charts (elsewhere: to the charts).
 fn require(app: &App, headers: &HeaderMap, here: &str) -> Result<User, Response> {
-    session_user(app, headers).ok_or_else(|| to_login(here))
+    let user = session_user(app, headers).ok_or_else(|| to_login(here))?;
+    if user.viewer && here != "/charts" {
+        return Err(Redirect::to("/charts").into_response());
+    }
+    Ok(user)
 }
 
 fn stat(label: &str, value: &str, sub: &str) -> String {
@@ -657,7 +662,7 @@ pub async fn status(State(app): State<Arc<App>>, headers: HeaderMap) -> Response
     // repeated in the log.
     let today_rest: Vec<en::Entry> = today.iter().filter(|e| e.attention_by == 0).cloned().collect();
     body += &log_card("<h2>Today's log</h2>", &today_rest, &loggers, clock, if today.is_empty() { "Nothing logged yet today." } else { "Only entries that need attention so far." });
-    html::render(Page { title: "Status · baby-mcp", body, nav: Some(&user.display_name), refresh: Some(60) })
+    html::render(Page { title: "Status · baby-mcp", body, nav: Some(&user.display_name), refresh: Some(60), viewer: false })
 }
 
 /// A past (or the current) day: totals and the full log, with navigation.
@@ -700,7 +705,7 @@ pub async fn day(
     body += &totals_card("<h2>Totals</h2>", &day_totals, weight_of(&entries, &app.baby()));
     let loggers = app.db.with(|c| Ok(en::loggers(c, &entries))).ok().and_then(Result::ok).unwrap_or_default();
     body += &log_card("<h2>Log</h2>", &entries, &loggers, clock, "Nothing logged this day.");
-    html::render(Page { title: &format!("{title} · baby-mcp"), body, nav: Some(&user.display_name), refresh: Some(60) })
+    html::render(Page { title: &format!("{title} · baby-mcp"), body, viewer: false, nav: Some(&user.display_name), refresh: Some(60) })
 }
 
 // ------------------------------------------------------------- charts
@@ -1054,7 +1059,10 @@ pub async fn charts(State(app): State<Arc<App>>, headers: HeaderMap) -> Response
         Ok(u) => u,
         Err(r) => return r,
     };
-    let t = now();
+    // A viewer sees complete days only: up to the start of today, without
+    // today's running totals or what they are expected to reach.
+    let real_now = now();
+    let t = if user.viewer { app.clock.day_start(real_now) - 1 } else { real_now };
     let from = app.clock.day_start(t - 13 * 86400);
     let days = match app.db.with(|c| Ok(en::stats(c, &app.clock, &app.baby(), from, t + 1))) {
         Ok(Ok(d)) => d,
@@ -1083,7 +1091,7 @@ pub async fn charts(State(app): State<Arc<App>>, headers: HeaderMap) -> Response
     };
     let rest = (app.clock.next_day_start(t) - t) as f64 / 86400.0;
     let today = days.last().filter(|d| d.date == app.clock.day(t)).map(|d| d.totals.clone());
-    let project = |m: fn(&en::Totals) -> f64| today.as_ref().map(|td| expected_by_midnight(m(td), m(&last24), rest));
+    let project = |m: fn(&en::Totals) -> f64| today.as_ref().filter(|_| !user.viewer).map(|td| expected_by_midnight(m(td), m(&last24), rest));
     let since_birth = match app.db.with(|c| Ok(en::list(c, baby.birth.unwrap_or(t), t + 1, false))) {
         Ok(Ok(es)) => es,
         Ok(Err(e)) => return html::error_page(StatusCode::INTERNAL_SERVER_ERROR, &e),
@@ -1094,6 +1102,9 @@ pub async fn charts(State(app): State<Arc<App>>, headers: HeaderMap) -> Response
         _ => vec![],
     };
     let mut body = String::new();
+    if user.viewer {
+        body += r#"<p class="mut">Up to and including yesterday.</p>"#;
+    }
     body += &change_chart(&baby, &weights, t);
     body += &growth_chart(&baby, &weights, t);
     body += &per_kg_chart(&per_kg);
@@ -1112,7 +1123,7 @@ pub async fn charts(State(app): State<Arc<App>>, headers: HeaderMap) -> Response
         ("dirty", "#a5531d", |d| d.totals.dirty_only as f64),
     ], "", project(|t| t.diapers as f64));
     body += &bars("Feeds per day", &days, &[("feeds", "#6b6b70", |d| d.totals.feeds as f64)], "", project(|t| t.feeds as f64));
-    html::render(Page { title: "Charts · baby-mcp", body, nav: Some(&user.display_name), refresh: Some(60) })
+    html::render(Page { title: "Charts · baby-mcp", body, nav: Some(&user.display_name), refresh: Some(60), viewer: user.viewer })
 }
 
 // ------------------------------------------------------------- capture
@@ -1130,7 +1141,7 @@ pub async fn add_page(State(app): State<Arc<App>>, headers: HeaderMap) -> Respon
 </form>
 <p class="mut">Saved as you write it. Claude fills in the details later, including the time if you mention one; otherwise it is logged as now.</p></div>"#
     );
-    html::render(Page { title: "Add · baby-mcp", body, nav: Some(&user.display_name), refresh: None })
+    html::render(Page { title: "Add · baby-mcp", body, nav: Some(&user.display_name), refresh: None, viewer: false })
 }
 
 #[derive(Deserialize)]
@@ -1483,7 +1494,7 @@ pub async fn entry_page(State(app): State<Arc<App>>, headers: HeaderMap, axum::e
         );
     }
     body += "</table></div>";
-    html::render(Page { title: &format!("Entry {id} · baby-mcp"), body, nav: Some(&user.display_name), refresh: None })
+    html::render(Page { title: &format!("Entry {id} · baby-mcp"), body, viewer: false, nav: Some(&user.display_name), refresh: None })
 }
 
 pub async fn not_found() -> Response {

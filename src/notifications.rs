@@ -14,8 +14,18 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use std::sync::Arc;
 
+/// A parent (a viewer gets no notifications: to the charts).
 fn require(app: &App, headers: &HeaderMap) -> Result<User, Response> {
-    session_user(app, headers).ok_or_else(|| to_login("/notifications"))
+    let user = session_user(app, headers).ok_or_else(|| to_login("/notifications"))?;
+    if user.viewer {
+        return Err(Redirect::to("/charts").into_response());
+    }
+    Ok(user)
+}
+
+/// A parent, for the JSON endpoints.
+fn parent(app: &App, headers: &HeaderMap) -> Option<User> {
+    session_user(app, headers).filter(|u| !u.viewer)
 }
 
 fn json_err(status: StatusCode, msg: &str) -> Response {
@@ -109,7 +119,7 @@ pub async fn page(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
         body += "</table>";
     }
     body += "</div>";
-    html::render(Page { title: "Notifications · baby-mcp", body, nav: Some(&user.display_name), refresh: None })
+    html::render(Page { title: "Notifications · baby-mcp", body, nav: Some(&user.display_name), refresh: None, viewer: false })
 }
 
 #[derive(Deserialize)]
@@ -123,7 +133,7 @@ pub async fn save_pref(State(app): State<Arc<App>>, headers: HeaderMap, Json(b):
     if !same_origin(&app, &headers) {
         return json_err(StatusCode::FORBIDDEN, "cross-site request refused");
     }
-    let Some(user) = session_user(&app, &headers) else { return json_err(StatusCode::UNAUTHORIZED, "log in first") };
+    let Some(user) = parent(&app, &headers) else { return json_err(StatusCode::UNAUTHORIZED, "log in first (as a parent)") };
     if !KINDS.iter().any(|(k, _, _)| *k == b.kind) {
         return json_err(StatusCode::BAD_REQUEST, "unknown kind");
     }
@@ -173,7 +183,7 @@ pub async fn subscribe(State(app): State<Arc<App>>, headers: HeaderMap, Json(b):
     if !same_origin(&app, &headers) {
         return json_err(StatusCode::FORBIDDEN, "cross-site request refused");
     }
-    let Some(user) = session_user(&app, &headers) else { return json_err(StatusCode::UNAUTHORIZED, "log in first") };
+    let Some(user) = parent(&app, &headers) else { return json_err(StatusCode::UNAUTHORIZED, "log in first (as a parent)") };
     let Some(keys) = b.keys else { return json_err(StatusCode::BAD_REQUEST, "subscription without keys") };
     if !b.endpoint.starts_with("https://") || b.endpoint.len() > 2048 || keys.p256dh.len() > 200 || keys.auth.len() > 100 {
         return json_err(StatusCode::BAD_REQUEST, "invalid subscription");
@@ -201,7 +211,7 @@ pub async fn unsubscribe(State(app): State<Arc<App>>, headers: HeaderMap, Json(b
     if !same_origin(&app, &headers) {
         return json_err(StatusCode::FORBIDDEN, "cross-site request refused");
     }
-    let Some(user) = session_user(&app, &headers) else { return json_err(StatusCode::UNAUTHORIZED, "log in first") };
+    let Some(user) = parent(&app, &headers) else { return json_err(StatusCode::UNAUTHORIZED, "log in first (as a parent)") };
     let _ = app.db.with(|c| c.execute("DELETE FROM push_subscription WHERE endpoint = ?1 AND user_id = ?2", params![b.endpoint, user.id]));
     Json(json!({ "ok": true })).into_response()
 }
@@ -210,7 +220,7 @@ pub async fn test(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
     if !same_origin(&app, &headers) {
         return json_err(StatusCode::FORBIDDEN, "cross-site request refused");
     }
-    let Some(user) = session_user(&app, &headers) else { return json_err(StatusCode::UNAUTHORIZED, "log in first") };
+    let Some(user) = parent(&app, &headers) else { return json_err(StatusCode::UNAUTHORIZED, "log in first (as a parent)") };
     let n = Notice {
         kind: "test",
         key: String::new(),
@@ -251,7 +261,7 @@ pub async fn message(State(app): State<Arc<App>>, Path(id): Path<String>) -> Res
 
 /// The app icon's badge: count and what it counts (session required).
 pub async fn badge(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
-    if session_user(&app, &headers).is_none() {
+    if parent(&app, &headers).is_none() {
         return json_err(StatusCode::UNAUTHORIZED, "log in first");
     }
     match notify::current(&app, now()) {
