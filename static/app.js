@@ -184,9 +184,27 @@ if ($('push')) {
   const days = d.days.split(',').map((s) => { const [date, start] = s.split(':'); return {date, start: Number(start)}; });
   days.forEach((day, i) => { day.end = i + 1 < days.length ? days[i + 1].start : TO; });
   let z = Number(d.z);
-  const x = (t) => PAD + (t - FROM) / 3600 * PXH[z];
-  const tAt = (px) => FROM + (px - PAD) / PXH[z] * 3600;
+  // The day shown is the one at AT of the width: where "now" is when it
+  // opens. Room before the first day and after now lets each reach it.
+  const AT = Number(d.at);
+  let lead = 0;
+  const ux = (t) => PAD + (t - FROM) / 3600 * PXH[z]; // in the svg
+  const x = (t) => lead + ux(t); // in the scrolled strip
+  const tAt = (px) => FROM + (px - lead - PAD) / PXH[z] * 3600;
   const W = () => tl.clientWidth;
+  const ref = () => tl.scrollLeft + AT * W();
+  let total = 0;
+  function measure() { // sets lead and total for the zoom level
+    const w = W(), at = AT * w, first = days[0], end = ux(TO) + PAD;
+    lead = Math.max(0, at - ux((first.start + first.end) / 2));
+    total = Math.round(lead + end + Math.max(0, ux(NOW) + w - at - end));
+  }
+  function frame() {
+    measure();
+    svg.setAttribute('width', String(total));
+    svg.setAttribute('viewBox', `${-lead} 0 ${total} ${svg.getAttribute('height')}`);
+  }
+  frame();
   const loaded = new Map(); // date → its svg, or 'loading'
   for (const el of svg.querySelectorAll(':scope > svg[data-day]')) loaded.set(el.dataset.day, el);
   let gen = 0; // bumped on a zoom change: older loads are dropped
@@ -225,13 +243,9 @@ if ($('push')) {
     }
   }
 
-  // The day in view: today while "now" is on screen, else the one in the middle.
+  // The day in view: the one at AT of the width.
   const dayAt = (t) => days.reduce((r, day) => (day.start <= t ? day : r), days[0]);
-  function inView() {
-    const n = x(NOW);
-    if (n >= tl.scrollLeft && n <= tl.scrollLeft + W()) return TODAY;
-    return dayAt(tAt(tl.scrollLeft + W() / 2)).date;
-  }
+  const inView = () => dayAt(tAt(ref())).date;
   // Day logs fetched, kept briefly (the page reloads every minute anyway).
   const logs = new Map();
   const getLog = (date) => {
@@ -257,13 +271,13 @@ if ($('push')) {
   function mark(date) {
     const day = days.find((dd) => dd.date === date);
     if (!day) return;
-    const a = x(day.start) + 2, b = x(date === TODAY ? NOW : day.end) - 2;
+    const a = ux(day.start) + 2, b = ux(date === TODAY ? NOW : day.end) - 2;
     bar.setAttribute('x', String(a));
     bar.setAttribute('width', String(Math.max(0, b - a)));
     svg.appendChild(bar);
     if (date === TODAY) {
-      ahead.setAttribute('x1', String(x(NOW) + 3.5));
-      ahead.setAttribute('x2', String(x(TO) - 1.5));
+      ahead.setAttribute('x1', String(ux(NOW) + 3.5));
+      ahead.setAttribute('x2', String(ux(TO) - 1.5));
       svg.appendChild(ahead);
     } else {
       ahead.remove();
@@ -293,11 +307,11 @@ if ($('push')) {
     const url = shown === TODAY ? '/' : '/?day=' + shown;
     if (location.pathname + location.search !== url) try { history.replaceState(null, '', url); } catch (e) { /* too often */ }
   }
-  const home = () => x(NOW) - W() * Number(d.at);
+  const home = () => x(NOW) - AT * W();
   function goTo(date, smooth) {
     const day = days.find((dd) => dd.date === date);
     if (!day) return;
-    const left = date === TODAY ? home() : x((day.start + day.end) / 2) - W() / 2;
+    const left = date === TODAY ? home() : x((day.start + day.end) / 2) - AT * W();
     tl.scrollTo({left, behavior: smooth ? 'smooth' : 'auto'});
     show(date).then(setUrl);
   }
@@ -314,14 +328,14 @@ if ($('push')) {
   // Where to open.
   let saved = null;
   try {
-    const s = JSON.parse(sessionStorage.getItem('tl2') || 'null');
+    const s = JSON.parse(sessionStorage.getItem('tl3') || 'null');
     if (s && Date.now() - s.t < 3 * 60 * 1000 && s.url === location.pathname + location.search) saved = s;
   } catch (e) { /* no storage */ }
-  if (saved) tl.scrollLeft = x(saved.c) - W() / 2;
-  else if (d.focus) tl.scrollLeft = x(Number(d.focus)) - W() / 2;
+  if (saved) tl.scrollLeft = x(saved.c) - AT * W();
+  else if (d.focus) tl.scrollLeft = x(Number(d.focus)) - AT * W();
   else tl.scrollLeft = home();
   const save = () => {
-    try { sessionStorage.setItem('tl2', JSON.stringify({t: Date.now(), c: tAt(tl.scrollLeft + W() / 2), url: location.pathname + location.search})); } catch (e) { /* no storage */ }
+    try { sessionStorage.setItem('tl3', JSON.stringify({t: Date.now(), c: tAt(ref()), url: location.pathname + location.search})); } catch (e) { /* no storage */ }
   };
   let touched = false;
   for (const ev of ['touchstart', 'pointerdown', 'wheel']) tl.addEventListener(ev, () => { touched = true; }, {passive: true});
@@ -344,6 +358,11 @@ if ($('push')) {
     }, 250);
   }, {passive: true});
   fill();
+  addEventListener('resize', () => {
+    const t = tAt(ref());
+    frame();
+    tl.scrollLeft = x(t) - AT * W();
+  });
 
   // Zoom: while pinching, the strip is stretched; on letting go, the
   // nearest level is loaded, keeping the time under the fingers in place.
@@ -366,7 +385,8 @@ if ($('push')) {
     if (nz === z) { unstretch(); return; }
     const g = ++gen;
     z = nz;
-    try { document.cookie = `tlz=${z}; path=/; max-age=31536000; samesite=lax`; } catch (e) { /* none */ }
+    measure();
+    try { document.cookie = `tlz2=${z}; path=/; max-age=31536000; samesite=lax`; } catch (e) { /* none */ }
     const left = x(p.t) - p.sx, w = W();
     const [a, b] = [tAt(left - w), tAt(left + 2 * w)];
     const need = days.filter((day) => day.end > a && day.start < b);
@@ -374,7 +394,7 @@ if ($('push')) {
     if (g !== gen) return;
     loaded.clear();
     for (const el of [...svg.querySelectorAll(':scope > svg')]) el.remove();
-    svg.setAttribute('width', String(Math.round(x(TO) + PAD)));
+    frame();
     unstretch();
     els.forEach((el, i) => { if (el) { loaded.set(need[i].date, el); place(el); } });
     mark(shown);

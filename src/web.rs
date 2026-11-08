@@ -228,16 +228,15 @@ struct Zoom {
     label: i8,
     line: i8,
 }
-const TL_ZOOM: [Zoom; 4] = [
-    Zoom { pxh: 76.0, label: 1, line: 1 },
+const TL_ZOOM: [Zoom; 3] = [
     Zoom { pxh: 38.0, label: 2, line: 1 },
     Zoom { pxh: 12.0, label: 6, line: 3 },
     Zoom { pxh: 3.0, label: 24, line: 24 },
 ];
-const TL_Z: usize = 1;
-const TL_SUMMARY: usize = 3;
+const TL_Z: usize = 0;
+const TL_SUMMARY: usize = 2;
 /// The cookie keeping the zoom level (so the page opens at it).
-const TL_Z_COOKIE: &str = "tlz";
+const TL_Z_COOKIE: &str = "tlz2";
 
 /// The whole strip: from midnight of the first day to the hours ahead.
 struct Track {
@@ -1921,7 +1920,7 @@ mod tests {
         let page = timeline(&clock, &tr, &all, now, None);
         assert!(page.contains(&format!(r#"data-days="2025-11-05:{},2025-11-06:"#, tr.from)) && page.contains(&format!(r#"width="{:.0}""#, tr.width())), "{page}");
         // Zoomed out: smaller emojis, fewer labels; widest: a summary per day.
-        let tr2 = Track { z: 2, ..tr };
+        let tr2 = Track { z: 1, ..tr };
         let out = tl_day(&clock, &tr2, &entries, Some(&s), now, days[2].0, days[2].1);
         assert!(out.contains(r#"class="emo s""#) && out.contains(r#"class="hd">12<"#) && !out.contains(r#"class="hd">10<"#), "{out}");
         let tr3 = Track { z: TL_SUMMARY, ..tr };
