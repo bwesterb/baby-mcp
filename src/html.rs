@@ -64,7 +64,7 @@ pub fn render(p: Page) -> Response {
             esc(me)
         ),
         Some(me) => format!(
-            r#"<nav><a href="/" class="home" aria-label="Status"><img src="/elephant.png" width="22" height="22" alt=""><span class="lbl">Status</span></a><a href="/day" aria-label="Days">📅<span class="lbl"> Days</span></a><a href="/charts" aria-label="Charts">📈<span class="lbl"> Charts</span></a><a href="/add" aria-label="Add">✏️<span class="lbl"> Add</span></a><a href="/notifications" title="Notifications">🔔</a><span class="me">{}</span><form method="post" action="/logout"><button>Log out</button></form></nav>"#,
+            r#"<nav><a href="/" class="home" aria-label="Status"><img src="/elephant.png" width="22" height="22" alt=""><span class="lbl">Status</span></a><a href="/charts" aria-label="Charts">📈<span class="lbl"> Charts</span></a><a href="/add" aria-label="Add">✏️<span class="lbl"> Add</span></a><a href="/notifications" title="Notifications">🔔</a><span class="me">{}</span><form method="post" action="/logout"><button>Log out</button></form></nav>"#,
             esc(me)
         ),
         None => r#"<div class="brand logo"><img src="/icon-192.png" width="72" height="72" alt=""></div>"#.to_string(),

@@ -232,23 +232,38 @@ if ($('push')) {
     if (n >= tl.scrollLeft && n <= tl.scrollLeft + W()) return TODAY;
     return dayAt(tAt(tl.scrollLeft + W() / 2)).date;
   }
+  // Day logs fetched, kept briefly (the page reloads every minute anyway).
+  const logs = new Map();
+  const getLog = (date) => {
+    if (!logs.has(date)) {
+      logs.set(date, fetch('/log?date=' + date, {cache: 'no-store'})
+        .then((r) => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.text(); })
+        .catch((e) => { logs.delete(date); throw e; }));
+    }
+    return logs.get(date);
+  };
+  const near = (date, k) => { const i = days.findIndex((dd) => dd.date === date); return days[i + k] && days[i + k].date; };
   let shown = log ? log.dataset.day : TODAY, seq = 0;
   async function show(date) {
     if (!log || date === shown) return;
     const was = shown, my = ++seq;
     shown = date;
     try {
-      const r = await fetch('/log?date=' + date, {cache: 'no-store'});
-      if (!r.ok) throw new Error('HTTP ' + r.status);
-      const html = await r.text();
+      const html = await getLog(date);
       if (my !== seq) return;
       log.innerHTML = html;
       log.dataset.day = date;
       for (const el of document.querySelectorAll('.now-only')) el.hidden = date !== TODAY;
-      history.replaceState(null, '', date === TODAY ? '/' : '/?day=' + date);
+      // The days next to it, for scrolling on.
+      for (const k of [-1, 1]) { const n = near(date, k); if (n) getLog(n).catch(() => {}); }
     } catch (e) {
       if (my === seq) shown = was;
     }
+  }
+  // The address follows when scrolling stops (Safari limits how often).
+  function setUrl() {
+    const url = shown === TODAY ? '/' : '/?day=' + shown;
+    if (location.pathname + location.search !== url) try { history.replaceState(null, '', url); } catch (e) { /* too often */ }
   }
   const home = () => x(NOW) - W() * Number(d.at);
   function goTo(date, smooth) {
@@ -256,7 +271,7 @@ if ($('push')) {
     if (!day) return;
     const left = date === TODAY ? home() : x((day.start + day.end) / 2) - W() / 2;
     tl.scrollTo({left, behavior: smooth ? 'smooth' : 'auto'});
-    show(date);
+    show(date).then(setUrl);
   }
   // The links to other days in the log scroll the timeline there.
   if (log) {
@@ -285,12 +300,19 @@ if ($('push')) {
   addEventListener('pagehide', () => { if (touched) save(); });
   let busy = false, idle;
   tl.addEventListener('scroll', () => {
-    if (!busy) { busy = true; requestAnimationFrame(() => { busy = false; fill(); }); }
+    if (!busy) {
+      busy = true;
+      requestAnimationFrame(() => {
+        busy = false;
+        fill();
+        if (touched) show(inView());
+      });
+    }
     clearTimeout(idle);
     idle = setTimeout(() => {
       if (!touched) return;
       save();
-      show(inView());
+      setUrl();
     }, 250);
   }, {passive: true});
   fill();
@@ -330,7 +352,7 @@ if ($('push')) {
     tl.scrollLeft = left;
     fill();
     save();
-    show(inView());
+    show(inView()).then(setUrl);
   }
   const start = (sx) => ({sx, ax: tl.scrollLeft + sx, t: tAt(tl.scrollLeft + sx), s: 1});
   const left0 = () => tl.getBoundingClientRect().left;
