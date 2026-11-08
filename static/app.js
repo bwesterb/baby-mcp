@@ -250,6 +250,11 @@ if ($('push')) {
   bar.setAttribute('height', '3');
   bar.setAttribute('rx', '1.5');
   bar.setAttribute('y', String(Number(svg.getAttribute('height')) - 4));
+  // With what's next (today), the hours ahead past midnight: dashed.
+  const ahead = document.createElementNS(SVGNS, 'line');
+  ahead.setAttribute('class', 'on-next');
+  ahead.setAttribute('y1', bar.getAttribute('y') * 1 + 1.5);
+  ahead.setAttribute('y2', bar.getAttribute('y') * 1 + 1.5);
   function mark(date) {
     const day = days.find((dd) => dd.date === date);
     if (!day) return;
@@ -257,6 +262,13 @@ if ($('push')) {
     bar.setAttribute('x', String(a));
     bar.setAttribute('width', String(Math.max(0, b - a)));
     svg.appendChild(bar);
+    if (date === TODAY && TO > TODAY_END) {
+      ahead.setAttribute('x1', String(x(TODAY_END) + 3.5));
+      ahead.setAttribute('x2', String(x(TO) - 1.5));
+      svg.appendChild(ahead);
+    } else {
+      ahead.remove();
+    }
   }
   let shown = log ? log.dataset.day : TODAY, seq = 0;
   mark(shown);
