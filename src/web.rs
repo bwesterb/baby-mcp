@@ -557,10 +557,11 @@ pub async fn status(State(app): State<Arc<App>>, headers: HeaderMap) -> Response
             let today = en::list(c, clock.day_start(t), t + 1, false)?;
             let loggers = en::loggers(c, &today)?;
             let recent = en::list(c, t - TL_PAST, t + 1, false)?;
-            Ok::<_, String>((s, today, loggers, recent))
+            let today_totals = en::totals_between(c, clock.day_start(t), t + 1)?;
+            Ok::<_, String>((s, today, loggers, recent, today_totals))
         })())
     });
-    let (s, today, loggers, recent) = match res {
+    let (s, today, loggers, recent, today_totals) = match res {
         Ok(Ok(x)) => x,
         Ok(Err(e)) => return html::error_page(StatusCode::INTERNAL_SERVER_ERROR, &e),
         Err(e) => return html::error_page(StatusCode::INTERNAL_SERVER_ERROR, &en::err(e)),
@@ -638,7 +639,7 @@ pub async fn status(State(app): State<Arc<App>>, headers: HeaderMap) -> Response
     });
     body += &totals_card(
         &format!(r#"<div class="head"><h2>Today</h2><a href="/day?date={yesterday}">← Yesterday</a></div>"#),
-        &en::totals(&today),
+        &today_totals,
         weight,
     );
 
@@ -671,7 +672,7 @@ pub async fn day(
         return Redirect::to("/").into_response();
     }
     let end = clock.next_day_start(start);
-    let entries = match app.db.with(|c| Ok(en::list(c, start, end, false))) {
+    let (entries, day_totals) = match app.db.with(|c| Ok(en::list(c, start, end, false).and_then(|e| Ok((e, en::totals_between(c, start, end)?))))) {
         Ok(Ok(e)) => e,
         Ok(Err(e)) => return html::error_page(StatusCode::INTERNAL_SERVER_ERROR, &e),
         Err(e) => return html::error_page(StatusCode::INTERNAL_SERVER_ERROR, &en::err(e)),
@@ -686,7 +687,7 @@ pub async fn day(
         esc(&title),
         esc(&age)
     );
-    body += &totals_card("<h2>Totals</h2>", &en::totals(&entries), weight_of(&entries, &app.baby()));
+    body += &totals_card("<h2>Totals</h2>", &day_totals, weight_of(&entries, &app.baby()));
     let loggers = app.db.with(|c| Ok(en::loggers(c, &entries))).ok().and_then(Result::ok).unwrap_or_default();
     body += &log_card("<h2>Log</h2>", &entries, &loggers, clock, "Nothing logged this day.");
     html::render(Page { title: &format!("{title} · baby-mcp"), body, nav: Some(&user.display_name), refresh: Some(60) })
@@ -1065,8 +1066,8 @@ pub async fn charts(State(app): State<Arc<App>>, headers: HeaderMap) -> Response
     };
     // Today's expected totals by midnight: so far today + the last 24 hours'
     // totals scaled to the rest of the day.
-    let last24 = match app.db.with(|c| Ok(en::list(c, t - 86400, t + 1, false))) {
-        Ok(Ok(es)) => en::totals(&es),
+    let last24 = match app.db.with(|c| Ok(en::totals_between(c, t - 86400, t + 1))) {
+        Ok(Ok(t)) => t,
         Ok(Err(e)) => return html::error_page(StatusCode::INTERNAL_SERVER_ERROR, &e),
         Err(e) => return html::error_page(StatusCode::INTERNAL_SERVER_ERROR, &en::err(e)),
     };

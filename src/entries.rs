@@ -196,6 +196,12 @@ pub fn nearby(c: &Connection, at: i64, window: i64, groups: &[Group]) -> Result<
         .collect())
 }
 
+/// Totals of the entries in [from, to), with a top-up of a feed just before
+/// `from` counted with that feed.
+pub fn totals_between(c: &Connection, from: i64, to: i64) -> Result<Totals, String> {
+    Ok(totals_from(&list(c, from - TOP_UP_WITHIN, to, false)?, from))
+}
+
 pub fn last_where(c: &Connection, cond: &str) -> Result<Option<Entry>, String> {
     Ok(query(c, &format!("deleted = 0 AND {cond} ORDER BY at DESC, entry_id DESC LIMIT 1"), [])?.pop())
 }
@@ -299,20 +305,31 @@ pub struct Totals {
     pub pump_ml: f64,
 }
 
-/// Totals; feeds counted as episodes (a top-up counts with its feed; at the
-/// start of the entries, one belonging to an earlier feed counts as its own).
+/// Totals; feeds counted as episodes (a top-up counts with its feed). See
+/// `totals_from` for a top-up of a feed just before the entries.
+#[cfg(test)]
 pub fn totals<'a>(entries: impl IntoIterator<Item = &'a Entry>) -> Totals {
+    totals_from(entries, i64::MIN)
+}
+
+/// Totals of the entries from `from`; the earlier ones (up to TOP_UP_WITHIN
+/// before) only tell whether the first feeds are top-ups.
+pub fn totals_from<'a>(entries: impl IntoIterator<Item = &'a Entry>, from: i64) -> Totals {
     let mut t = Totals::default();
     let mut last_feed: Option<i64> = None;
     for e in entries {
         if e.deleted {
             continue;
         }
+        let new_feed = e.is_feed() && last_feed.is_none_or(|l| e.at - l > TOP_UP_WITHIN);
         if e.is_feed() {
-            if last_feed.is_none_or(|l| e.at - l > TOP_UP_WITHIN) {
-                t.feeds += 1;
-            }
             last_feed = Some(e.at);
+        }
+        if e.at < from {
+            continue;
+        }
+        if new_feed {
+            t.feeds += 1;
         }
         t.breastmilk_ml += e.num("bottle_breastmilk_ml").unwrap_or(0.0);
         t.formula_ml += e.num("bottle_formula_ml").unwrap_or(0.0);
@@ -525,7 +542,6 @@ pub fn status(c: &Connection, clock: &Clock, baby: &Baby, now: i64) -> Result<Va
     let last_temp = last_where(c, "temp_c IS NOT NULL")?;
     let last_weight = last_where(c, "weight_g IS NOT NULL")?;
     let recent = list(c, now - ESTIMATE_BACK, now + 1, false)?;
-    let today = list(c, clock.day_start(now), now + 1, false)?;
     let day = list(c, now - 24 * 3600, now + 1, false)?;
 
     let next_feed = estimate_feed(clock, &feed_episodes(&recent), now);
@@ -541,8 +557,8 @@ pub fn status(c: &Connection, clock: &Clock, baby: &Baby, now: i64) -> Result<Va
         "last_dirty_diaper": since(&last_dirty, clock, now, last_dirty.as_ref().and_then(|e| e.fields.get("stool_color").cloned())),
         "last_temperature": since(&last_temp, clock, now, last_temp.as_ref().and_then(|e| e.fields.get("temp_c").cloned())),
         "last_weight": since(&last_weight, clock, now, last_weight.as_ref().and_then(|e| e.fields.get("weight_g").cloned())),
-        "today": totals(&today),
-        "last_24h": totals(&day),
+        "today": totals_between(c, clock.day_start(now), now + 1)?,
+        "last_24h": totals_between(c, now - 24 * 3600, now + 1)?,
         "needs_attention": attention(c, BY_USER | BY_AGENT)?.iter().map(|e| view(e, clock, &names)).collect::<Vec<_>>(),
     });
     if let Some(b) = baby.birth {
@@ -657,7 +673,7 @@ pub struct DayStats {
 
 /// Per-day statistics for the local days from `from` (a day start) up to `to`.
 pub fn stats(c: &Connection, clock: &Clock, baby: &Baby, from: i64, to: i64) -> Result<Vec<DayStats>, String> {
-    let all = list(c, from, to, false)?;
+    let all = list(c, from - TOP_UP_WITHIN, to, false)?;
     let mut out = vec![];
     let mut start = clock.day_start(from);
     while start < to {
@@ -667,7 +683,7 @@ pub fn stats(c: &Connection, clock: &Clock, baby: &Baby, from: i64, to: i64) -> 
         let weight = day.iter().filter_map(|e| e.num("weight_g")).last();
         out.push(DayStats {
             date: clock.day(start),
-            totals: totals(day.iter().copied()),
+            totals: totals_from(all.iter().filter(|e| e.at >= start - TOP_UP_WITHIN && e.at < end), start),
             temp_min_c: temps.iter().copied().reduce(f64::min),
             temp_max_c: temps.iter().copied().reduce(f64::max),
             weight_g: weight,

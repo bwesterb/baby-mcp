@@ -493,6 +493,10 @@ mod tests {
         assert_eq!(eps.len(), 8);
         assert_eq!(*eps.last().unwrap(), (at("2025-11-07 23:00"), at("2025-11-08 01:00")));
         assert_eq!(crate::entries::totals(&es).feeds, 8, "top-ups aren't feeds of their own");
+        // The day from midnight: the top-ups at 00:30 and 01:00 belong to the
+        // 23:00 feed of the day before.
+        let t = crate::entries::totals_from(&es, at("2025-11-08 00:00"));
+        assert_eq!((t.feeds, t.formula_ml), (0, 70.0));
         let now = at("2025-11-08 01:30");
         let g = guidance(&clock, &Inputs { now, birth, birth_weight_g: Some(3900.0), aim_feeds: None, prep_s: 0, weight_g: 3720.0, entries: &es });
         assert_eq!(g["last_24h"]["feeds"], 8);
