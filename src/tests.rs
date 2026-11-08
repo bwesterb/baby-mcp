@@ -516,6 +516,11 @@ async fn viewer_sees_only_charts() {
     let (_, access, _) = connect(&t).await;
     let (err, v) = tool(&t, &access, "log", json!({"text": "80 ml formula", "fields": {"bottle_formula_ml": 80}})).await;
     assert!(!err, "{v}");
+    // A parent can preview the page as a viewer sees it.
+    let own = send(&t, get("/charts").header(header::COOKIE, &t.cookie).body(Body::empty()).unwrap()).await;
+    assert!(own.body.contains("expected by midnight") && own.body.contains(r#"href="/charts?as=viewer""#));
+    let pv = send(&t, get("/charts?as=viewer").header(header::COOKIE, &t.cookie).body(Body::empty()).unwrap()).await;
+    assert!(pv.body.contains("As a viewer") && !pv.body.contains("expected by midnight") && !pv.body.contains(r#"href="/day""#), "{}", pv.body);
     // The user becomes a viewer (say a grandparent).
     t.app.db.with(|c| c.execute("UPDATE user SET role = 'viewer' WHERE id = 1", [])).unwrap();
     assert_eq!(mcp(&t, &access, "tools/list", json!({})).await.status, StatusCode::UNAUTHORIZED, "no MCP, even with an older token");

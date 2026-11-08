@@ -1069,11 +1069,18 @@ fn per_kg_chart(days: &[crate::feeding::PerKgDay]) -> String {
     )
 }
 
-pub async fn charts(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
-    let user = match require(&app, &headers, "/charts") {
+pub async fn charts(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Query(q): Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    let mut user = match require(&app, &headers, "/charts") {
         Ok(u) => u,
         Err(r) => return r,
     };
+    // A parent can look at the page as a viewer sees it (?as=viewer).
+    let preview = !user.viewer && q.get("as").map(String::as_str) == Some("viewer");
+    user.viewer |= preview;
     // A viewer sees complete days only: up to the start of today, without
     // today's running totals or what they are expected to reach.
     let real_now = now();
@@ -1117,7 +1124,9 @@ pub async fn charts(State(app): State<Arc<App>>, headers: HeaderMap) -> Response
         _ => vec![],
     };
     let mut body = String::new();
-    if user.viewer {
+    if preview {
+        body += r#"<p class="mut">👁 As a viewer (say a grandparent) sees it. Back: <a href="/charts">Charts</a>.</p>"#;
+    } else if user.viewer {
         body += r#"<p class="mut">Up to and including yesterday.</p>"#;
     }
     body += &change_chart(&baby, &weights, t);
@@ -1138,6 +1147,9 @@ pub async fn charts(State(app): State<Arc<App>>, headers: HeaderMap) -> Response
         ("dirty", "#a5531d", |d| d.totals.dirty_only as f64),
     ], "", project(|t| t.diapers as f64));
     body += &bars("Feeds per day", &days, &[("feeds", "#6b6b70", |d| d.totals.feeds as f64)], "", project(|t| t.feeds as f64));
+    if !user.viewer {
+        body += r#"<p class="mut"><a href="/charts?as=viewer">👁 View as a viewer</a></p>"#;
+    }
     html::render(Page { title: "Charts · baby-mcp", body, nav: Some(&user.display_name), refresh: Some(60), viewer: user.viewer })
 }
 
