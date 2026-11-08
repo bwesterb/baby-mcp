@@ -625,8 +625,9 @@ fn bath_tile(clock: &crate::time::Clock, b: &Value, now: i64) -> Next {
     Next { title: "🛁 Bath", at: if never { None } else { d["at"].as_str().map(str::to_string) }, html }
 }
 
-/// "What's next", soonest (or most overdue) first; kinds without an estimate last.
-fn whats_next(mut tiles: Vec<Next>) -> String {
+/// What's next, soonest (or most overdue) first; kinds without an estimate
+/// last; under `head`.
+fn whats_next(head: &str, mut tiles: Vec<Next>) -> String {
     tiles.sort_by(|a, b| match (&a.at, &b.at) {
         (Some(x), Some(y)) => x.cmp(y),
         (Some(_), None) => std::cmp::Ordering::Less,
@@ -634,7 +635,7 @@ fn whats_next(mut tiles: Vec<Next>) -> String {
         _ => a.title.cmp(b.title),
     });
     let inner: String = tiles.iter().map(|t| t.html.as_str()).collect();
-    format!(r#"<div class="card"><h2>What's next</h2><div class="nexts">{inner}</div></div>"#)
+    format!(r#"<div class="card">{head}<div class="nexts">{inner}</div></div>"#)
 }
 
 /// Totals for a day (or part of one), plus that day's weight if any.
@@ -811,8 +812,16 @@ pub async fn status(State(app): State<Arc<App>>, headers: HeaderMap, Query(q): Q
         bath_tile(clock, &s["bath"], t),
     ];
     tiles.extend(vitamins_tile(clock, &s["vitamins"], t));
-    // What's next is about now: hidden while a past day is in view.
-    body += &format!(r#"<div class="now-only"{}>{}</div>"#, if day.is_some() { " hidden" } else { "" }, whats_next(tiles));
+    // What's next is about now: hidden while a past day is in view. Its
+    // heading is today's in the days' layout (prev · day · next), so the
+    // links stay in place when stepping through days onto today.
+    let yesterday = clock.day_start(today_start - 3600);
+    let prev = format!("← {}", clock.zoned(yesterday).strftime("%a %-d"));
+    let head = format!(
+        r#"<div class="head"><a href="/?day={0}" data-day="{0}">{prev}</a><h2>Today</h2><span class="next-none" aria-hidden="true">{prev}</span></div>"#,
+        clock.day(yesterday)
+    );
+    body += &format!(r#"<div class="now-only"{}>{}</div>"#, if day.is_some() { " hidden" } else { "" }, whats_next(&head, tiles));
     body += &format!(r#"<div id="daylog" data-day="{}">{log}</div>"#, clock.day(day.unwrap_or(today_start)));
     html::render(Page { title: "Status · baby-mcp", body, nav: Some(&user.display_name), refresh: Some(60), viewer: false, footer_extra: String::new() })
 }
@@ -834,7 +843,6 @@ fn daylog(app: &App, c: &rusqlite::Connection, start: i64, now: i64, s: &Value) 
         format!(r#"<a href="{href}" data-day="{date}">{text}</a>"#)
     };
     if start >= today {
-        let yesterday = clock.day_start(start - 3600);
         let weight = s["last_weight"]["value"].as_f64().map(|w| {
             let mut sub = vec![];
             if let Some(l) = s["weight_percentile"]["label"].as_str() {
@@ -852,11 +860,7 @@ fn daylog(app: &App, c: &rusqlite::Connection, start: i64, now: i64, s: &Value) 
             }
             (w, (!sub.is_empty()).then(|| sub.join(" · ")))
         });
-        // As on other days (prev · day · next), so the links stay in place;
-        // no next: a hidden stand-in keeps the heading where it was.
-        let prev = format!("← {}", clock.zoned(yesterday).strftime("%a %-d"));
-        let head = format!(r#"<div class="head">{}<h2>Today</h2><span class="next-none" aria-hidden="true">{prev}</span></div>"#, link(yesterday, &prev));
-        let mut out = totals_card(&head, &totals, weight);
+        let mut out = totals_card("<h2>Today so far</h2>", &totals, weight);
         let rest: Vec<en::Entry> = entries.iter().filter(|e| e.attention_by == 0).cloned().collect();
         out += &log_card("<h2>Today's log</h2>", &rest, &loggers, clock, if entries.is_empty() { "Nothing logged yet today." } else { "Only entries that need attention so far." });
         return Ok(out);
@@ -1935,7 +1939,7 @@ mod tests {
     #[test]
     fn whats_next_order() {
         use serde_json::json;
-        let html = whats_next(vec![
+        let html = whats_next("", vec![
             next_tile_extra("🍼 Feed", &json!({"ago": "1h", "at": "2025-11-07 13:00"}), "", &json!({"at": "2025-11-07 16:00", "due_in": "1h"}), ""),
             next_tile_extra("💩 Dirty diaper", &Value::Null, "", &Value::Null, ""),
             next_tile_extra("💧 Wet diaper", &json!({"ago": "3h", "at": "2025-11-07 11:00"}), "", &json!({"at": "2025-11-07 14:30", "overdue_by": "30m"}), ""),

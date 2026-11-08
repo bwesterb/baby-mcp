@@ -317,7 +317,7 @@ async fn web_pages() {
     assert_eq!((n, attention, wet), (2, 2, 0), "every web entry goes to an agent");
     let r = send(&t, get("/").header(header::COOKIE, &t.cookie).body(Body::empty()).unwrap()).await;
     // Entries needing attention: once each, in their own card first (not in the log), with the reason.
-    assert!(r.body.contains("Needs attention") && r.body.find("Needs attention") < r.body.find("What's next") && r.body.contains("🤖") && r.body.matches("process the entries that need attention").count() == 1, "{}", r.body);
+    assert!(r.body.contains("Needs attention") && r.body.find("Needs attention") < r.body.find(r#"class="nexts""#) && r.body.contains("🤖") && r.body.matches("process the entries that need attention").count() == 1, "{}", r.body);
     assert_eq!(r.body.matches("fields not extracted yet").count(), 2, "{}", r.body);
     let r = send(&t, get("/charts").header(header::COOKIE, &t.cookie).body(Body::empty()).unwrap()).await;
     assert!(r.status == StatusCode::OK && r.body.contains("<svg"));
@@ -338,7 +338,7 @@ async fn web_pages() {
     }
     // Status: last and next grouped per kind; previous days.
     let r = send(&t, get("/").header(header::COOKIE, &t.cookie).body(Body::empty()).unwrap()).await;
-    assert!(r.body.contains("What's next") && r.body.contains("Wet diaper") && r.body.contains(r#"<h2>Today</h2><span class="next-none""#));
+    assert!(r.body.contains("Wet diaper") && r.body.contains(r#"<h2>Today</h2><span class="next-none""#) && r.body.contains("Today so far"));
     assert!(!r.body.contains("🍼 Feeding guide"), "the feeding guide card was removed");
     // Sleeping side: after "facing left", the feed tile says the next side is right.
     t.app.db.with(|c| Ok(crate::entries::insert(c, 1, &crate::entries::NewEntry {

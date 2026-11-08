@@ -315,9 +315,10 @@ if ($('push')) {
     tl.scrollTo({left, behavior: smooth ? 'smooth' : 'auto'});
     show(date).then(setUrl);
   }
-  // The links to other days in the log scroll the timeline there.
+  // The links to other days (in the log, or over what's next) scroll the
+  // timeline there.
   if (log) {
-    log.addEventListener('click', (e) => {
+    document.addEventListener('click', (e) => {
       const a = e.target.closest('a[data-day]');
       if (!a || e.metaKey || e.ctrlKey || e.shiftKey) return;
       e.preventDefault();
