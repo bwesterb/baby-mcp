@@ -852,7 +852,11 @@ fn daylog(app: &App, c: &rusqlite::Connection, start: i64, now: i64, s: &Value) 
             }
             (w, (!sub.is_empty()).then(|| sub.join(" · ")))
         });
-        let mut out = totals_card(&format!(r#"<div class="head"><h2>Today</h2>{}</div>"#, link(yesterday, "← Yesterday")), &totals, weight);
+        // As on other days (prev · day · next), so the links stay in place;
+        // no next: a hidden stand-in keeps the heading where it was.
+        let prev = format!("← {}", clock.zoned(yesterday).strftime("%a %-d"));
+        let head = format!(r#"<div class="head">{}<h2>Today</h2><span class="next-none" aria-hidden="true">{prev}</span></div>"#, link(yesterday, &prev));
+        let mut out = totals_card(&head, &totals, weight);
         let rest: Vec<en::Entry> = entries.iter().filter(|e| e.attention_by == 0).cloned().collect();
         out += &log_card("<h2>Today's log</h2>", &rest, &loggers, clock, if entries.is_empty() { "Nothing logged yet today." } else { "Only entries that need attention so far." });
         return Ok(out);

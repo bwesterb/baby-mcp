@@ -338,7 +338,7 @@ async fn web_pages() {
     }
     // Status: last and next grouped per kind; previous days.
     let r = send(&t, get("/").header(header::COOKIE, &t.cookie).body(Body::empty()).unwrap()).await;
-    assert!(r.body.contains("What's next") && r.body.contains("Wet diaper") && r.body.contains("← Yesterday"));
+    assert!(r.body.contains("What's next") && r.body.contains("Wet diaper") && r.body.contains(r#"<h2>Today</h2><span class="next-none""#));
     assert!(!r.body.contains("🍼 Feeding guide"), "the feeding guide card was removed");
     // Sleeping side: after "facing left", the feed tile says the next side is right.
     t.app.db.with(|c| Ok(crate::entries::insert(c, 1, &crate::entries::NewEntry {
