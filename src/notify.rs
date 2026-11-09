@@ -174,7 +174,8 @@ pub fn due(c: &Connection, clock: &Clock, status: &Value, name: &str, now: i64) 
 
 /// What the app icon's badge counts: each entry needing the parents (🙋),
 /// and one each for feeding (due within 15 minutes, overdue, or an NVK
-/// warning), vitamins not given yet after 18:00, and an overdue bath.
+/// warning), vitamins not given yet after 18:00, and a bath due today (from
+/// 18:00) or overdue.
 pub fn badge(clock: &Clock, status: &Value, now: i64) -> Vec<String> {
     let mut items = vec![];
     for e in status["needs_attention"].as_array().into_iter().flatten() {
@@ -199,8 +200,17 @@ pub fn badge(clock: &Clock, status: &Value, now: i64) -> Vec<String> {
     if let Some(w) = status["wet_diaper_warning"]["text"].as_str() {
         items.push(format!("💧 {w}"));
     }
-    if status["bath"]["due"]["overdue_by"].is_string() {
-        items.push("🛁 bath overdue".into());
+    // The bath: from the evening it's due (with which kind), overdue after.
+    let bath = &status["bath"];
+    let kind = match bath["next_kind"].as_str() {
+        Some("with_soap") => " (with soap)",
+        Some("without_soap") => " (without soap)",
+        _ => "",
+    };
+    if bath["due"]["overdue_by"].is_string() {
+        items.push(format!("🛁 bath overdue{kind}"));
+    } else if bath["due"]["today"] == true && bath["due"]["at"].as_str().and_then(|a| clock.parse(a, now).ok()).is_some_and(|t| now >= t) {
+        items.push(format!("🛁 bath today{kind}"));
     }
     items
 }
@@ -513,6 +523,11 @@ mod tests {
         });
         assert_eq!(badge(&clock, &s, at("2025-11-07 12:50")), vec!["🙋 bath: with or without soap?", "🍼 feed due soon"]);
         assert_eq!(badge(&clock, &s, at("2025-11-07 12:30")).len(), 1, "feed not soon yet; agent-only entries don't count");
+        // A bath due today: on the badge from the evening, with the kind.
+        let mut sb = s.clone();
+        sb["bath"] = json!({"due": {"on": "2025-11-07", "at": "2025-11-07 18:00", "today": true}, "next_kind": "without_soap"});
+        assert!(!badge(&clock, &sb, at("2025-11-07 17:59")).iter().any(|i| i.starts_with("🛁")), "not before the evening");
+        assert!(badge(&clock, &sb, at("2025-11-07 18:00")).contains(&"🛁 bath today (without soap)".to_string()));
         let mut s2 = s.clone();
         s2["feeding_guidance"]["warnings"] = json!([{"text": "Almost 5h since the last feed"}]);
         s2["bath"]["due"] = json!({"overdue_by": "3h"});

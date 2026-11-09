@@ -480,7 +480,9 @@ fn tl_day(clock: &crate::time::Clock, tr: &Track, entries: &[en::Entry], s: Opti
         expect(2, "💊", s["vitamins"]["remind_at"].as_str().and_then(|a| clock.parse(a, now).ok()), "vitamins".into(), ".45");
     }
     if s["bath"]["due"]["at"].is_string() && !s["bath"]["due"]["never"].as_bool().unwrap_or(false) {
-        expect(2, "🛁", at(&s["bath"]["due"]), "bath".into(), ".45");
+        // Due today and past the reminder: still today, not overdue.
+        let today = s["bath"]["due"]["today"] == true;
+        expect(2, "🛁", at(&s["bath"]["due"]).map(|t| if today { t.max(now + 60) } else { t }), "bath".into(), ".45");
     }
     svg + "</svg>"
 }
@@ -595,17 +597,21 @@ fn bath_tile(clock: &crate::time::Clock, b: &Value, now: i64) -> Next {
     };
     let d = &b["due"];
     let never = d["never"].as_bool() == Some(true);
+    // Due on a day: "today" all that day; overdue only once it's over.
     let (when, sub, overdue) = if never {
         ("—".to_string(), "nothing logged yet".to_string(), false)
     } else if let Some(o) = d["overdue_by"].as_str() {
         ("now".to_string(), format!("⏰ {o} overdue"), true)
+    } else if d["today"] == true {
+        ("today".to_string(), String::new(), false)
     } else {
         (d["at"].as_str().map(day).unwrap_or_default(), format!("in {}", d["due_in"].as_str().unwrap_or("")), false)
     };
     let next = match b["next_kind"].as_str() {
-        Some(k) => format!(r#"<div class="side">next: {}</div>"#, kind(k)),
+        Some(k) => format!(r#"<div class="side">{}</div>"#, kind(k)),
         None => String::new(),
     };
+    let sub = if sub.is_empty() { String::new() } else { format!(r#"<div class="{}">{}</div>"#, if overdue { "warn" } else { "mut" }, esc(&sub)) };
     let last = match b["last"].as_object() {
         Some(o) => format!(
             "last {} ago · {}",
@@ -615,11 +621,9 @@ fn bath_tile(clock: &crate::time::Clock, b: &Value, now: i64) -> Next {
         None => "two a week, alternating with and without soap".into(),
     };
     let html = format!(
-        r#"<div class="next{}"><div class="t">🛁 Bath</div><div class="v">{}</div><div class="{}">{}</div>{next}<div class="last">{}</div></div>"#,
+        r#"<div class="next{}"><div class="t">🛁 Bath</div><div class="v">{}</div>{sub}{next}<div class="last">{}</div></div>"#,
         if overdue { " overdue" } else { "" },
         esc(&when),
-        if overdue { "warn" } else { "mut" },
-        esc(&sub),
         esc(&last)
     );
     Next { title: "🛁 Bath", at: if never { None } else { d["at"].as_str().map(str::to_string) }, html }
@@ -1795,14 +1799,18 @@ mod tests {
                        "last": {"ago": "20h15m", "value": "with_soap"}});
         let t = bath_tile(&clock, &b, now);
         assert_eq!(t.at.as_deref(), Some("2025-11-10 01:45"));
-        assert!(t.html.contains(">Mon 10 Nov<") && t.html.contains("in 2d15h") && t.html.contains("next: 🛁 without soap"), "{}", t.html);
+        assert!(t.html.contains(">Mon 10 Nov<") && t.html.contains("in 2d15h") && t.html.contains(r#"<div class="side">🛁 without soap</div>"#) && !t.html.contains("next:"), "{}", t.html);
         assert!(t.html.contains("last 20h15m ago · 🧼 with soap") && !t.html.contains("overdue"));
         let b = json!({"due": {"at": "2025-11-06 01:45", "overdue_by": "1d8h"}, "next_kind": "with_soap", "last": {"ago": "4d", "value": "without_soap"}});
         let t = bath_tile(&clock, &b, now);
-        assert!(t.html.contains(r#"class="next overdue""#) && t.html.contains(">now<") && t.html.contains("next: 🧼 with soap"), "{}", t.html);
+        assert!(t.html.contains(r#"class="next overdue""#) && t.html.contains(">now<") && t.html.contains(">🧼 with soap<"), "{}", t.html);
+        // Due today, before or after the evening reminder: "today", not overdue.
+        let b = json!({"due": {"on": "2025-11-07", "at": "2025-11-07 18:00", "today": true, "due_in": "8h"}, "next_kind": "without_soap", "last": {"ago": "3d", "value": "with_soap"}});
+        let t = bath_tile(&clock, &b, now);
+        assert!(t.html.contains(">today<") && !t.html.contains("in 8h") && !t.html.contains("overdue") && t.html.contains(">🛁 without soap<"), "{}", t.html);
         // Nothing logged: no estimate, sorted last.
         let t = bath_tile(&clock, &json!({"due": {"never": true, "at": "2025-11-07 10:00"}, "next_kind": null, "last": null}), now);
-        assert!(t.at.is_none() && t.html.contains("nothing logged yet") && !t.html.contains("next:"));
+        assert!(t.at.is_none() && t.html.contains("nothing logged yet") && !t.html.contains(r#"class="side""#));
     }
 
     #[test]

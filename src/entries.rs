@@ -536,7 +536,9 @@ const PUT_DOWN_WITHIN: i64 = 2 * 3600;
 
 /// Two baths a week, alternating with and without soap.
 pub const BATH_EVERY: i64 = 84 * 3600;
-pub const BATH_GOAL: &str = "two baths a week, alternating with and without soap: a bath is due 3.5 days after the last one (a sponge wash doesn't count), of the other kind than the last";
+pub const BATH_GOAL: &str = "two baths a week, alternating with and without soap: a bath is due on the day 3.5 days after the last one (a sponge wash doesn't count), of the other kind than the last; reminded at 18:00 that day, overdue once the day is over";
+/// The bath reminder: this hour on the day a bath is due.
+pub const BATH_REMIND_HOUR: i64 = 18;
 
 pub fn status(c: &Connection, clock: &Clock, baby: &Baby, now: i64) -> Result<Value, String> {
     let names = user_names(c)?;
@@ -589,17 +591,26 @@ pub fn status(c: &Connection, clock: &Clock, baby: &Baby, now: i64) -> Result<Va
         };
     }
     out["feeding_guidance"] = crate::feeding::for_status(c, clock, baby, last_weight.as_ref().and_then(|e| e.num("weight_g")), now)?;
-    // Baths: due 3.5 days after the last real bath (a sponge wash doesn't
-    // count), alternating with and without soap; never logged = due now.
+    // Baths: due on the day 3.5 days after the last real bath falls on (a
+    // sponge wash doesn't count), alternating with and without soap; the
+    // reminder (`at`) that evening, overdue once that day is over. Never
+    // logged = due now.
     let last = last_where(c, "bath IN ('with_soap', 'without_soap')")?;
-    let due_at = last.as_ref().map(|e| e.at + BATH_EVERY).unwrap_or(now);
-    let mut due = json!({"at": clock.fmt(due_at)});
+    let due_day = clock.day_start(last.as_ref().map(|e| e.at + BATH_EVERY).unwrap_or(now));
+    let due_at = if last.is_some() { due_day + BATH_REMIND_HOUR * 3600 } else { now };
+    let day_end = clock.next_day_start(due_day);
+    let mut due = json!({"on": clock.day(due_day), "at": clock.fmt(due_at)});
     if last.is_none() {
         due["never"] = json!(true);
-    } else if due_at > now {
-        due["due_in"] = json!(fmt_dur(due_at - now));
+    } else if now >= day_end {
+        due["overdue_by"] = json!(fmt_dur(now - day_end));
     } else {
-        due["overdue_by"] = json!(fmt_dur(now - due_at));
+        if now >= due_day {
+            due["today"] = json!(true);
+        }
+        if due_at > now {
+            due["due_in"] = json!(fmt_dur(due_at - now));
+        }
     }
     let next_kind = match last.as_ref().and_then(|e| e.str("bath")) {
         Some("with_soap") => json!("without_soap"),
@@ -828,7 +839,7 @@ pub mod tests {
             assert_eq!(s["sleep_facing"]["next"], "right");
             // Baths: with soap on 27 Oct 19:00 → due 31 Oct 07:00, so overdue, next
             // without soap; the later sponge wash doesn't count.
-            assert_eq!(s["bath"]["due"]["at"], "2025-11-01 07:00");
+            assert_eq!((s["bath"]["due"]["on"].as_str(), s["bath"]["due"]["at"].as_str()), (Some("2025-11-01"), Some("2025-11-01 18:00")), "the day 3.5 days on, reminded that evening");
             assert!(s["bath"]["due"]["overdue_by"].is_string());
             assert_eq!(s["bath"]["next_kind"], "without_soap");
             assert_eq!(s["bath"]["last"]["value"], "with_soap");
