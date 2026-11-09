@@ -522,6 +522,9 @@ fn median(mut v: Vec<i64>) -> Option<i64> {
 /// Vitamins (RIVM): K daily from day 8 until 12 weeks, D daily from day 8
 /// until 4 years. A reminder is due at 18:00 when one wasn't given that day.
 pub const VITAMINS: [(&str, &str, &str); 2] = [("k", "vitamin_k", "K"), ("d", "vitamin_d", "D")];
+/// No extra vitamin K with at least this much formula a day (formula has
+/// enough); judged on the day before, so it holds for the whole day.
+pub const VITAMIN_K_FORMULA_ML: f64 = 500.0;
 pub const VITAMIN_REMIND_HOUR: i64 = 18;
 
 /// The start of the local day `span` after the local day of `t`.
@@ -631,18 +634,23 @@ pub fn status(c: &Connection, clock: &Clock, baby: &Baby, now: i64) -> Result<Va
         let today = clock.day_start(now);
         let from = day_plus(clock, b, jiff::Span::new().days(7));
         let mut v = json!({"from": clock.day(from), "remind_at": clock.fmt(today + VITAMIN_REMIND_HOUR * 3600),
-                           "rule": "vitamin K daily from day 8 until 12 weeks, vitamin D daily from day 8 until 4 years (RIVM)"});
+                           "rule": "vitamin K daily from day 8 until 12 weeks, not needed with at least 500 ml formula a day (judged on yesterday's total); vitamin D daily from day 8 until 4 years (RIVM)"});
+        let formula_yesterday = totals_between(c, clock.day_start(today - 3600), today)?.formula_ml;
         let mut to_give = vec![];
         for (key, field, label) in VITAMINS {
             let until = day_plus(clock, b, if key == "k" { jiff::Span::new().weeks(12) } else { jiff::Span::new().years(4) });
             let active = today >= from && today < until;
             let last = last_where(c, &format!("{field} = 1"))?;
             let given_today = last.as_ref().is_some_and(|e| e.at >= today);
-            if active && !given_today {
+            let not_needed = key == "k" && active && formula_yesterday >= VITAMIN_K_FORMULA_ML;
+            if active && !given_today && !not_needed {
                 to_give.push(label);
             }
             v[key] = json!({"active": active, "until": clock.day(until - 1), "given_today": given_today,
                             "last": since(&last, clock, now, None)});
+            if not_needed {
+                v[key]["not_needed"] = json!(format!("{formula_yesterday:.0} ml formula yesterday: with at least {VITAMIN_K_FORMULA_ML:.0} ml a day, formula gives enough vitamin K"));
+            }
         }
         v["to_give_today"] = json!(to_give);
         out["vitamins"] = v;
@@ -856,6 +864,7 @@ pub mod tests {
             assert_eq!(s2["vitamins"]["to_give_today"], json!(["K"]));
             assert_eq!(s2["vitamins"]["d"]["given_today"], true);
             assert_eq!(s2["vitamins"]["remind_at"], "2025-11-07 18:00");
+            assert!(s2["vitamins"]["k"]["not_needed"].is_null());
             // Sleep side: left at 10:05 on 5 Nov; one feed after it → assumed right, next left.
             assert_eq!(s2["sleep_facing"]["feeds_since"], 0);
             insert(c, u, &NewEntry { at: clock.parse("2025-11-07 12:00", 0).unwrap(), duration_s: None, text: "60 ml".into(),
@@ -888,6 +897,15 @@ pub mod tests {
             let d = stats(c, &clock, &baby, clock.date_start("2025-11-05").unwrap(), now).unwrap();
             assert_eq!(d.len(), 2);
             assert_eq!(d[1].totals.total_ml, 130.0);
+            // With 500 ml formula the day before, no vitamin K that day.
+            for (t, ml) in [("2025-11-07 08:00", 250), ("2025-11-07 14:00", 250)] {
+                insert(c, u, &NewEntry { at: clock.parse(t, 0).unwrap(), duration_s: None, text: "formula".into(),
+                    fields: fields(json!({"bottle_formula_ml": ml})), attention_by: 0, attention_why: None }, later).unwrap();
+            }
+            let next_day = clock.parse("2025-11-08 10:00", 0).unwrap();
+            let s3 = status(c, &clock, &baby, next_day).unwrap();
+            assert_eq!(s3["vitamins"]["to_give_today"], json!(["D"]), "{}", s3["vitamins"]);
+            assert!(s3["vitamins"]["k"]["not_needed"].as_str().unwrap().contains(" ml formula yesterday: with at least 500 ml a day"));
             Ok(())
         }).unwrap();
     }

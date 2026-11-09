@@ -548,7 +548,12 @@ fn diaper_tile(s: &Value) -> Next {
 /// "tomorrow" when all were given; "starts …" before day 8. None when no
 /// vitamin applies any more.
 fn vitamins_tile(clock: &crate::time::Clock, v: &Value, now: i64) -> Option<Next> {
-    let active: Vec<&str> = [("k", "K"), ("d", "D")].iter().filter(|(k, _)| v[*k]["active"] == true).map(|(_, l)| *l).collect();
+    // Not needed today (vitamin K with enough formula) counts as not active.
+    let active: Vec<&str> = [("k", "K"), ("d", "D")].iter().filter(|(k, _)| v[*k]["active"] == true && !v[*k]["not_needed"].is_string()).map(|(_, l)| *l).collect();
+    let skipped: Vec<String> = [("k", "K"), ("d", "D")]
+        .iter()
+        .filter_map(|(k, l)| v[*k]["not_needed"].as_str().map(|why| format!("{l} not needed today ({})", why.split(':').next().unwrap_or(why))))
+        .collect();
     let from = v["from"].as_str()?;
     let until: Vec<String> = [("k", "K"), ("d", "D")]
         .iter()
@@ -556,7 +561,10 @@ fn vitamins_tile(clock: &crate::time::Clock, v: &Value, now: i64) -> Option<Next
         .collect();
     let remind = v["remind_at"].as_str().unwrap_or("").to_string();
     let to_give: Vec<&str> = v["to_give_today"].as_array().map(|a| a.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
-    let (when, sub, at, overdue) = if active.is_empty() {
+    let (when, sub, at, overdue) = if active.is_empty() && !skipped.is_empty() {
+        let tomorrow = clock.parse(&remind, now).map(|r| clock.fmt(r + 86400)).unwrap_or_default();
+        ("tomorrow".to_string(), "nothing to give today".to_string(), tomorrow, false)
+    } else if active.is_empty() {
         let start = clock.date_start(from).ok()?;
         if start <= now {
             return None; // past 4 years
@@ -576,7 +584,7 @@ fn vitamins_tile(clock: &crate::time::Clock, v: &Value, now: i64) -> Option<Next
         esc(&when),
         if overdue { "warn" } else { "mut" },
         esc(&sub),
-        esc(&until.join(" · "))
+        esc(&skipped.iter().chain(until.iter()).cloned().collect::<Vec<_>>().join(" · "))
     );
     Some(Next { title: "💊 Vitamins", at: Some(at), html })
 }
@@ -1830,6 +1838,14 @@ mod tests {
         let t = vitamins_tile(&clock, &v(false, false, json!([])), at("2025-11-03 10:00")).unwrap();
         assert!(t.html.contains(">Fri 7 Nov<") && t.html.contains("starts"));
         assert!(vitamins_tile(&clock, &v(false, false, json!([])), at("2031-01-01 10:00")).is_none());
+        // Vitamin K not needed (enough formula yesterday): only D, and why.
+        let mut vk = v(true, true, json!(["D"]));
+        vk["k"]["not_needed"] = json!("520 ml formula yesterday: with at least 500 ml a day, formula gives enough vitamin K");
+        let t = vitamins_tile(&clock, &vk, at("2025-11-07 10:00")).unwrap();
+        assert!(t.html.contains("vitamin D still to give") && t.html.contains("K not needed today (520 ml formula yesterday)"), "{}", t.html);
+        vk["to_give_today"] = json!([]);
+        let t = vitamins_tile(&clock, &vk, at("2025-11-07 19:00")).unwrap();
+        assert!(t.html.contains("✓ D given today") && !t.html.contains("K + D"), "{}", t.html);
     }
 
     #[test]

@@ -76,7 +76,8 @@ takes precedence.
 - **Growth**: WHO weight-for-age percentiles, and the first-month weight change
   against newborns with the same delivery mode (Paul et al., Pediatrics 2016).
   The tables are not in this repository; see [`data/README.md`](data/README.md).
-- **Vitamins**: K daily from day 8 until 12 weeks, D from day 8 until 4 years
+- **Vitamins**: K daily from day 8 until 12 weeks (not on a day after at
+  least 500 ml of formula, which has enough vitamin K), D from day 8 until 4 years
   (the Dutch advice).
 
 ## Access
