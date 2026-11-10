@@ -1661,11 +1661,11 @@ fn field_chip(name: &str, v: &Value) -> (String, bool) {
 fn changes(clock: &crate::time::Clock, old: &en::Entry, new: &en::Entry) -> Vec<Line> {
     let mut out = vec![];
     if old.at != new.at {
-        out.push(format!("time: {} → {}", clock.fmt(old.at), clock.fmt(new.at)));
+        out.push(Line::Change("time", clock.fmt(old.at), clock.fmt(new.at)));
     }
     if old.duration_s != new.duration_s {
         let d = |x: Option<i64>| x.map(crate::time::fmt_dur).unwrap_or("none".into());
-        out.push(format!("duration: {} → {}", d(old.duration_s), d(new.duration_s)));
+        out.push(Line::Change("duration", d(old.duration_s), d(new.duration_s)));
     }
     let order = |k: &str| crate::registry::FIELDS.iter().position(|f| f.name == k).unwrap_or(usize::MAX);
     let mut keys: Vec<&String> = old.fields.keys().chain(new.fields.keys()).collect();
@@ -1683,21 +1683,20 @@ fn changes(clock: &crate::time::Clock, old: &en::Entry, new: &en::Entry) -> Vec<
             _ => {}
         }
     }
-    let mut out: Vec<Line> = out.into_iter().map(Line::Text).collect();
     if !chips.is_empty() {
-        out.push(Line::Html(format!(r#"<div class="chips">{}</div>"#, chips.concat())));
+        out.push(Line::Chips(chips.concat()));
     }
     if (old.attention_by, &old.attention_why) != (new.attention_by, &new.attention_why) {
         match (new.attention_by, &new.attention_why) {
-            (0, _) => out.push(Line::Text(format!("attention cleared{}", old.attention_why.as_ref().map(|w| format!(" (was: {w})")).unwrap_or_default()))),
+            (0, _) => out.push(Line::AttentionCleared(old.attention_why.clone())),
             (by, why) => {
                 let (u, a) = (by & en::BY_USER != 0, by & BY_AGENT != 0);
-                out.push(Line::Text(format!("{} {}{}", attention_emoji(u, a), attention_label(u, a), why.as_ref().map(|w| format!(": {w}")).unwrap_or_default())));
+                out.push(Line::Attention(format!("{} {}{}", attention_emoji(u, a), attention_label(u, a), why.as_ref().map(|w| format!(": {w}")).unwrap_or_default())));
             }
         }
     }
     if old.deleted != new.deleted {
-        out.push(Line::Text((if new.deleted { "deleted" } else { "restored" }).into()));
+        out.push(if new.deleted { Line::Deleted } else { Line::Restored });
     }
     out
 }
@@ -1768,34 +1767,38 @@ fn word_diff(old: &str, new: &str) -> String {
     out
 }
 
-/// A line of an entry's history: text (coloured by `history_line`) or
-/// ready HTML (the field chips).
+/// A line of an entry's history.
 enum Line {
-    Text(String),
-    Html(String),
+    Created,
+    Restored,
+    Deleted,
+    /// What (time, duration), old → new.
+    Change(&'static str, String, String),
+    /// The field chips (HTML).
+    Chips(String),
+    /// Needing attention: who, and why.
+    Attention(String),
+    /// No longer, with the reason it had.
+    AttentionCleared(Option<String>),
 }
 
-/// One line of an entry's history, coloured: added green, removed red, a
-/// change as the old value struck through and the new one green.
-fn history_line(l: &str) -> String {
-    if l == "restored" || l == "created" {
-        return format!(r#"<div><span class="add">{}</span></div>"#, esc(l));
-    }
-    if l == "deleted" {
-        return format!(r#"<div><span class="del">{}</span></div>"#, esc(l));
-    }
-    if l.starts_with("attention cleared") {
-        return format!(r#"<div class="note">{}</div>"#, esc(l));
-    }
-    if let Some((key, rest)) = l.split_once(": ") {
-        if let Some((old, new)) = rest.split_once(" → ") {
-            return format!(r#"<div>{}: <s class="del">{}</s> → <span class="add">{}</span></div>"#, esc(key), esc(old), esc(new));
+impl Line {
+    /// Coloured: added green, removed red, a change as the old value struck
+    /// through and the new one green.
+    fn html(&self) -> String {
+        match self {
+            Line::Created => r#"<div><span class="add">created</span></div>"#.into(),
+            Line::Restored => r#"<div><span class="add">restored</span></div>"#.into(),
+            Line::Deleted => r#"<div><span class="del">deleted</span></div>"#.into(),
+            Line::Change(what, old, new) => format!(r#"<div>{what}: <s class="del">{}</s> → <span class="add">{}</span></div>"#, esc(old), esc(new)),
+            Line::Chips(h) => format!(r#"<div class="chips">{h}</div>"#),
+            Line::Attention(t) => format!(r#"<div class="att">{}</div>"#, esc(t)),
+            Line::AttentionCleared(was) => format!(
+                r#"<div class="note">{}</div>"#,
+                esc(&format!("attention cleared{}", was.as_ref().map(|w| format!(" (was: {w})")).unwrap_or_default()))
+            ),
         }
     }
-    if l.starts_with('🙋') || l.starts_with('🤖') || l.contains("waiting for") {
-        return format!(r#"<div class="att">{}</div>"#, esc(l));
-    }
-    format!("<div>{}</div>", esc(l))
 }
 
 pub async fn entry_page(State(app): State<Arc<App>>, headers: HeaderMap, axum::extract::Path(id): axum::extract::Path<i64>) -> Response {
@@ -1842,19 +1845,13 @@ pub async fn entry_page(State(app): State<Arc<App>>, headers: HeaderMap, axum::e
             0 => {
                 // Created: as the change from an empty entry.
                 let empty = en::Entry { fields: Default::default(), attention_by: 0, attention_why: None, deleted: false, ..v.clone() };
-                let mut l = vec![Line::Text("created".to_string())];
+                let mut l = vec![Line::Created];
                 l.extend(changes(clock, &empty, v));
                 l
             }
             _ => changes(clock, &versions[i - 1], v),
         };
-        let mut items: String = lines
-            .iter()
-            .map(|l| match l {
-                Line::Text(t) => history_line(t),
-                Line::Html(h) => h.clone(),
-            })
-            .collect();
+        let mut items: String = lines.iter().map(Line::html).collect();
         if i > 0 && versions[i - 1].text != v.text {
             items += &format!(r#"<div class="tdiff">{}</div>"#, word_diff(&versions[i - 1].text, &v.text));
         }
@@ -1871,7 +1868,6 @@ pub async fn entry_page(State(app): State<Arc<App>>, headers: HeaderMap, axum::e
 }
 
 pub async fn not_found() -> Response {
-    let _ = auth::SCOPE;
     html::error_page(StatusCode::NOT_FOUND, "Not found.")
 }
 

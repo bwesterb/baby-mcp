@@ -119,7 +119,7 @@ fn serve(cfg: config::Config) -> Result<(), String> {
     let rt = tokio::runtime::Runtime::new().map_err(|e| e.to_string())?;
     rt.block_on(async move {
         let listener = tokio::net::TcpListener::bind(&listen).await.map_err(|e| format!("{listen}: {e}"))?;
-        eprintln!("baby-mcp {}: {} on {listen}", env!("CARGO_PKG_VERSION"), app.cfg.origin());
+        eprintln!("baby-mcp {}: {} on {listen}", crate::html::VERSION, app.cfg.origin());
         tokio::spawn(notify::run(app.clone()));
         axum::serve(listener, router(app)).await.map_err(|e| e.to_string())
     })

@@ -98,8 +98,7 @@ fn post_json(path: &str, v: Value) -> Request<Body> {
     Request::post(path).header(header::CONTENT_TYPE, "application/json").body(Body::from(v.to_string())).unwrap()
 }
 
-fn post_form(path: &str, body: &str) -> axum::http::request::Builder {
-    let _ = body;
+fn post_form(path: &str) -> axum::http::request::Builder {
     Request::post(path).header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
 }
 
@@ -124,9 +123,9 @@ async fn connect(t: &T) -> (String, String, String) {
     let rid = r.body.split(r#"name="rid" value=""#).nth(1).unwrap().split('"').next().unwrap().to_string();
     // Cross-site approval is refused.
     let body = format!("rid={}&decision=allow", crate::auth::urlenc(&rid));
-    let r = send(t, post_form("/oauth/authorize", &body).header(header::COOKIE, &t.cookie).header(header::ORIGIN, "https://evil.example").body(Body::from(body.clone())).unwrap()).await;
+    let r = send(t, post_form("/oauth/authorize").header(header::COOKIE, &t.cookie).header(header::ORIGIN, "https://evil.example").body(Body::from(body.clone())).unwrap()).await;
     assert_eq!(r.status, StatusCode::FORBIDDEN);
-    let r = send(t, post_form("/oauth/authorize", &body).header(header::COOKIE, &t.cookie).header(header::ORIGIN, ORIGIN).body(Body::from(body)).unwrap()).await;
+    let r = send(t, post_form("/oauth/authorize").header(header::COOKIE, &t.cookie).header(header::ORIGIN, ORIGIN).body(Body::from(body)).unwrap()).await;
     assert!(r.status.is_redirection());
     let loc = webauthn_rs::prelude::Url::parse(&r.location()).unwrap();
     assert!(r.location().starts_with(REDIRECT));
@@ -134,9 +133,9 @@ async fn connect(t: &T) -> (String, String, String) {
     assert_eq!(loc.query_pairs().find(|(k, _)| k == "state").unwrap().1, "xyz");
     // A wrong verifier burns the code.
     let form = |v: &str, c: &str| format!("grant_type=authorization_code&code={}&client_id={cid}&redirect_uri={}&code_verifier={v}", crate::auth::urlenc(c), crate::auth::urlenc(REDIRECT));
-    let tok = send(t, post_form("/oauth/token", "").body(Body::from(form(&verifier, &code))).unwrap()).await;
+    let tok = send(t, post_form("/oauth/token").body(Body::from(form(&verifier, &code))).unwrap()).await;
     assert_eq!(tok.status, StatusCode::OK, "{}", tok.body);
-    let again = send(t, post_form("/oauth/token", "").body(Body::from(form(&verifier, &code))).unwrap()).await;
+    let again = send(t, post_form("/oauth/token").body(Body::from(form(&verifier, &code))).unwrap()).await;
     assert_eq!(again.status, StatusCode::BAD_REQUEST, "code reusable");
     let j = tok.json();
     (cid, j["access_token"].as_str().unwrap().into(), j["refresh_token"].as_str().unwrap().into())
@@ -283,9 +282,9 @@ async fn oauth_and_mcp() {
 
     // Refresh tokens rotate.
     let form = format!("grant_type=refresh_token&refresh_token={}&client_id={cid}", crate::auth::urlenc(&refresh));
-    let r = send(&t, post_form("/oauth/token", "").body(Body::from(form.clone())).unwrap()).await;
+    let r = send(&t, post_form("/oauth/token").body(Body::from(form.clone())).unwrap()).await;
     assert_eq!(r.status, StatusCode::OK, "{}", r.body);
-    let r2 = send(&t, post_form("/oauth/token", "").body(Body::from(form)).unwrap()).await;
+    let r2 = send(&t, post_form("/oauth/token").body(Body::from(form)).unwrap()).await;
     assert_eq!(r2.status, StatusCode::BAD_REQUEST, "refresh token reusable");
     let new_access = r.json()["access_token"].as_str().unwrap().to_string();
     assert_eq!(mcp(&t, &new_access, "ping", json!({})).await.status, StatusCode::OK);
@@ -342,11 +341,11 @@ async fn web_pages() {
     // Free text: stored and marked for an agent. A common entry, unedited:
     // fields known straight away.
     let body = "text=60+ml+kunstvoeding+om+3+uur";
-    let r = send(&t, post_form("/add", body).header(header::COOKIE, &t.cookie).header(header::ORIGIN, ORIGIN).body(Body::from(body)).unwrap()).await;
+    let r = send(&t, post_form("/add").header(header::COOKIE, &t.cookie).header(header::ORIGIN, ORIGIN).body(Body::from(body)).unwrap()).await;
     assert!(r.status.is_redirection(), "{}", r.body);
     let body = "text=Wet+diaper";
-    send(&t, post_form("/add", body).header(header::COOKIE, &t.cookie).header(header::ORIGIN, ORIGIN).body(Body::from(body)).unwrap()).await;
-    let r = send(&t, post_form("/add", body).header(header::COOKIE, &t.cookie).header(header::ORIGIN, "https://evil.example").body(Body::from(body)).unwrap()).await;
+    send(&t, post_form("/add").header(header::COOKIE, &t.cookie).header(header::ORIGIN, ORIGIN).body(Body::from(body)).unwrap()).await;
+    let r = send(&t, post_form("/add").header(header::COOKIE, &t.cookie).header(header::ORIGIN, "https://evil.example").body(Body::from(body)).unwrap()).await;
     assert_eq!(r.status, StatusCode::FORBIDDEN, "cross-site add accepted");
     let r = send(&t, get("/add").header(header::COOKIE, &t.cookie).body(Body::empty()).unwrap()).await;
     assert!(!r.body.contains("Common entries") && !r.body.contains(r#"name="at""#));
@@ -580,7 +579,7 @@ async fn viewer_sees_only_charts() {
         assert_eq!(r.location(), "/charts", "{p}");
     }
     let body = "text=Wet+diaper";
-    let r = send(&t, post_form("/add", body).header(header::COOKIE, &t.cookie).header(header::ORIGIN, ORIGIN).body(Body::from(body)).unwrap()).await;
+    let r = send(&t, post_form("/add").header(header::COOKIE, &t.cookie).header(header::ORIGIN, ORIGIN).body(Body::from(body)).unwrap()).await;
     assert_eq!(r.location(), "/charts");
     let n: i64 = t.app.db.with(|c| c.query_row("SELECT count(*) FROM entry", [], |r| r.get(0))).unwrap();
     assert_eq!(n, 1, "a viewer can't add");

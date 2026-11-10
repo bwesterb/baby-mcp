@@ -200,6 +200,24 @@ pub fn to_login(next: &str) -> Response {
     Redirect::to(&format!("/login?next={}", urlenc(next))).into_response()
 }
 
+/// Form-urlencoded to text: %XX escapes, and "+" for a space.
+pub fn urldec(s: &str) -> String {
+    let (b, mut out, mut i) = (s.as_bytes(), vec![], 0);
+    while i < b.len() {
+        let hex = |c: u8| (c as char).to_digit(16);
+        match b[i] {
+            b'+' => out.push(b' '),
+            b'%' if i + 2 < b.len() && hex(b[i + 1]).is_some() && hex(b[i + 2]).is_some() => {
+                out.push((hex(b[i + 1]).unwrap() * 16 + hex(b[i + 2]).unwrap()) as u8);
+                i += 2;
+            }
+            c => out.push(c),
+        }
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 pub fn urlenc(s: &str) -> String {
     s.bytes()
         .map(|b| match b {
@@ -835,14 +853,8 @@ pub async fn token(State(app): State<Arc<App>>, headers: HeaderMap, Form(f): For
         .and_then(|b| String::from_utf8(b).ok())
         .and_then(|s| s.split_once(':').map(|(a, b)| (a.to_string(), b.to_string())))
     {
-        cid = Url::parse(&format!("x:?a={u}&b={p}"))
-            .ok()
-            .and_then(|x| x.query_pairs().find(|(k, _)| k == "a").map(|(_, v)| v.into_owned()))
-            .unwrap_or(u);
-        secret = Url::parse(&format!("x:?b={p}"))
-            .ok()
-            .and_then(|x| x.query_pairs().next().map(|(_, v)| v.into_owned()))
-            .unwrap_or(p);
+        // Both form-urlencoded (RFC 6749 §2.3.1).
+        (cid, secret) = (urldec(&u), urldec(&p));
     }
     let r = app.db.with(|c| -> rusqlite::Result<Result<Value, (StatusCode, &'static str, String)>> {
         let Some(client) = load_client(c, &cid)? else {
@@ -958,6 +970,12 @@ pub fn bearer_user(app: &App, headers: &HeaderMap) -> Result<i64, Response> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn url_decoding() {
+        assert_eq!(urldec("bmc_a%2Bb+c%3A%zz%4"), "bmc_a+b c:%zz%4");
+        assert_eq!(urldec(&urlenc("a b/ü")), "a b/ü");
+    }
 
     #[test]
     fn cred_keys_differ() {

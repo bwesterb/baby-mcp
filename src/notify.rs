@@ -316,7 +316,7 @@ pub fn client() -> reqwest::Client {
     let _ = rustls::crypto::ring::default_provider().install_default();
     reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(20))
-        .user_agent(concat!("baby-mcp/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("baby-mcp/", env!("BABY_MCP_VERSION")))
         .build()
         .expect("http client")
 }

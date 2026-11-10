@@ -167,7 +167,7 @@ fn one(app: &App, user: i64, req: &Value) -> Option<Value> {
         "initialize" => json!({
             "protocolVersion": protocol_version(req["params"]["protocolVersion"].as_str()),
             "capabilities": {"tools": {}},
-            "serverInfo": {"name": "baby-mcp", "version": env!("CARGO_PKG_VERSION")},
+            "serverInfo": {"name": "baby-mcp", "version": crate::html::VERSION},
             "instructions": format!("This log is for {}.\n\n{INSTRUCTIONS}", app.cfg.baby.name),
         }),
         "ping" => json!({}),
