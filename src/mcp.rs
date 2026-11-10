@@ -141,13 +141,20 @@ pub async fn handle(State(app): State<Arc<App>>, headers: HeaderMap, body: Bytes
         Ok(v) => v,
         Err(_) => return Json(rpc_error(Value::Null, -32700, "parse error")).into_response(),
     };
-    if let Some(batch) = req.as_array() {
-        let out: Vec<Value> = batch.iter().filter_map(|r| one(&app, user, r)).collect();
-        return if out.is_empty() { StatusCode::ACCEPTED.into_response() } else { Json(out).into_response() };
-    }
-    match one(&app, user, &req) {
-        Some(v) => Json(v).into_response(),
-        None => StatusCode::ACCEPTED.into_response(),
+    // The tools wait on the database (the sql tool up to 5 seconds): on a
+    // blocking thread, not one of the server's async workers.
+    let res = tokio::task::spawn_blocking(move || match req.as_array() {
+        Some(batch) => {
+            let out: Vec<Value> = batch.iter().filter_map(|r| one(&app, user, r)).collect();
+            (!out.is_empty()).then(|| json!(out))
+        }
+        None => one(&app, user, &req),
+    })
+    .await;
+    match res {
+        Ok(Some(v)) => Json(v).into_response(),
+        Ok(None) => StatusCode::ACCEPTED.into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("tool call failed: {e}")).into_response(),
     }
 }
 
