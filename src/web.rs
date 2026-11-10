@@ -363,16 +363,8 @@ fn tl_day(clock: &crate::time::Clock, tr: &Track, entries: &[en::Entry], s: Opti
         // This week: over what has passed of it.
         let mid = x(from + (end.min(now) - from) / 2);
         svg += &format!(r#"<text x="{mid:.1}" y="{}" text-anchor="middle" class="hd">{label}</text>"#, h - 4.0);
-        let today_start = clock.day_start(now);
-        let (mut n, mut feeds, mut ml, mut wet, mut dirty) = (0u32, 0.0, 0.0, 0.0, 0.0);
-        let mut d = from;
-        while d < end && clock.next_day_start(d) <= today_start {
-            let e = clock.next_day_start(d);
-            let t = en::totals_from(entries.iter().filter(|x| x.at < e), d);
-            (feeds, ml, wet, dirty) = (feeds + t.feeds as f64, ml + t.total_ml, wet + t.wet as f64, dirty + t.dirty as f64);
-            n += 1;
-            d = e;
-        }
+        let (_, sum, n) = day_totals(clock, entries, from, end, now);
+        let (feeds, ml, wet, dirty) = (sum.feeds as f64, sum.total_ml, sum.wet as f64, sum.dirty as f64);
         if n == 0 {
             return svg + "</svg>";
         }
@@ -861,8 +853,8 @@ pub async fn status(State(app): State<Arc<App>>, headers: HeaderMap, Query(q): Q
     let yesterday = clock.day_start(today_start - 3600);
     let prev = format!("← {}", clock.zoned(yesterday).strftime("%a %-d"));
     let head = format!(
-        r#"<div class="head"><a href="/?day={0}" data-day="{0}">{prev}</a><h2>Today</h2><span class="next-none" aria-hidden="true">{prev}</span></div>"#,
-        clock.day(yesterday)
+        r#"<div class="head">{}<h2>Today</h2><span class="next-none" aria-hidden="true">{prev}</span></div>"#,
+        day_link(clock, yesterday, today_start, &prev)
     );
     // At the week zoom the week is shown instead (keyed by its first day).
     let week = tr.z == TL_WEEK;
@@ -874,8 +866,40 @@ pub async fn status(State(app): State<Arc<App>>, headers: HeaderMap, Query(q): Q
 
 /// The start of the day `n` days after the day of `t`.
 fn add_days(clock: &crate::time::Clock, t: i64, n: i64) -> i64 {
-    let d = clock.zoned(t).date().checked_add(jiff::Span::new().days(n)).expect("date in range");
-    clock.date_start(&d.to_string()).expect("valid date")
+    en::day_plus(clock, t, jiff::Span::new().days(n))
+}
+
+/// A link to the day starting at `d`: today's is the status page itself;
+/// `data-day` lets the script scroll the timeline there instead.
+fn day_link(clock: &crate::time::Clock, d: i64, today: i64, text: &str) -> String {
+    let date = clock.day(d);
+    let href = if d >= today { "/".to_string() } else { format!("/?day={date}") };
+    format!(r#"<a href="{href}" data-day="{date}">{text}</a>"#)
+}
+
+/// Each day of `from..end` up to today (start, totals, complete), and the
+/// sums over the complete days, for averages. `entries` from at least
+/// FEED_LOOKBACK before `from`.
+fn day_totals(clock: &crate::time::Clock, entries: &[en::Entry], from: i64, end: i64, now: i64) -> (Vec<(i64, en::Totals, bool)>, en::Totals, u32) {
+    let today = clock.day_start(now);
+    let (mut days, mut sum, mut complete) = (vec![], en::Totals::default(), 0);
+    let mut d = from;
+    while d < end && d <= today {
+        let e = clock.next_day_start(d);
+        let t = en::totals_from(entries.iter().filter(|x| x.at < e.min(now + 1)), d);
+        let whole = e <= today;
+        if whole {
+            complete += 1;
+            sum.feeds += t.feeds;
+            sum.total_ml += t.total_ml;
+            sum.wet += t.wet;
+            sum.dirty += t.dirty;
+            sum.breast_min += t.breast_min;
+        }
+        days.push((d, t, whole));
+        d = e;
+    }
+    (days, sum, complete)
 }
 
 /// The week (of life: from the track's first day, in sevens) a day is in:
@@ -894,11 +918,7 @@ fn weeklog(app: &App, c: &rusqlite::Connection, tr: &Track, day: i64, now: i64) 
     let today = clock.day_start(now);
     let (n, start) = week_of(clock, tr, day);
     let end = add_days(clock, start, 7);
-    let link = |d: i64, text: &str| {
-        let date = clock.day(d);
-        let href = if d >= today { "/".to_string() } else { format!("/?day={date}") };
-        format!(r#"<a href="{href}" data-day="{date}">{text}</a>"#)
-    };
+    let link = |d: i64, text: &str| day_link(clock, d, today, text);
     let prev_text = format!("← week {}", n - 1);
     let prev = if n > 1 { link(add_days(clock, start, -7), &prev_text) } else { format!(r#"<span class="next-none" aria-hidden="true">{prev_text}</span>"#) };
     let next_text = format!("week {} →", n + 1);
@@ -913,16 +933,12 @@ fn weeklog(app: &App, c: &rusqlite::Connection, tr: &Track, day: i64, now: i64) 
     let head = format!(r#"<div class="head">{prev}<h2>{title}</h2>{next}</div><p class="mut">{span}{life}</p>"#);
 
     // Per day: totals; the averages over the complete days.
+    let entries = en::list(c, start - en::FEED_LOOKBACK, end.min(now + 1), false)?;
+    let (days, sum, k) = day_totals(clock, &entries, start, end, now);
+    let (feeds, ml, wet, dirty, breast) = (sum.feeds, sum.total_ml, sum.wet, sum.dirty, sum.breast_min);
     let mut rows = String::new();
-    let (mut k, mut feeds, mut ml, mut wet, mut dirty, mut breast) = (0u32, 0u32, 0.0, 0u32, 0u32, 0i64);
-    let mut d = start;
-    while d < end && d <= today {
-        let e = clock.next_day_start(d);
-        let t = en::totals_between(c, d, e.min(now + 1))?;
-        let complete = e <= today;
-        if complete {
-            (k, feeds, ml, wet, dirty, breast) = (k + 1, feeds + t.feeds, ml + t.total_ml, wet + t.wet, dirty + t.dirty, breast + t.breast_min);
-        }
+    for (d, t, complete) in &days {
+        let (d, complete) = (*d, *complete);
         let label = clock.zoned(d).strftime("%a %-d").to_string();
         rows += &format!(
             r#"<tr><td class="time"><a href="{}" data-day="{}" data-zoom="{TL_SUMMARY}">{label}</a>{}</td><td>🍼 {}</td><td>{:.0} ml</td><td>💧 {}</td><td>💩 {}</td></tr>"#,
@@ -931,7 +947,6 @@ fn weeklog(app: &App, c: &rusqlite::Connection, tr: &Track, day: i64, now: i64) 
             if complete { "" } else { r#" <span class="mut">so far</span>"# },
             t.feeds, t.total_ml, t.wet, t.dirty
         );
-        d = e;
     }
     let avg = |v: f64| if k == 0 { "—".to_string() } else { format!("{:.1}", v / k as f64).trim_end_matches(".0").to_string() };
     let per = if k == 0 { "no complete day yet".to_string() } else { format!("per day, over {k} complete day{}", if k == 1 { "" } else { "s" }) };
@@ -940,12 +955,9 @@ fn weeklog(app: &App, c: &rusqlite::Connection, tr: &Track, day: i64, now: i64) 
     out += &stat("🍼 Bottle", &if k == 0 { "—".into() } else { format!("{:.0} ml", ml / k as f64) }, &per);
     out += &stat("Diapers", &format!("💧 {} · 💩 {}", avg(wet as f64), avg(dirty as f64)), "wet · dirty a day");
     // Weight: the last weighing in the week, against the last one before it.
-    let weighed = |from: i64, to: i64| -> Result<Option<(i64, f64)>, String> {
-        Ok(en::list(c, from, to, false)?.iter().rev().find_map(|e| e.num("weight_g").map(|w| (e.at, w))))
-    };
-    if let Some((_, w)) = weighed(start, end.min(now + 1))? {
-        let before = weighed(tr.from - 86400, start)?;
-        let sub = before.map(|(_, b)| format!("{:+.0} g since the week before", w - b)).unwrap_or_default();
+    if let Some(w) = entries.iter().rev().filter(|e| e.at >= start).find_map(|e| e.num("weight_g")) {
+        let before = en::last_where(c, &format!("weight_g IS NOT NULL AND at < {start}"))?.and_then(|e| e.num("weight_g"));
+        let sub = before.map(|b| format!("{:+.0} g since the week before", w - b)).unwrap_or_default();
         out += &stat("⚖️ Weight", &format!("{w:.0} g"), &sub);
     }
     out += "</div></div>";
@@ -953,11 +965,9 @@ fn weeklog(app: &App, c: &rusqlite::Connection, tr: &Track, day: i64, now: i64) 
     Ok(out)
 }
 
-/// The day below the timeline: today's totals and log so far (entries
-/// needing attention are in their own card at the start, not repeated), or
-/// a past day's, with links to the days around it (`data-day`: the script
-/// scrolls the timeline there instead).
-/// The log of one day; today's (with `s`, the status) under "Today so far".
+/// The day below the timeline: today's totals (with `s`, the status) and log
+/// so far (entries needing attention are in their own card at the start, not
+/// repeated), or a past day's, with links to the days around it.
 fn daylog(app: &App, c: &rusqlite::Connection, start: i64, now: i64, s: Option<&Status>) -> Result<String, String> {
     let clock = &app.clock;
     let today = clock.day_start(now);
@@ -965,11 +975,7 @@ fn daylog(app: &App, c: &rusqlite::Connection, start: i64, now: i64, s: Option<&
     let entries = en::list(c, start, end.min(now + 1), false)?;
     let loggers = en::loggers(c, &entries)?;
     let totals = en::totals_between(c, start, end.min(now + 1))?;
-    let link = |d: i64, text: &str| {
-        let date = clock.day(d);
-        let href = if d >= today { "/".to_string() } else { format!("/?day={date}") };
-        format!(r#"<a href="{href}" data-day="{date}">{text}</a>"#)
-    };
+    let link = |d: i64, text: &str| day_link(clock, d, today, text);
     if start >= today {
         // The last weighing, whichever day it was.
         let weight = s.and_then(|s| weight_line(s.last_weight.as_ref()?, &app.baby(), s.regained.flatten().is_some()));
