@@ -28,9 +28,6 @@ fn parent(app: &App, headers: &HeaderMap) -> Option<User> {
     session_user(app, headers).filter(|u| !u.viewer)
 }
 
-fn json_err(status: StatusCode, msg: &str) -> Response {
-    (status, Json(json!({ "error": msg }))).into_response()
-}
 
 /// A short name for a device from its User-Agent.
 fn device_label(headers: &HeaderMap) -> String {
@@ -133,11 +130,11 @@ pub struct PrefBody {
 /// One choice, saved as soon as its checkbox changes.
 pub async fn save_pref(State(app): State<Arc<App>>, headers: HeaderMap, Json(b): Json<PrefBody>) -> Response {
     if !same_origin(&app, &headers) {
-        return json_err(StatusCode::FORBIDDEN, "cross-site request refused");
+        return crate::auth::json_err(StatusCode::FORBIDDEN, "forbidden", "cross-site request refused");
     }
-    let Some(user) = parent(&app, &headers) else { return json_err(StatusCode::UNAUTHORIZED, "log in first (as a parent)") };
+    let Some(user) = parent(&app, &headers) else { return crate::auth::json_err(StatusCode::UNAUTHORIZED, "unauthorized", "log in first (as a parent)") };
     if !KINDS.iter().any(|(k, _, _)| *k == b.kind) {
-        return json_err(StatusCode::BAD_REQUEST, "unknown kind");
+        return crate::auth::json_err(StatusCode::BAD_REQUEST, "bad_request", "unknown kind");
     }
     let r = app.db.with(|c| {
         c.execute(
@@ -148,7 +145,7 @@ pub async fn save_pref(State(app): State<Arc<App>>, headers: HeaderMap, Json(b):
     });
     match r {
         Ok(_) => Json(json!({ "ok": true })).into_response(),
-        Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
+        Err(e) => crate::auth::json_err(StatusCode::INTERNAL_SERVER_ERROR, "server_error", &e.to_string()),
     }
 }
 
@@ -183,12 +180,12 @@ pub struct SubscribeKeys {
 
 pub async fn subscribe(State(app): State<Arc<App>>, headers: HeaderMap, Json(b): Json<SubscribeBody>) -> Response {
     if !same_origin(&app, &headers) {
-        return json_err(StatusCode::FORBIDDEN, "cross-site request refused");
+        return crate::auth::json_err(StatusCode::FORBIDDEN, "forbidden", "cross-site request refused");
     }
-    let Some(user) = parent(&app, &headers) else { return json_err(StatusCode::UNAUTHORIZED, "log in first (as a parent)") };
-    let Some(keys) = b.keys else { return json_err(StatusCode::BAD_REQUEST, "subscription without keys") };
+    let Some(user) = parent(&app, &headers) else { return crate::auth::json_err(StatusCode::UNAUTHORIZED, "unauthorized", "log in first (as a parent)") };
+    let Some(keys) = b.keys else { return crate::auth::json_err(StatusCode::BAD_REQUEST, "bad_request", "subscription without keys") };
     if !b.endpoint.starts_with("https://") || b.endpoint.len() > 2048 || keys.p256dh.len() > 200 || keys.auth.len() > 100 {
-        return json_err(StatusCode::BAD_REQUEST, "invalid subscription");
+        return crate::auth::json_err(StatusCode::BAD_REQUEST, "bad_request", "invalid subscription");
     }
     let label = device_label(&headers);
     let r = app.db.with(|c| {
@@ -200,7 +197,7 @@ pub async fn subscribe(State(app): State<Arc<App>>, headers: HeaderMap, Json(b):
     });
     match r {
         Ok(_) => Json(json!({ "ok": true })).into_response(),
-        Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
+        Err(e) => crate::auth::json_err(StatusCode::INTERNAL_SERVER_ERROR, "server_error", &e.to_string()),
     }
 }
 
@@ -211,18 +208,18 @@ pub struct UnsubscribeBody {
 
 pub async fn unsubscribe(State(app): State<Arc<App>>, headers: HeaderMap, Json(b): Json<UnsubscribeBody>) -> Response {
     if !same_origin(&app, &headers) {
-        return json_err(StatusCode::FORBIDDEN, "cross-site request refused");
+        return crate::auth::json_err(StatusCode::FORBIDDEN, "forbidden", "cross-site request refused");
     }
-    let Some(user) = parent(&app, &headers) else { return json_err(StatusCode::UNAUTHORIZED, "log in first (as a parent)") };
+    let Some(user) = parent(&app, &headers) else { return crate::auth::json_err(StatusCode::UNAUTHORIZED, "unauthorized", "log in first (as a parent)") };
     let _ = app.db.with(|c| c.execute("DELETE FROM push_subscription WHERE endpoint = ?1 AND user_id = ?2", params![b.endpoint, user.id]));
     Json(json!({ "ok": true })).into_response()
 }
 
 pub async fn test(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
     if !same_origin(&app, &headers) {
-        return json_err(StatusCode::FORBIDDEN, "cross-site request refused");
+        return crate::auth::json_err(StatusCode::FORBIDDEN, "forbidden", "cross-site request refused");
     }
-    let Some(user) = parent(&app, &headers) else { return json_err(StatusCode::UNAUTHORIZED, "log in first (as a parent)") };
+    let Some(user) = parent(&app, &headers) else { return crate::auth::json_err(StatusCode::UNAUTHORIZED, "unauthorized", "log in first (as a parent)") };
     let n = Notice {
         kind: "test",
         key: String::new(),
@@ -234,7 +231,7 @@ pub async fn test(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
     };
     match notify::deliver(&app, &app.push_client, user.id, &n, "test").await {
         Ok(sent) => Json(json!({ "sent": sent })).into_response(),
-        Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, &e),
+        Err(e) => crate::auth::json_err(StatusCode::INTERNAL_SERVER_ERROR, "server_error", &e),
     }
 }
 
@@ -257,18 +254,18 @@ pub async fn message(State(app): State<Arc<App>>, Path(id): Path<String>) -> Res
             }
             ([(header::CACHE_CONTROL, "no-store")], Json::<Value>(v)).into_response()
         }
-        _ => json_err(StatusCode::NOT_FOUND, "no such message"),
+        _ => crate::auth::json_err(StatusCode::NOT_FOUND, "not_found", "no such message"),
     }
 }
 
 /// The app icon's badge: count and what it counts (session required).
 pub async fn badge(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
     if parent(&app, &headers).is_none() {
-        return json_err(StatusCode::UNAUTHORIZED, "log in first");
+        return crate::auth::json_err(StatusCode::UNAUTHORIZED, "unauthorized", "log in first");
     }
     match notify::current(&app, now()) {
         Ok((items, groups)) => ([(header::CACHE_CONTROL, "no-store")], Json(json!({ "count": items.len(), "items": items, "groups": groups }))).into_response(),
-        Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, &e),
+        Err(e) => crate::auth::json_err(StatusCode::INTERNAL_SERVER_ERROR, "server_error", &e),
     }
 }
 

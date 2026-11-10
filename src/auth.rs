@@ -48,7 +48,8 @@ pub fn sha256_hex(s: &str) -> String {
     d.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-fn json_err(status: StatusCode, code: &str, desc: &str) -> Response {
+/// A JSON error, OAuth-style: a code and what went wrong.
+pub(crate) fn json_err(status: StatusCode, code: &str, desc: &str) -> Response {
     (status, Json(json!({"error": code, "error_description": desc}))).into_response()
 }
 
