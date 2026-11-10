@@ -163,6 +163,14 @@ pub fn get(name: &str) -> Option<&'static Field> {
     FIELDS.iter().find(|f| f.name == name)
 }
 
+/// The groups the given fields belong to, each once, in group order.
+pub fn groups(fields: &serde_json::Map<String, Value>) -> Vec<Group> {
+    let mut g: Vec<Group> = fields.keys().filter_map(|k| get(k).map(|f| f.group)).collect();
+    g.sort_by_key(|g| *g as u8);
+    g.dedup();
+    g
+}
+
 impl Field {
     pub fn sql_type(&self) -> &'static str {
         match self.kind {

@@ -121,7 +121,7 @@ struct Next {
 /// (with a detail), and an extra line (already HTML) under the estimate;
 /// orange when overdue or with `warn`.
 fn next_tile_extra(clock: &crate::time::Clock, title: &'static str, last: Option<(i64, &str)>, next: Option<i64>, extra: &str, warn: bool, now: i64) -> Next {
-    let hm = |t: i64| clock.zoned(t).strftime("%H:%M").to_string();
+    let hm = |t: i64| clock.fmt_time(t);
     let last_line = match last {
         Some((t, last_detail)) => {
             let detail = if last_detail.is_empty() { String::new() } else { format!(" · {last_detail}") };
@@ -148,7 +148,7 @@ fn next_tile_extra(clock: &crate::time::Clock, title: &'static str, last: Option
 
 /// "🍼 about 80 ml" (the suggested amount for the next feed) for the feed tile.
 fn amount_line(clock: &crate::time::Clock, g: &crate::feeding::Guidance) -> String {
-    let hm = |t: i64| clock.zoned(t).strftime("%H:%M").to_string();
+    let hm = |t: i64| clock.fmt_time(t);
     let mut s = format!(r#"<div class="side">🍼 about {:.0} ml</div>"#, g.amount_ml);
     if let Some(b) = &g.breast_side {
         s += &format!(r#"<div class="side">🤱 start {} <span class="mut">({})</span></div>"#, esc(b.start), esc(&b.reason));
@@ -316,7 +316,7 @@ fn tl_day(clock: &crate::time::Clock, tr: &Track, entries: &[en::Entry], s: Opti
     let x = |t: i64| (t - from) as f64 / 3600.0 * zoom.pxh;
     let w = x(to);
     let lanes = [26.0, 50.0, 74.0]; // feeds, diapers, other (text baselines)
-    let hm = |t: i64| clock.zoned(t).strftime("%H:%M").to_string();
+    let hm = |t: i64| clock.fmt_time(t);
     let today = s.is_some();
     let mut svg = format!(r#"<svg x="{:.1}" width="{w:.1}" height="{h}" overflow="visible" data-day="{}">"#, tr.x(from), clock.day(from));
     if today {
@@ -830,7 +830,7 @@ pub async fn status(State(app): State<Arc<App>>, headers: HeaderMap, Query(q): Q
     let feed_what = s.last_feed.as_ref().map(|e| feed_summary(&e.fields)).unwrap_or_default();
     // With a preparation time, the tile shows when to start (diaper first).
     let (feed_next, prep_line) = match s.next_feed {
-        Some(f) if s.prep_s > 0 => (s.feed_start(), format!(r#"<div class="side">🧷 diaper first; feed ~{}</div>"#, esc(&clock.zoned(f.at).strftime("%H:%M").to_string()))),
+        Some(f) if s.prep_s > 0 => (s.feed_start(), format!(r#"<div class="side">🧷 diaper first; feed ~{}</div>"#, esc(&clock.fmt_time(f.at)))),
         f => (f.map(|f| f.at), String::new()),
     };
     let extra = format!(
@@ -972,9 +972,11 @@ fn daylog(app: &App, c: &rusqlite::Connection, start: i64, now: i64, s: Option<&
     let clock = &app.clock;
     let today = clock.day_start(now);
     let end = clock.next_day_start(start);
-    let entries = en::list(c, start, end.min(now + 1), false)?;
+    // One read: the day, and just before it (whether its first feeds are top-ups).
+    let all = en::list(c, start - en::FEED_LOOKBACK, end.min(now + 1), false)?;
+    let totals = en::totals_from(&all, start);
+    let entries: Vec<en::Entry> = all.into_iter().filter(|e| e.at >= start).collect();
     let loggers = en::loggers(c, &entries)?;
-    let totals = en::totals_between(c, start, end.min(now + 1))?;
     let link = |d: i64, text: &str| day_link(clock, d, today, text);
     if start >= today {
         // The last weighing, whichever day it was.
@@ -1878,12 +1880,8 @@ mod tests {
 
     #[test]
     fn shorthand() {
-        let e = en::Entry {
-            entry_id: 1, version: 1, at: 0, duration_s: None, text: String::new(),
-            fields: serde_json::from_str(r#"{"bottle_breastmilk_ml": 30, "bottle_formula_ml": 30, "breast_left_min": 5,
-                "latch": "with_aid", "wet": true, "dirty": true, "stool_color": "yellow", "temp_c": 36.8}"#).unwrap(),
-            attention_by: 0, attention_why: None, deleted: false, changed_at: 0, changed_by: 0, superseded_at: None,
-        };
+        let e = crate::status::entry(0, serde_json::json!({"bottle_breastmilk_ml": 30, "bottle_formula_ml": 30, "breast_left_min": 5,
+            "latch": "with_aid", "wet": true, "dirty": true, "stool_color": "yellow", "temp_c": 36.8}));
         assert_eq!(entry_summary(&e), "🍼 30 ml milk + 30 ml formula · 🤱 L5′ · 💧 · 💩🟡 · 🌡️ 36.8");
         let bath = |v: &str| en::Entry { fields: serde_json::from_str(&format!(r#"{{"bath": "{v}"}}"#)).unwrap(), ..e.clone() };
         assert_eq!(entry_summary(&bath("with_soap")), "🛁🧼");
@@ -2033,8 +2031,7 @@ mod tests {
         let clock = crate::time::Clock::new("Europe/Amsterdam").unwrap();
         let at = |s: &str| clock.parse(s, 0).unwrap();
         let now = at("2025-11-07 14:00");
-        let e = |t: &str, f: serde_json::Value| en::Entry { entry_id: 1, version: 1, at: at(t), duration_s: None, text: String::new(),
-            fields: f.as_object().cloned().unwrap(), attention_by: 0, attention_why: None, deleted: false, changed_at: 0, changed_by: 1, superseded_at: None };
+        let e = |t: &str, f: serde_json::Value| crate::status::entry(at(t), f);
         let entries = [e("2025-11-05 09:00", json!({"bottle_formula_ml": 50})),
                        e("2025-11-07 07:00", json!({"bottle_formula_ml": 60})),
                        e("2025-11-07 10:30", json!({"bottle_formula_ml": 80, "wet": true, "dirty": true})),

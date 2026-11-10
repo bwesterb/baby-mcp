@@ -3,7 +3,7 @@
 
 use crate::app::App;
 use crate::auth;
-use crate::entries::{self as en, BY_AGENT, BY_USER, Entry, NewEntry};
+use crate::entries::{self as en, BY_AGENT, BY_USER, NewEntry};
 use crate::registry::{self, FIELDS};
 use crate::time::now;
 use axum::Json;
@@ -279,11 +279,7 @@ fn call(app: &App, user: i64, name: &str, a: &Value) -> Result<Value, String> {
             let n = NewEntry { at, duration_s: duration_arg(a)?.flatten(), text: text.into(), fields, attention_by: by, attention_why: why };
             app.db.run(|c| {
                 let names = en::user_names(c)?;
-                let probe = Entry {
-                    entry_id: 0, version: 0, at, duration_s: None, text: String::new(), fields: n.fields.clone(),
-                    attention_by: 0, attention_why: None, deleted: false, changed_at: 0, changed_by: 0, superseded_at: None,
-                };
-                let groups = probe.groups();
+                let groups = crate::registry::groups(&n.fields);
                 if !a["confirm"].as_bool().unwrap_or(false) && !groups.is_empty() {
                     let dups = en::nearby(c, at, DUPLICATE_WINDOW, &groups)?;
                     if !dups.is_empty() {

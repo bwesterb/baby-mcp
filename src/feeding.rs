@@ -45,7 +45,6 @@ fn at_breast(e: &Entry) -> bool {
         || e.str("latch").is_some_and(|l| l != "none")
 }
 
-/// Inputs, separated from the database for testing.
 /// The NVK's minimum number of feeds per 24 hours and longest pause for a
 /// healthy term baby ("Advies ten aanzien van wakker maken van pasgeborenen
 /// voor voeding", NVK 2016). It assumes adequate growth and feeding behaviour.
@@ -75,6 +74,7 @@ pub fn nvk_minimum(age_days: f64, birth_weight: Option<f64>, weight: f64) -> Min
     m(4.0, 12, "from 8 weeks: at least 4 feeds per 24 h, pauses of at most 12 h")
 }
 
+/// Inputs, separated from the database for testing.
 pub struct Inputs<'a> {
     pub now: i64,
     pub birth: i64,
@@ -453,7 +453,7 @@ const WARN_BEFORE: i64 = 3600;
 /// in the last 24 hours. Each has a key so a notification fires once.
 pub fn warnings(clock: &Clock, min: &Minimum, aim: Option<f64>, feeds: &[i64], birth: i64, now: i64) -> Vec<Warning> {
     let mut out = vec![];
-    let hm = |t: i64| clock.zoned(t).strftime("%H:%M").to_string();
+    let hm = |t: i64| clock.fmt_time(t);
     let Some(&last) = feeds.last() else { return out };
     let limit = last + min.max_pause;
     // Stop after 3 h past the limit: then nobody is logging.
@@ -510,15 +510,8 @@ pub fn for_status(clock: &Clock, baby: &Baby, last_weight: Option<(f64, i64)>, e
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::Map;
 
-    fn entry(at: i64, f: Value) -> Entry {
-        Entry {
-            entry_id: 0, version: 1, at, duration_s: None, text: String::new(),
-            fields: f.as_object().cloned().unwrap_or_else(Map::new), attention_by: 0, attention_why: None,
-            deleted: false, changed_at: at, changed_by: 1, superseded_at: None,
-        }
-    }
+    use crate::status::entry;
 
     #[test]
     fn nvk() {

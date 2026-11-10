@@ -80,14 +80,7 @@ impl Entry {
             || self.str("latch").is_some_and(|l| l != "none")
     }
     pub fn groups(&self) -> Vec<Group> {
-        let mut g: Vec<Group> = self
-            .fields
-            .keys()
-            .filter_map(|k| registry::get(k).map(|f| f.group))
-            .collect();
-        g.sort_by_key(|g| *g as u8);
-        g.dedup();
-        g
+        registry::groups(&self.fields)
     }
 }
 
@@ -196,11 +189,6 @@ pub fn nearby(c: &Connection, at: i64, window: i64, groups: &[Group]) -> Result<
         .collect())
 }
 
-/// Totals of the entries in [from, to), with a top-up of a feed just before
-/// `from` counted with that feed.
-pub fn totals_between(c: &Connection, from: i64, to: i64) -> Result<Totals, String> {
-    Ok(totals_from(&list(c, from - FEED_LOOKBACK, to, false)?, from))
-}
 
 pub fn last_where(c: &Connection, cond: &str) -> Result<Option<Entry>, String> {
     Ok(query(c, &format!("deleted = 0 AND {cond} ORDER BY at DESC, entry_id DESC LIMIT 1"), [])?.pop())
@@ -615,8 +603,7 @@ pub mod tests {
         let baby = Baby { name: "B".into(), birth: Some(birth), birth_weight_g: None, sex: None, growth: None, delivery: None, change: None,
                           aim_feeds_per_day: None, feed_prep_s: 0 };
         let at = |s: &str| clock.parse(s, 0).unwrap();
-        let e = |t: &str, wet: bool| Entry { entry_id: 0, version: 1, at: at(t), duration_s: None, text: String::new(),
-            fields: fields(json!({"wet": wet})), attention_by: 0, attention_why: None, deleted: false, changed_at: 0, changed_by: 1, superseded_at: None };
+        let e = |t: &str, wet: bool| crate::status::entry(at(t), json!({"wet": wet}));
         // Day 3 (2 Nov): at least 3; two wet diapers → warning.
         let day = [e("2025-11-02 02:00", true), e("2025-11-02 08:00", true), e("2025-11-02 11:00", false)];
         let w = crate::status::wet_warning(&clock, &baby, &day, at("2025-11-02 12:00")).unwrap();
@@ -636,8 +623,7 @@ pub mod tests {
     fn night_stretches() {
         let clock = Clock::new("Europe/Amsterdam").unwrap();
         let at = |s: &str| clock.parse(s, 0).unwrap();
-        let e = |t: &str| Entry { entry_id: 0, version: 1, at: at(t), duration_s: None, text: String::new(),
-            fields: fields(json!({"bottle_formula_ml": 60})), attention_by: 0, attention_why: None, deleted: false, changed_at: 0, changed_by: 1, superseded_at: None };
+        let e = |t: &str| crate::status::entry(at(t), json!({"bottle_formula_ml": 60}));
         // 22:00 → 03:30 (top-up 04:00) → 07:00: the longest stretch overlapping
         // the night is 5h30, from the end of the 22:00 feed.
         let es = [e("2025-11-06 19:00"), e("2025-11-06 22:00"), e("2025-11-07 03:30"), e("2025-11-07 04:00"), e("2025-11-07 07:00"), e("2025-11-07 10:00")];
@@ -690,14 +676,15 @@ pub mod tests {
             assert_eq!(s["birth_weight_regained"]["regained"], false);
             assert_eq!(s["sleep_facing"]["last"], "left");
             assert_eq!(s["sleep_facing"]["next"], "right");
-            // Baths: with soap on 27 Oct 19:00 → due 31 Oct 07:00, so overdue, next
-            // without soap; the later sponge wash doesn't count.
+            // Baths: with soap on 28 Oct 19:00 → 3.5 days on is 1 Nov, reminded at
+            // 18:00 and overdue by 6 Nov; next without soap; the later sponge
+            // wash doesn't count.
             assert_eq!((s["bath"]["due"]["on"].as_str(), s["bath"]["due"]["at"].as_str()), (Some("2025-11-01"), Some("2025-11-01 18:00")), "the day 3.5 days on, reminded that evening");
             assert!(s["bath"]["due"]["overdue_by"].is_string());
             assert_eq!(s["bath"]["next_kind"], "without_soap");
             assert_eq!(s["bath"]["last"]["value"], "with_soap");
             assert_eq!(s["bath"]["last_any"]["value"], "sponge");
-            // Vitamins: born 30 Oct → from 6 Nov; on 5 Nov not active yet.
+            // Vitamins: born 31 Oct → from 7 Nov (day 8); on 6 Nov not active yet.
             assert_eq!(s["vitamins"]["from"], "2025-11-07");
             assert_eq!(s["vitamins"]["k"]["until"], "2026-01-22");
             assert_eq!(s["vitamins"]["d"]["until"], "2029-10-30");
@@ -710,7 +697,8 @@ pub mod tests {
             assert_eq!(s2["vitamins"]["d"]["given_today"], true);
             assert_eq!(s2["vitamins"]["remind_at"], "2025-11-07 18:00");
             assert!(s2["vitamins"]["k"]["not_needed"].is_null());
-            // Sleep side: left at 10:05 on 5 Nov; one feed after it → assumed right, next left.
+            // Sleep side: left at 10:05 on 6 Nov, no feed since; one feed after it
+            // → assumed right, next left.
             assert_eq!(s2["sleep_facing"]["feeds_since"], 0);
             insert(c, u, &NewEntry { at: clock.parse("2025-11-07 12:00", 0).unwrap(), duration_s: None, text: "60 ml".into(),
                 fields: fields(json!({"bottle_formula_ml": 60})), attention_by: 0, attention_why: None }, later).unwrap();

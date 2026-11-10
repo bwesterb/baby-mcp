@@ -212,11 +212,7 @@ pub fn run(cfg: &Config, cmd: Cmd) -> Result<(), String> {
         }
         Cmd::PushTest { name } => {
             let app = crate::app::App::new(cfg.clone())?;
-            let id: i64 = app
-                .db
-                .with(|c| c.query_row("SELECT id FROM user WHERE name = ?1", [&name], |r| r.get(0)).optional())
-                .map_err(en::err)?
-                .ok_or_else(|| format!("no user {name}"))?;
+            let (id, _) = app.db.run(|c| en::user_by_name(c, &name))?.ok_or_else(|| format!("no user {name:?}"))?;
             let n = crate::notify::Notice {
                 kind: "test",
                 key: String::new(),

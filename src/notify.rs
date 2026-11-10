@@ -67,13 +67,13 @@ pub fn due(c: &Connection, clock: &Clock, status: &Status, name: &str, now: i64)
             extra.push(format!("then face {}", s.next));
         }
         let extra = if extra.is_empty() { String::new() } else { format!(" · {}", extra.join(" · ")) };
-        let hm = clock.zoned(at).strftime("%H:%M").to_string();
-        let last_hm = clock.zoned(last).strftime("%H:%M").to_string();
+        let hm = clock.fmt_time(at);
+        let last_hm = clock.fmt_time(last);
         // With a preparation time (diaper first), "soon" counts from the start.
         let start = status.feed_start().unwrap_or(at);
         if now >= start - SOON && now < start {
             let body = if start < at {
-                format!("Start around {} (diaper first), feed ~{hm} (last feed {last_hm}){extra}", clock.zoned(start).strftime("%H:%M"))
+                format!("Start around {} (diaper first), feed ~{hm} (last feed {last_hm}){extra}", clock.fmt_time(start))
             } else {
                 format!("Expected around {hm} (last feed {last_hm}){extra}")
             };
@@ -138,8 +138,8 @@ pub fn due(c: &Connection, clock: &Clock, status: &Status, name: &str, now: i64)
             key: format!("{id}:{}", why.as_deref().unwrap_or("")),
             title: format!("🙋 {name}: needs your attention"),
             body: match why {
-                Some(w) => format!("{w} — {} {short}", clock.zoned(at).strftime("%H:%M")),
-                None => format!("{} {short}", clock.zoned(at).strftime("%H:%M")),
+                Some(w) => format!("{w} — {} {short}", clock.fmt_time(at)),
+                None => format!("{} {short}", clock.fmt_time(at)),
             },
             url: format!("/?day={}", clock.day(at)),
             ttl: 6 * 3600,
@@ -157,7 +157,7 @@ pub fn due(c: &Connection, clock: &Clock, status: &Status, name: &str, now: i64)
         out.push(Notice {
             kind: "changes",
             key: format!("{id}:{}", e.version),
-            title: format!("✏️ {name}: {who} {verb} {}", clock.zoned(e.at).strftime("%H:%M")),
+            title: format!("✏️ {name}: {who} {verb} {}", clock.fmt_time(e.at)),
             body: what,
             url: format!("/entry/{id}"),
             ttl: 3 * 3600,

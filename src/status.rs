@@ -323,8 +323,8 @@ pub fn status(c: &Connection, clock: &Clock, baby: &Baby, now: i64) -> Result<St
     let window = list(c, start, i64::MAX, false)?;
     let upto_now = &window[..window.partition_point(|e| e.at <= now)];
     let since = |from: i64| &upto_now[upto_now.partition_point(|e| e.at < from)..];
-    // Totals over [from, to) as `totals_between` (a feed just before `from`
-    // only tells whether the first ones are top-ups).
+    // Totals over [from, to) (a feed just before `from` only tells whether
+    // the first ones are top-ups).
     let totals = |from: i64, to: i64| en::totals_from(since(from - en::FEED_LOOKBACK).iter().filter(|e| e.at < to), from);
     // The last matching entry: from the window, or else the database.
     let last = |pred: &dyn Fn(&Entry) -> bool, cond: &str| match window.iter().rev().find(|e| pred(e)) {
