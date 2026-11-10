@@ -18,13 +18,13 @@ choices behind it; decisions marked *(v1)* may change later.
   entries.
 - **Statistics are easy.** Fields are plain, typed, queryable values: "ml of
   pumped milk per day" is a single SQL query.
-- **Capture works without an agent.** A dumb web form stores text (and one-tap
-  events) and marks them for an agent to process later.
+- **Capture works without an agent.** A dumb web form stores text and marks
+  it for an agent to process later.
 - **Every change is kept.** Edits and deletes never destroy earlier versions.
 - **One Rust binary, one SQLite file**, behind a TLS reverse proxy (Caddy).
 
 Non-goals (v1): several children or other subjects; sync with other apps;
-a public instance; reminders or notifications.
+a public instance; tracking sleep (only the side she is put down facing).
 
 ## Architecture
 
@@ -104,13 +104,14 @@ is refused. Restoring version *n* is a new version with the contents of *n*.
 ### Schema
 
 ```sql
-PRAGMA user_version = 1;
+PRAGMA user_version = 4;   -- migrations in db.rs
 
 CREATE TABLE user (
   id           INTEGER PRIMARY KEY,
   name         TEXT    NOT NULL UNIQUE,     -- login name, e.g. 'bas'
   display_name TEXT    NOT NULL,
-  created_at   INTEGER NOT NULL
+  created_at   INTEGER NOT NULL,
+  role         TEXT    NOT NULL DEFAULT 'parent' CHECK (role IN ('parent', 'viewer'))
 );
 
 CREATE TABLE entry (
@@ -216,7 +217,9 @@ both.
 
 ## MCP
 
-The `initialize` result carries instructions: what an entry is, the two kinds
+The `initialize` result answers with a protocol version the server speaks
+(the client's, if it is one of them, else the newest) and carries
+instructions: what an entry is, the two kinds
 of "none", "extract every registry field the user mentions, store the user's
 own words as the text", the bare-time rule, and "call `suggest` when something
 does not fit".
@@ -228,25 +231,33 @@ Tools:
 | `log` | New entry: `text`, `at` (default now), optional `duration_min`, `fields`, `needs_attention_by/why`. Warns instead of logging when an entry within 15 minutes shares a field group (feed, diaper, vomit, measurement), unless `confirm` is set. Returns the entry. |
 | `update` | Change an entry by id: any of `at`, `duration_min`, `text`, `fields` (merge; a key with `null` sets deliberately-none, `remove` lists keys to make unknown again), attention. |
 | `delete` / `undelete` | Set or clear `deleted`. |
-| `entries` | Entries in a time range (default: today), newest last. |
+| `entries` | Entries in a time range (default: today), oldest first; at most `limit` (default 200, at most 500), with `truncated` and `next_from` to continue. |
 | `history` | All versions of one entry. |
 | `attention` | Entries that need attention, by person and/or agent. |
-| `status` | Overview: time since the last feed, diaper, poop; estimates of the next feed, wet diaper and dirty diaper (last one + median recent gap; dirty diapers look back 3 days); today's and last 24 h totals; entries needing attention. |
+| `status` | Overview: the last feed, diapers, temperature and weight, with how long ago; the next feed (`next_feed_estimate`: the end of the last feed + the median recent gap, at most the longest gap the feeding plan allows; `next_feed_start` moved up by the preparation time); the wet-diaper warning; feeding guidance; the sleep side; bath and vitamins; growth percentiles; today's and last 24 h totals; entries needing attention. Diapers aren't predicted (they're checked at feeds). |
 | `stats` | Per-day totals for a range: ml of each kind, breast minutes, feeds, diapers, temperature range, weight vs birth weight. |
 | `fields` | The field registry. |
-| `sql` | Read-only SQL for questions the other tools don't answer: a separate read-only connection, an SQLite authorizer that only allows reading `entry`, `entry_old`, `suggestion` and `user` (id and names) — never credentials or tokens — 500 rows, 5 seconds. |
+| `sql` | Read-only SQL for questions the other tools don't answer: a separate read-only connection, an SQLite authorizer that only allows reading `entry`, `entry_old`, `suggestion`, `json_each`/`json_tree` and `user` (id and names) — never credentials or tokens — 500 rows, 5 seconds. |
 | `suggest` | Free-text suggestion for the developer: what the user wanted, what was missing, what the agent did instead. |
 
 Bare clock times ("at 3") mean today, or yesterday if that would be more than
-15 minutes in the future. A day in statistics runs midnight to midnight,
+15 minutes in the future; in `update`, the entry's own day. A time more than
+15 minutes in the future is refused. A day in statistics runs midnight to midnight,
 Europe/Amsterdam.
 
 ## Web UI
 
 Passkey session required. English labels. *(v1)*
 
-- **Status** (`/`): a timeline of the last 6 and next 4 hours (logged entries as emojis on lanes for feeds, diapers and the rest; expected ones faded, overdue ones ringed just after now); time since the last feed, diaper and poop; today's totals; entries that need attention (with a link to
-  each); refreshes every minute.
+- **Status** (`/`): entries that need attention (with a link to each); a
+  timeline from the day of birth to the hours ahead, scrolling sideways
+  (logged entries as emojis on lanes for feeds, diapers and the rest;
+  expected ones faded, overdue ones ringed just after now), loaded a day at
+  a time from `/timeline`; pinch (or − / +) zooms out to a summary per day
+  and per week of life. "What's next" tiles (feed, diaper, bath, vitamins)
+  under today's heading; below, the log of the day in view (`/?day=`,
+  swapped in from `/log` while scrolling), or at the week zoom the week.
+  Refreshes every minute. A *viewer* sees only the charts.
 - **Charts** (`/charts`): weight change since birth and the WHO growth chart
   (see Growth), ml per day by kind (pumped breast milk, formula), minutes at the breast per day (left and right), a per-kg chart (see
   Feeding guidance), feeds and
@@ -380,9 +391,10 @@ kraamzorg counts), then 150 ml per kg per day (range 150–180), the build-up
 applying until it reaches the per-kg level. Feeds per day: the median of the
 last three full days, kept between the NVK minimum and 10. The suggested next amount is the
 target divided by the feeds per day, plus part of a shortfall over the last
-24 hours (at most +20%), rounded to 5 ml; the time is the last feed plus the
-median recent gap, kept between 2 hours and 24 hours ÷ the minimum number of
-feeds; "at the latest" is the last feed plus the NVK's longest pause, or earlier,
+24 hours (at most +20%), rounded to 5 ml. The time is `status`'s one
+next-feed estimate: the end of the last feed plus the median recent gap, at
+most 24 hours ÷ the planned number of feeds (and the NVK's longest pause),
+given as `next_feed.max_gap`; "at the latest" is the last feed plus the NVK's longest pause, or earlier,
 the moment the last 24 hours would hold fewer than the NVK minimum number of
 feeds (when the minimum-th most recent feed turns 24 h old).
 The minimum is the NVK advice for healthy term babies ("Advies ten aanzien
@@ -393,8 +405,8 @@ and back above birth weight, then 5 and 8 h until 8 weeks, then 4 and 12 h
 and drinks well. On top of that, `aim_feeds_per_day` in the config
 (e.g. 7) raises the planned number of feeds. Warnings (Feed tile, `status`,
 and the "Feeding minimum" notification, once each): from 1 hour before the
-longest pause since the last feed, and when within the hour the last 24 hours
-would hold only the minimum number of feeds or fewer. `feed_prep_minutes` (e.g. 15)
+longest pause since the last feed, and when (within the hour) the last 24 hours
+would hold fewer than the minimum number of feeds; once per last feed. `feed_prep_minutes` (e.g. 15)
 moves the feed tile, "start by" and the "feed soon" notification up by that
 much, because the routine starts with the diaper; "feed overdue" and the NVK
 limits stay about the feed itself. Which breast to start with: the side with fewer
@@ -433,8 +445,8 @@ devices, sends a test, and has per-user choices (default on):
 
 - **Feed soon**: 15 minutes before the feed tile's next-feed estimate;
 - **Feed overdue**: 30 minutes after it (not after 3 hours: nobody is logging);
-- **Entries need attention**: an entry marked for the user (🙋) in the last
-  15 minutes.
+- **Entries need attention**: an entry marked for the user (🙋) and left
+  unchanged for 20 minutes (whoever just made it knows).
 - **Any change** (off by default): when someone else logs, changes or deletes
   an entry (each version once, linking to the entry).
 - **Vitamins**: at 18:00 if vitamin K or D (whichever applies at her age)
@@ -460,7 +472,8 @@ guidance). Not before day 2, and only while someone is logging.
 App badge: the home-screen icon shows a count (Badging API; iOS 16.4+ for
 home-screen apps, with notifications allowed) of entries needing the parents
 (🙋) plus one each for feeding (due within 15 minutes, overdue, or an NVK
-warning), vitamins not given after 18:00, and an overdue bath. Pages set it
+warning), vitamins not given after 18:00, and a bath due today (from 18:00)
+or overdue. Pages set it
 on load from `/push/badge`; with the app closed it only changes when a push
 arrives (the message fetch carries the current count), since iOS allows no
 silent background updates.

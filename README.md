@@ -66,7 +66,8 @@ weight, sleeping side, bath (with or without soap, or sponge), vitamin K and D.
 All of it is a rule-of-thumb guide; a plan from a midwife, nurse or doctor
 takes precedence.
 
-- **Next feed**: the median recent gap; the amount from a first-week build-up
+- **Next feed**: the median recent gap (at most what the aim of feeds a
+  day allows); the amount from a first-week build-up
   (about 10 ml × day of life per feed), then 150 ml/kg/day.
 - **Feeding minimum**: the NVK advice for healthy term babies (*Advies ten
   aanzien van wakker maken van pasgeborenen voor voeding*, 2016): minimum feeds
