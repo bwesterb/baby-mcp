@@ -59,6 +59,13 @@ impl Clock {
         self.civil(d.to_datetime(Time::midnight()))
     }
 
+    /// `hour`:00 local time on the local day containing `ts` (on a clock-change
+    /// day not the same as the day's start + `hour` hours).
+    pub fn at_hour(&self, ts: i64, hour: i64) -> i64 {
+        let h = i8::try_from(hour.clamp(0, 23)).unwrap_or(0);
+        self.civil(self.zoned(ts).date().at(h, 0, 0, 0)).unwrap_or(self.day_start(ts) + hour * 3600)
+    }
+
     /// Start of the day after the local day containing `ts`.
     pub fn next_day_start(&self, ts: i64) -> i64 {
         let d = self.zoned(ts).date();
@@ -161,6 +168,9 @@ mod tests {
         assert_eq!(c.next_day_start(start) - start, 25 * 3600);
         assert_eq!(c.day(start + 3600), "2026-10-25");
         assert_eq!(c.day_start(start + 5 * 3600), start);
+        // 18:00 that day: 19 hours after its start (one hour repeats).
+        assert_eq!(c.fmt(c.at_hour(start + 3600, 18)), "2026-10-25 18:00");
+        assert_eq!(c.at_hour(start, 18) - start, 19 * 3600);
     }
 
     #[test]

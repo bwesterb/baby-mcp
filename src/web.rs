@@ -579,7 +579,7 @@ fn vitamins_tile(clock: &crate::time::Clock, v: &Vitamins, now: i64) -> Option<N
         .collect();
     let until: Vec<String> = v.all().iter().map(|x| format!("{} until {}", x.label, clock.zoned(x.until - 1).strftime("%-d %b %Y"))).collect();
     let to_give = v.to_give();
-    let tomorrow = v.remind_at + 86400;
+    let tomorrow = clock.at_hour(clock.next_day_start(v.remind_at), en::VITAMIN_REMIND_HOUR);
     let (when, sub, at, overdue) = if active.is_empty() && !skipped.is_empty() {
         ("tomorrow".to_string(), "nothing to give today".to_string(), tomorrow, false)
     } else if active.is_empty() {
@@ -611,7 +611,7 @@ fn bath_tile(clock: &crate::time::Clock, b: &Bath, now: i64) -> Next {
     let day = |t: i64| {
         if clock.day(t) <= clock.day(now) {
             "today".to_string()
-        } else if clock.day(t) == clock.day(now + 86400) {
+        } else if clock.day(t) == clock.day(clock.next_day_start(now)) {
             "tomorrow".to_string()
         } else {
             clock.zoned(t).strftime("%a %-d %b").to_string()
@@ -926,7 +926,7 @@ fn weeklog(app: &App, c: &rusqlite::Connection, tr: &Track, day: i64, now: i64) 
     let last_day = add_days(clock, start, 6);
     let span = format!("{} – {}", clock.zoned(start).strftime("%a %-d %b"), clock.zoned(last_day).strftime("%a %-d %b"));
     let life = app.baby().birth.map(|b| {
-        let d0 = (start - clock.day_start(b)) / 86400 + 1;
+        let d0 = crate::feeding::day_of_life(clock, b, start);
         format!(" · day {}–{} of life", d0, d0 + 6)
     }).unwrap_or_default();
     let title = if start <= today && today < end { format!("Week {n} (this week)") } else { format!("Week {n}") };
@@ -988,7 +988,7 @@ fn daylog(app: &App, c: &rusqlite::Connection, start: i64, now: i64, s: Option<&
     let short = |d: i64| clock.zoned(d).strftime("%a %-d").to_string();
     let next = if end >= today { link(today, "Today →") } else { link(end, &format!("{} →", short(end))) };
     let title = clock.zoned(start).strftime("%a %-d %B").to_string();
-    let age = app.baby().birth.map(|b| format!(r#"<p class="mut">day {} of life</p>"#, (start - clock.day_start(b)) / 86400 + 1)).unwrap_or_default();
+    let age = app.baby().birth.map(|b| format!(r#"<p class="mut">day {} of life</p>"#, crate::feeding::day_of_life(clock, b, start))).unwrap_or_default();
     let head = format!(r#"<div class="head">{}<h2>{}</h2>{next}</div>{age}"#, link(prev, &format!("← {}", short(prev))), esc(&title));
     let mut out = totals_card(&head, &totals, weight_of(&entries, &app.baby()));
     out += &log_card("<h2>Log</h2>", &entries, &loggers, clock, "Nothing logged this day.");
@@ -1436,7 +1436,7 @@ pub async fn charts(
     // today's running totals or what they are expected to reach.
     let real_now = now();
     let t = if user.viewer { app.clock.day_start(real_now) - 1 } else { real_now };
-    let from = app.clock.day_start(t - 13 * 86400);
+    let from = add_days(&app.clock, t, -13);
     let baby = app.baby();
     // One read: everything since birth (and what the first day's totals and
     // night look back on); the charts take their parts.

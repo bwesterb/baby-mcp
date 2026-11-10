@@ -344,7 +344,7 @@ pub fn status(c: &Connection, clock: &Clock, baby: &Baby, now: i64) -> Result<St
     let last_bath = last(&|e| matches!(e.str("bath"), Some("with_soap" | "without_soap")), "bath IN ('with_soap', 'without_soap')")?;
     let due_day = clock.day_start(last_bath.as_ref().map(|e| e.at + en::BATH_EVERY).unwrap_or(now));
     let bath = Bath {
-        due_at: if last_bath.is_some() { due_day + en::BATH_REMIND_HOUR * 3600 } else { now },
+        due_at: if last_bath.is_some() { clock.at_hour(due_day, en::BATH_REMIND_HOUR) } else { now },
         day_end: clock.next_day_start(due_day),
         due_day,
         last: last_bath,
@@ -373,7 +373,7 @@ pub fn status(c: &Connection, clock: &Clock, baby: &Baby, now: i64) -> Result<St
                 });
             }
             let [k, d]: [Vitamin; 2] = vs.try_into().expect("two vitamins");
-            Some(Vitamins { from, remind_at: today + en::VITAMIN_REMIND_HOUR * 3600, formula_yesterday, k, d })
+            Some(Vitamins { from, remind_at: clock.at_hour(today, en::VITAMIN_REMIND_HOUR), formula_yesterday, k, d })
         }
     };
 

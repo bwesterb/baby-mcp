@@ -98,7 +98,7 @@ fn tools(tz: &str) -> Value {
          "description": "Entries in a time range, oldest first. Default: today (local). At most `limit` entries: with more, truncated is true and next_from is where to continue.",
          "inputSchema": {"type": "object", "properties": {
             "from": {"type": "string", "description": "YYYY-MM-DD or a time; default start of today"},
-            "to": {"type": "string", "description": "YYYY-MM-DD (exclusive day) or a time; default now"},
+            "to": {"type": "string", "description": "YYYY-MM-DD (inclusive) or a time; default now"},
             "limit": {"type": "integer", "minimum": 1, "maximum": ENTRIES_MAX, "description": "default 200"},
             "include_deleted": {"type": "boolean"}}},
          "annotations": {"readOnlyHint": true}},
