@@ -3,7 +3,7 @@
 //!
 //! - `feed_soon`: 15 minutes before the next-feed estimate (the feed tile's);
 //! - `feed_overdue`: 30 minutes after it (not after 3 hours: then nobody is logging);
-//! - `attention`: an entry needs the user (🙋) and was left unchanged for 10
+//! - `attention`: an entry needs the user (🙋) and was left unchanged for 20
 //!   minutes (whoever just made it knows; finished in time, nothing is sent).
 //!
 //! Each (user, kind, key) is sent once; the key is the last feed's time or
@@ -399,8 +399,11 @@ async fn tick(app: &App, client: &reqwest::Client) -> Result<(), String> {
             Ok(current.into_iter().filter(|x| x.2).map(|((u, g), ns, _)| (u, merge(g, &baby.name, ns))).collect())
         })
         .map_err(|e| e.to_string())?;
+    // One failure must not hold back the others (they are marked sent).
     for (u, n) in jobs {
-        deliver(app, client, u, &n, group(n.kind)).await?;
+        if let Err(e) = deliver(app, client, u, &n, group(n.kind)).await {
+            eprintln!("push to user {u}: {e}");
+        }
     }
     Ok(())
 }
@@ -408,6 +411,8 @@ async fn tick(app: &App, client: &reqwest::Client) -> Result<(), String> {
 pub async fn run(app: Arc<App>) {
     let client = client();
     let mut every = tokio::time::interval(std::time::Duration::from_secs(60));
+    // After a stall (a suspended machine, a slow tick) carry on; no burst.
+    every.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         every.tick().await;
         if let Err(e) = tick(&app, &client).await {

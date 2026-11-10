@@ -363,8 +363,8 @@ pub fn latest(min: &Minimum, feeds: &[i64]) -> (i64, String) {
 const WARN_BEFORE: i64 = 3600;
 
 /// Warnings when the NVK minimum gets close: almost the longest pause since
-/// the last feed, or within the hour only the minimum number of feeds (or
-/// fewer) in the last 24 hours. Each has a key so a notification fires once.
+/// the last feed, or (within the hour) fewer than the minimum number of feeds
+/// in the last 24 hours. Each has a key so a notification fires once.
 pub fn warnings(clock: &Clock, min: &Minimum, aim: Option<f64>, feeds: &[i64], birth: i64, now: i64) -> Vec<Value> {
     let mut out = vec![];
     let hm = |t: i64| clock.zoned(t).strftime("%H:%M").to_string();
@@ -384,14 +384,16 @@ pub fn warnings(clock: &Clock, min: &Minimum, aim: Option<f64>, feeds: &[i64], b
         let in_24h = feeds.iter().filter(|t| **t > now - 86400 && **t <= now).count();
         let in_23h = feeds.iter().filter(|t| **t > now - 23 * 3600 && **t <= now).count();
         let goal = aim.map(|a| format!(", aim {a:.0}")).unwrap_or_default();
-        if in_23h as f64 <= min.feeds {
+        // Below the minimum, not at it: a steady minimum is fine.
+        if (in_23h as f64) < min.feeds {
             let (text, key) = if in_24h > in_23h {
                 // A feed leaves the 24-hour window within the hour.
                 let leaving = *feeds.iter().find(|t| **t > now - 86400).unwrap();
                 (format!("Within the hour only {in_23h} feeds in the last 24 h unless she feeds by {} (NVK minimum {:.0}{goal})", hm(leaving + 86400), min.feeds),
                  format!("count:{leaving}"))
             } else {
-                (format!("Only {in_24h} feeds in the last 24 h (NVK minimum {:.0}{goal})", min.feeds), format!("count:{}", clock.fmt(now)[..13].to_string()))
+                (format!("Only {in_24h} feeds in the last 24 h (NVK minimum {:.0}{goal})", min.feeds), // Once per last feed: a lasting shortfall is not news every hour.
+                 format!("count:last:{last}"))
             };
             out.push(json!({"kind": "count", "key": key, "text": text}));
         }
@@ -400,16 +402,18 @@ pub fn warnings(clock: &Clock, min: &Minimum, aim: Option<f64>, feeds: &[i64], b
 }
 
 /// Feeding guidance for the status, or null without birth and weight.
-pub fn for_status(c: &rusqlite::Connection, clock: &Clock, baby: &Baby, last_weight: Option<f64>, now: i64) -> Result<Value, String> {
-    let (Some(birth), Some(weight)) = (baby.birth, last_weight.or(baby.birth_weight_g)) else {
+/// `last_weight` is the last weighing: grams and when.
+pub fn for_status(c: &rusqlite::Connection, clock: &Clock, baby: &Baby, last_weight: Option<(f64, i64)>, now: i64) -> Result<Value, String> {
+    let (Some(birth), Some(weight)) = (baby.birth, last_weight.map(|w| w.0).or(baby.birth_weight_g)) else {
         return Ok(Value::Null);
     };
     let from = clock.day_start(now) - 4 * 86400;
     let entries = crate::entries::list(c, from, now + 1, false)?;
     let mut g = guidance(clock, &Inputs { now, birth, birth_weight_g: baby.birth_weight_g, aim_feeds: baby.aim_feeds_per_day, prep_s: baby.feed_prep_s, weight_g: weight, entries: &entries });
     // Growth as a check: flag a weight change below P25 for the delivery mode.
-    if let Some(w) = last_weight {
-        if let Some((_, p, label)) = baby.change_percentile(w, now) {
+    // Read the curve at the age of the weighing, not today's.
+    if let Some((w, at)) = last_weight {
+        if let Some((_, p, label)) = baby.change_percentile(w, at) {
             if p < 25.0 {
                 g["growth_check"] = json!(format!(
                     "Her weight change is at {label} for her delivery mode, below P25: worth discussing with the midwife or consultatiebureau."
@@ -463,9 +467,15 @@ mod tests {
         // Last feed 22:00 (k=11 → 2025-11-07 22:00); at 23:30 no pause warning yet.
         let feeds: Vec<i64> = es.iter().map(|e| e.at).collect();
         let w = warnings(&clock, &min, Some(7.0), &feeds, birth, at("2025-11-07 23:30"));
-        // Only 6 feeds in the last 24 h (02:00 … 22:00 every 4 h).
+        // 6 feeds in the last 24 h (02:00 … 22:00 every 4 h): at the minimum, no warning.
+        assert!(w.is_empty(), "{w:?}");
+        // Without the 02:00 feed: 5, below it; keyed on the last feed, not the hour.
+        let fewer: Vec<i64> = feeds.iter().copied().filter(|t| *t != at("2025-11-07 02:00")).collect();
+        let w = warnings(&clock, &min, Some(7.0), &fewer, birth, at("2025-11-07 23:30"));
         assert_eq!(w.len(), 1, "{w:?}");
-        assert_eq!(w[0]["text"], "Only 6 feeds in the last 24 h (NVK minimum 6, aim 7)");
+        assert_eq!(w[0]["text"], "Only 5 feeds in the last 24 h (NVK minimum 6, aim 7)");
+        let later = warnings(&clock, &min, Some(7.0), &fewer, birth, at("2025-11-08 00:40"));
+        assert_eq!(later.iter().find(|x| x["kind"] == "count").unwrap()["key"], w[0]["key"]);
         // At 01:30 the 02:00 feed of the previous day leaves the window within the hour.
         let w = warnings(&clock, &min, Some(7.0), &feeds[..6], birth, at("2025-11-07 01:30"));
         assert_eq!(w[0]["text"], "Within the hour only 5 feeds in the last 24 h unless she feeds by 02:00 (NVK minimum 6, aim 7)");

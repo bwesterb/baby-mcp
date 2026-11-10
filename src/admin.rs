@@ -233,13 +233,13 @@ pub fn run(cfg: &Config, cmd: Cmd) -> Result<(), String> {
         }
         Cmd::Export => {
             let out = db
-                .with(|c| {
-                    let names = en::user_names(c).unwrap_or_default();
-                    let all = en::list(c, i64::MIN, i64::MAX, true).unwrap_or_default();
+                .with(|c| Ok((|| -> Result<Value, String> {
+                    // The only backup: fail loudly rather than export less.
+                    let names = en::user_names(c)?;
+                    let all = en::list(c, i64::MIN, i64::MAX, true)?;
                     let mut entries = vec![];
                     for e in &all {
-                        let versions: Vec<Value> = en::history(c, e.entry_id)
-                            .unwrap_or_default()
+                        let versions: Vec<Value> = en::history(c, e.entry_id)?
                             .iter()
                             .map(|v| json!({
                                 "version": v.version, "at": v.at, "duration_s": v.duration_s, "text": v.text,
@@ -251,14 +251,14 @@ pub fn run(cfg: &Config, cmd: Cmd) -> Result<(), String> {
                             .collect();
                         entries.push(json!({"entry_id": e.entry_id, "versions": versions}));
                     }
-                    let mut st = c.prepare("SELECT s.id, s.at, u.name, s.text, s.status, s.note FROM suggestion s JOIN user u ON u.id = s.by")?;
+                    let mut st = c.prepare("SELECT s.id, s.at, u.name, s.text, s.status, s.note FROM suggestion s JOIN user u ON u.id = s.by").map_err(en::err)?;
                     let sugg: Vec<Value> = st
                         .query_map([], |r| Ok(json!({"id": r.get::<_, i64>(0)?, "at": r.get::<_, i64>(1)?, "by": r.get::<_, String>(2)?,
-                            "text": r.get::<_, String>(3)?, "status": r.get::<_, String>(4)?, "note": r.get::<_, Option<String>>(5)?})))?
-                        .collect::<rusqlite::Result<_>>()?;
+                            "text": r.get::<_, String>(3)?, "status": r.get::<_, String>(4)?, "note": r.get::<_, Option<String>>(5)?}))).map_err(en::err)?
+                        .collect::<rusqlite::Result<_>>().map_err(en::err)?;
                     Ok(json!({"exported_at": now(), "users": names, "entries": entries, "suggestions": sugg}))
-                })
-                .map_err(en::err)?;
+                })()))
+                .map_err(en::err)??;
             println!("{}", serde_json::to_string_pretty(&out).unwrap());
         }
         Cmd::ImportHealthsoft { file, user, force } => {

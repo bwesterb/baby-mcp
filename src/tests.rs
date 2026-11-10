@@ -239,6 +239,33 @@ async fn oauth_and_mcp() {
     }
     let (e, _) = tool(&t, &access, "sql", json!({"query": "SELECT id, display_name FROM user"})).await;
     assert!(!e);
+    // Inside the fields JSON, and counting users.
+    let (e, v) = tool(&t, &access, "sql", json!({"query": "SELECT j.key, count(*) AS n FROM entry e, json_each(e.fields) j WHERE j.key = 'wet' GROUP BY j.key"})).await;
+    assert!(!e && v["rows"][0]["n"].as_i64().unwrap() >= 1, "{v}");
+    let (e, v) = tool(&t, &access, "sql", json!({"query": "SELECT count(*) AS n FROM user"})).await;
+    assert!(!e && v["rows"][0]["n"] == 1, "{v}");
+
+    // Times: never in the future; an update's bare time stays on the entry's day.
+    let (e, v) = tool(&t, &access, "log", json!({"text": "feed", "at": "2031-01-01 10:00", "fields": {"bottle_formula_ml": 10}})).await;
+    assert!(e && v.as_str().unwrap().contains("future"), "{v}");
+    let days_ago = t.app.clock.fmt(now() - 3 * 86400);
+    let (_, v) = tool(&t, &access, "log", json!({"text": "temp", "at": days_ago, "fields": {"temp_c": 36.9}})).await;
+    let old = v["entry"]["id"].as_i64().unwrap();
+    let (e, v) = tool(&t, &access, "update", json!({"entry_id": old, "at": "00:01"})).await;
+    assert!(!e, "{v}");
+    assert_eq!(v["entry"]["at"].as_str().unwrap(), format!("{} 00:01", &days_ago[..10]));
+    let (e, _) = tool(&t, &access, "update", json!({"entry_id": old, "at": "2031-01-01 10:00"})).await;
+    assert!(e, "update into the future accepted");
+    let (e, _) = tool(&t, &access, "update", json!({"entry_id": old, "text": "  "})).await;
+    assert!(e, "blank text accepted");
+
+    // Anonymous registrations do not push out a client in use.
+    for _ in 0..60 {
+        let r = send(&t, post_json("/oauth/register", json!({"redirect_uris": [REDIRECT]}))).await;
+        assert_eq!(r.status, StatusCode::CREATED);
+    }
+    let n: i64 = t.app.db.with(|c| c.query_row("SELECT count(*) FROM oauth_client", [], |r| r.get(0))).unwrap();
+    assert_eq!(n, 50);
 
     // attention, suggest, fields.
     let (_, v) = tool(&t, &access, "fields", json!({})).await;
@@ -289,6 +316,9 @@ async fn web_pages() {
     }
     let l = send(&t, get("/login?next=/charts").body(Body::empty()).unwrap()).await;
     assert!(l.body.contains(r#"id="login" data-next="/charts""#), "{}", l.body);
+    // A backslash would take the browser off the site after login.
+    let l = send(&t, get("/login?next=/%5Cevil.example").body(Body::empty()).unwrap()).await;
+    assert!(l.body.contains(r#"id="login" data-next="/""#), "{}", l.body);
     let m = send(&t, get("/manifest.webmanifest").body(Body::empty()).unwrap()).await;
     assert_eq!(m.status, StatusCode::OK);
     assert_eq!(m.json()["display"], "standalone");

@@ -78,6 +78,12 @@ impl Clock {
     /// Parses a user-given time. Bare clock times ("03:10") mean today, or
     /// yesterday if today's would be more than 15 minutes in the future.
     pub fn parse(&self, input: &str, now: i64) -> Result<i64, String> {
+        self.parse_on(input, now, None)
+    }
+
+    /// Like `parse`, but a bare clock time falls on the local day of `on`
+    /// when given (correcting an entry keeps it on its own day).
+    pub fn parse_on(&self, input: &str, now: i64, on: Option<i64>) -> Result<i64, String> {
         let s = input.trim();
         if s.is_empty() || s.eq_ignore_ascii_case("now") {
             return Ok(now - now % 60);
@@ -91,6 +97,9 @@ impl Clock {
         }
         let clock = s.replace('.', ":");
         if let Ok(t) = clock.parse::<Time>() {
+            if let Some(on) = on {
+                return self.civil(self.zoned(on).date().to_datetime(t));
+            }
             let today = self.zoned(now).date();
             let mut ts = self.civil(today.to_datetime(t))?;
             if ts > now + 15 * 60 {
@@ -138,6 +147,10 @@ mod tests {
         assert_eq!(c.fmt(c.parse("10:10", now).unwrap()), "2026-11-05 10:10");
         assert_eq!(c.fmt(c.parse("2026-11-05T08:00:00Z", now).unwrap()), "2026-11-05 09:00");
         assert!(c.parse("bogus", now).is_err());
+        // On a given day: a bare time stays on that day.
+        let earlier = c.parse("2026-11-02 18:00", now).unwrap();
+        assert_eq!(c.fmt(c.parse_on("00:01", now, Some(earlier)).unwrap()), "2026-11-02 00:01");
+        assert_eq!(c.fmt(c.parse_on("2026-11-03 07:00", now, Some(earlier)).unwrap()), "2026-11-03 07:00");
     }
 
     #[test]

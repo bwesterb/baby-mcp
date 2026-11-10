@@ -211,7 +211,8 @@ pub fn urlenc(s: &str) -> String {
 
 fn safe_next(next: Option<&String>) -> String {
     match next {
-        Some(n) if n.starts_with('/') && !n.starts_with("//") => n.clone(),
+        // Browsers read a backslash as "/" in a URL, so "/\host" would leave the site.
+        Some(n) if n.starts_with('/') && !n.starts_with("//") && !n.contains('\\') => n.clone(),
         _ => "/".into(),
     }
 }
@@ -568,10 +569,12 @@ pub async fn register(State(app): State<Arc<App>>, body: axum::body::Bytes) -> R
     let secret = (method != "none").then(|| random_token(32));
     let t = now();
     let res = app.db.with(|c| {
-        // Keep at most MAX_CLIENTS: evict the least recently used.
+        // Keep at most MAX_CLIENTS: evict clients that never got a token
+        // first, then the least recently used. Registration needs no login,
+        // so anyone could otherwise push out the clients in real use.
         c.execute(
             "DELETE FROM oauth_client WHERE id IN (SELECT id FROM oauth_client \
-             ORDER BY coalesce(last_used, created_at) DESC LIMIT -1 OFFSET ?1)",
+             ORDER BY last_used IS NOT NULL DESC, coalesce(last_used, created_at) DESC LIMIT -1 OFFSET ?1)",
             [MAX_CLIENTS - 1],
         )?;
         c.execute(

@@ -593,7 +593,7 @@ pub fn status(c: &Connection, clock: &Clock, baby: &Baby, now: i64) -> Result<Va
             None => json!({"regained": false}),
         };
     }
-    out["feeding_guidance"] = crate::feeding::for_status(c, clock, baby, last_weight.as_ref().and_then(|e| e.num("weight_g")), now)?;
+    out["feeding_guidance"] = crate::feeding::for_status(c, clock, baby, last_weight.as_ref().and_then(|e| Some((e.num("weight_g")?, e.at))), now)?;
     // Baths: due on the day 3.5 days after the last real bath falls on (a
     // sponge wash doesn't count), alternating with and without soap; the
     // reminder (`at`) that evening, overdue once that day is over. Never

@@ -80,7 +80,7 @@ fn tools(tz: &str) -> Value {
          "description": "Change an entry. Fields are merged: given keys are set, keys in `remove` become unknown again.",
          "inputSchema": {"type": "object", "required": ["entry_id"], "properties": {
             "entry_id": id,
-            "at": {"type": "string"},
+            "at": {"type": "string", "description": "new start time: HH:MM (on the entry's own day), YYYY-MM-DD HH:MM or RFC 3339"},
             "duration_min": {"type": ["number", "null"], "description": "final duration in minutes; null clears it"},
             "text": {"type": "string", "description": "replaces the text"},
             "fields": {"type": "object", "description": "the same fields as in `log` (null = deliberately nothing)"},
@@ -233,13 +233,22 @@ fn duration_arg(a: &Value) -> Result<Option<Option<i64>>, String> {
     }
 }
 
+/// Refuse a time more than 15 minutes ahead: a mistyped day or year would
+/// otherwise become the "last feed" until someone notices.
+fn not_future(at: i64, now: i64) -> Result<i64, String> {
+    if at > now + 15 * 60 {
+        return Err("that time is in the future; give the time it happened".into());
+    }
+    Ok(at)
+}
+
 fn call(app: &App, user: i64, name: &str, a: &Value) -> Result<Value, String> {
     let clock = &app.clock;
     let t = now();
     match name {
         "log" => {
             let text = a["text"].as_str().map(str::trim).filter(|s| !s.is_empty()).ok_or("text is required")?;
-            let at = clock.parse(a["at"].as_str().unwrap_or(""), t)?;
+            let at = not_future(clock.parse(a["at"].as_str().unwrap_or(""), t)?, t)?;
             let fields = fields_arg(a)?;
             let by = attention_arg(a)?.unwrap_or(0);
             let why = a["needs_attention_why"].as_str().map(str::trim).filter(|w| !w.is_empty()).map(str::to_string).filter(|_| by != 0);
@@ -277,13 +286,13 @@ fn call(app: &App, user: i64, name: &str, a: &Value) -> Result<Value, String> {
                 Ok((|| {
                     let mut e = en::get(c, id)?;
                     if let Some(at) = a["at"].as_str() {
-                        e.at = clock.parse(at, t)?;
+                        e.at = not_future(clock.parse_on(at, t, Some(e.at))?, t)?;
                     }
                     if let Some(d) = duration_arg(a)? {
                         e.duration_s = d;
                     }
                     if let Some(text) = a["text"].as_str() {
-                        e.text = text.trim().to_string();
+                        e.text = Some(text.trim()).filter(|t| !t.is_empty()).ok_or("text cannot be empty")?.to_string();
                     }
                     e.fields.extend(fields);
                     if let Some(rm) = a["remove"].as_array() {
@@ -406,7 +415,10 @@ fn run_sql(app: &App, q: &str) -> Result<Value, String> {
     c.authorizer(Some(|ctx: AuthContext<'_>| match ctx.action {
         AuthAction::Read { table_name, column_name } => match table_name {
             "entry" | "entry_old" | "suggestion" | "sqlite_master" | "sqlite_schema" => Authorization::Allow,
-            "user" if matches!(column_name, "id" | "name" | "display_name") => Authorization::Allow,
+            // Table-valued functions, to look inside the fields JSON.
+            "json_each" | "json_tree" => Authorization::Allow,
+            // An empty column name is a read of no column, as in count(*).
+            "user" if matches!(column_name, "id" | "name" | "display_name" | "") => Authorization::Allow,
             _ => Authorization::Deny,
         },
         AuthAction::Select | AuthAction::Function { .. } | AuthAction::Recursive => Authorization::Allow,
