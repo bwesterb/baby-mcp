@@ -68,7 +68,7 @@ impl Clock {
             .unwrap_or(ts + 86400)
     }
 
-    fn civil(&self, dt: DateTime) -> Result<i64, String> {
+    pub(crate) fn civil(&self, dt: DateTime) -> Result<i64, String> {
         self.tz
             .to_zoned(dt)
             .map(|z| z.timestamp().as_second())

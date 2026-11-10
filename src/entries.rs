@@ -498,11 +498,37 @@ pub struct DayStats {
     pub weight_vs_birth: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub weight_percentile: Option<String>,
+    /// The night that ended this morning: the longest stretch between feeds
+    /// overlapping 00:00–05:00 (see `night_stretch`), in minutes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub longest_night_gap_min: Option<i64>,
+}
+
+/// The night's hours: a stretch between feeds counts for the night when it
+/// overlaps midnight to 05:00.
+pub const NIGHT_UNTIL_HOUR: i8 = 5;
+/// How far before a day to look for the feed a night stretch starts with.
+pub const NIGHT_LOOKBACK: i64 = 24 * 3600;
+
+/// The longest stretch between feeds (from the end of one, its last top-up,
+/// to the start of the next) overlapping 00:00–05:00 of the day starting at
+/// `day`. None without a feed before and after it (a stretch still going on
+/// counts once she has fed). Episodes oldest first.
+pub fn night_stretch(clock: &Clock, eps: &[(i64, i64)], day: i64) -> Option<i64> {
+    let until = clock.zoned(day).date().at(NIGHT_UNTIL_HOUR, 0, 0, 0);
+    let until = clock.civil(until).ok()?;
+    eps.windows(2).map(|w| (w[0].1, w[1].0)).filter(|(a, b)| *a < until && *b > day).map(|(a, b)| b - a).max()
 }
 
 /// Per-day statistics for the local days from `from` (a day start) up to `to`.
 pub fn stats(c: &Connection, clock: &Clock, baby: &Baby, from: i64, to: i64) -> Result<Vec<DayStats>, String> {
-    let all = list(c, from - FEED_LOOKBACK, to, false)?;
+    Ok(stats_of(clock, baby, &list(c, from - NIGHT_LOOKBACK, to, false)?, from, to))
+}
+
+/// `stats` from entries already read: at least from NIGHT_LOOKBACK before
+/// `from` up to `to`, oldest first.
+pub fn stats_of(clock: &Clock, baby: &Baby, all: &[Entry], from: i64, to: i64) -> Vec<DayStats> {
+    let eps = feed_episodes(all);
     let mut out = vec![];
     let mut start = clock.day_start(from);
     while start < to {
@@ -523,10 +549,11 @@ pub fn stats(c: &Connection, clock: &Clock, baby: &Baby, from: i64, to: i64) -> 
                 .last()
                 .and_then(|e| baby.weight_percentile(e.num("weight_g")?, e.at))
                 .map(|(p, _)| crate::growth::label(p)),
+            longest_night_gap_min: night_stretch(clock, &eps, start).map(|s| (s + 30) / 60),
         });
         start = end;
     }
-    Ok(out)
+    out
 }
 
 #[cfg(test)]
@@ -605,6 +632,26 @@ pub mod tests {
         assert!(crate::status::wet_warning(&clock, &baby, &day[..1], at("2025-11-07 22:00")).is_none());
         // First day: nothing yet.
         assert!(crate::status::wet_warning(&clock, &baby, &[e("2025-10-31 20:00", false)], at("2025-10-31 22:00")).is_none());
+    }
+
+    #[test]
+    fn night_stretches() {
+        let clock = Clock::new("Europe/Amsterdam").unwrap();
+        let at = |s: &str| clock.parse(s, 0).unwrap();
+        let e = |t: &str| Entry { entry_id: 0, version: 1, at: at(t), duration_s: None, text: String::new(),
+            fields: fields(json!({"bottle_formula_ml": 60})), attention_by: 0, attention_why: None, deleted: false, changed_at: 0, changed_by: 1, superseded_at: None };
+        // 22:00 → 03:30 (top-up 04:00) → 07:00: the longest stretch overlapping
+        // the night is 5h30, from the end of the 22:00 feed.
+        let es = [e("2025-11-06 19:00"), e("2025-11-06 22:00"), e("2025-11-07 03:30"), e("2025-11-07 04:00"), e("2025-11-07 07:00"), e("2025-11-07 10:00")];
+        let eps = feed_episodes(&es);
+        assert_eq!(night_stretch(&clock, &eps, clock.date_start("2025-11-07").unwrap()), Some(5 * 3600 + 1800));
+        // The night before: no feed before it in the log.
+        assert_eq!(night_stretch(&clock, &eps, clock.date_start("2025-11-06").unwrap()), None);
+        // Still sleeping (no feed after 22:00 yet): not known.
+        assert_eq!(night_stretch(&clock, &eps[..2], clock.date_start("2025-11-07").unwrap()), None);
+        let d = stats_of(&clock, &Baby { name: "B".into(), birth: None, birth_weight_g: None, sex: None, growth: None, delivery: None, change: None,
+                                         aim_feeds_per_day: None, feed_prep_s: 0 }, &es, at("2025-11-07 00:00"), at("2025-11-07 12:00"));
+        assert_eq!(d[0].longest_night_gap_min, Some(330));
     }
 
     #[test]

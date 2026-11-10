@@ -183,6 +183,13 @@ impl Db {
         f(&mut c)
     }
 
+    /// Like `with`, for code whose errors are messages (as the entries
+    /// functions give): a database error becomes one too.
+    pub fn run<T>(&self, f: impl FnOnce(&mut Connection) -> Result<T, String>) -> Result<T, String> {
+        let mut c = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        f(&mut c)
+    }
+
     /// A separate read-only connection, for the `sql` tool.
     pub fn open_read_only(path: &Path) -> rusqlite::Result<Connection> {
         let c = Connection::open_with_flags(

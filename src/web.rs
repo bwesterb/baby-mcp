@@ -1055,7 +1055,8 @@ fn grid_step(max: f64, n: f64) -> f64 {
     step.max(1.0)
 }
 
-fn bars(title: &str, days: &[DayStats], series: &[(&str, &str, fn(&DayStats) -> f64)], unit: &str, projection: Option<f64>) -> String {
+/// Bars per day, stacked by series; `note` goes under the legend.
+fn bars(title: &str, days: &[DayStats], series: &[(&str, &str, fn(&DayStats) -> f64)], unit: &str, projection: Option<f64>, note: &str) -> String {
     let (w, h, pad) = (640.0, 180.0, 40.0);
     let data_max = days
         .iter()
@@ -1088,7 +1089,7 @@ fn bars(title: &str, days: &[DayStats], series: &[(&str, &str, fn(&DayStats) -> 
             let v = f(d);
             let bh = v / max * (h - 10.0);
             y -= bh;
-            svg += &format!(r#"<rect x="{x:.1}" y="{y:.1}" width="{:.1}" height="{bh:.1}" fill="{color}"><title>{} {v:.0}</title></rect>"#, bw * 0.7, d.date);
+            svg += &format!(r#"<rect x="{x:.1}" y="{y:.1}" width="{:.1}" height="{bh:.1}" fill="{color}"><title>{} {}</title></rect>"#, bw * 0.7, d.date, if v.fract() == 0.0 { format!("{v:.0}") } else { format!("{v:.1}") });
         }
         if let Some(p) = projection.filter(|p| i + 1 == days.len() && *p > 0.0) {
             let total: f64 = series.iter().map(|(_, _, f)| f(d)).sum();
@@ -1114,8 +1115,19 @@ fn bars(title: &str, days: &[DayStats], series: &[(&str, &str, fn(&DayStats) -> 
             )
         })
         .collect::<String>()
-        + if projection.is_some() { " · dashed box: expected by midnight at the last 24 hours' rate" } else { "" };
+        + if projection.is_some() { " · dashed box: expected by midnight at the last 24 hours' rate" } else { "" }
+        + note;
     format!(r#"<div class="card"><h2>{}</h2>{svg}<p class="mut">{legend}</p></div>"#, esc(title))
+}
+
+/// The longest stretch between feeds each night, in hours: the night that
+/// ended on each day's morning (see `en::night_stretch`).
+fn night_chart(days: &[DayStats]) -> String {
+    if days.iter().all(|d| d.longest_night_gap_min.is_none()) {
+        return String::new();
+    }
+    bars("Longest night stretch", days, &[("between feeds", "#5b6fa8", |d| d.longest_night_gap_min.unwrap_or(0) as f64 / 60.0)], "h", None,
+         " (overlapping 00:00–05:00, from the end of one feed to the start of the next; the bar of a day is the night before it)")
 }
 
 /// Today's value so far plus the last 24 hours' total scaled to the part of
@@ -1425,41 +1437,28 @@ pub async fn charts(
     let real_now = now();
     let t = if user.viewer { app.clock.day_start(real_now) - 1 } else { real_now };
     let from = app.clock.day_start(t - 13 * 86400);
-    let days = match app.db.with(|c| Ok(en::stats(c, &app.clock, &app.baby(), from, t + 1))) {
-        Ok(Ok(d)) => d,
-        Ok(Err(e)) => return html::error_page(StatusCode::INTERNAL_SERVER_ERROR, &e),
-        Err(e) => return html::error_page(StatusCode::INTERNAL_SERVER_ERROR, &en::err(e)),
-    };
     let baby = app.baby();
-    let weights: Vec<(i64, f64)> = match app.db.with(|c| Ok(en::list(c, baby.birth.unwrap_or(0), t + 1, false))) {
-        Ok(Ok(es)) => es.iter().filter_map(|e| e.num("weight_g").map(|g| (e.at, g))).collect(),
-        Ok(Err(e)) => return html::error_page(StatusCode::INTERNAL_SERVER_ERROR, &e),
-        Err(e) => return html::error_page(StatusCode::INTERNAL_SERVER_ERROR, &en::err(e)),
+    // One read: everything since birth (and what the first day's totals and
+    // night look back on); the charts take their parts.
+    let birth = baby.birth.unwrap_or(t);
+    let all = match app.db.run(|c| en::list(c, birth.min(from - en::NIGHT_LOOKBACK), t + 1, false)) {
+        Ok(es) => es,
+        Err(e) => return html::error_page(StatusCode::INTERNAL_SERVER_ERROR, &e),
     };
+    let since_birth = &all[all.partition_point(|e| e.at < birth)..];
+    let days = en::stats_of(&app.clock, &baby, &all, from, t + 1);
+    let weights: Vec<(i64, f64)> = since_birth.iter().filter_map(|e| e.num("weight_g").map(|g| (e.at, g))).collect();
     // The last 14 days, but not before birth.
-    let temp_from = app.clock.day_start(t - 13 * 86400).max(baby.birth.map(|b| app.clock.day_start(b)).unwrap_or(i64::MIN));
-    let temps: Vec<(i64, f64)> = match app.db.with(|c| Ok(en::list(c, temp_from, t + 1, false))) {
-        Ok(Ok(es)) => es.iter().filter_map(|e| e.num("temp_c").map(|v| (e.at, v))).collect(),
-        Ok(Err(e)) => return html::error_page(StatusCode::INTERNAL_SERVER_ERROR, &e),
-        Err(e) => return html::error_page(StatusCode::INTERNAL_SERVER_ERROR, &en::err(e)),
-    };
+    let temp_from = from.max(baby.birth.map(|b| app.clock.day_start(b)).unwrap_or(i64::MIN));
+    let temps: Vec<(i64, f64)> = all.iter().filter(|e| e.at >= temp_from).filter_map(|e| e.num("temp_c").map(|v| (e.at, v))).collect();
     // Today's expected totals by midnight: so far today + the last 24 hours'
     // totals scaled to the rest of the day.
-    let last24 = match app.db.with(|c| Ok(en::totals_between(c, t - 86400, t + 1))) {
-        Ok(Ok(t)) => t,
-        Ok(Err(e)) => return html::error_page(StatusCode::INTERNAL_SERVER_ERROR, &e),
-        Err(e) => return html::error_page(StatusCode::INTERNAL_SERVER_ERROR, &en::err(e)),
-    };
+    let last24 = en::totals_from(all.iter().filter(|e| e.at >= t - 86400 - en::FEED_LOOKBACK), t - 86400);
     let rest = (app.clock.next_day_start(t) - t) as f64 / 86400.0;
     let today = days.last().filter(|d| d.date == app.clock.day(t)).map(|d| d.totals.clone());
     let project = |m: fn(&en::Totals) -> f64| today.as_ref().filter(|_| !user.viewer).map(|td| expected_by_midnight(m(td), m(&last24), rest));
-    let since_birth = match app.db.with(|c| Ok(en::list(c, baby.birth.unwrap_or(t), t + 1, false))) {
-        Ok(Ok(es)) => es,
-        Ok(Err(e)) => return html::error_page(StatusCode::INTERNAL_SERVER_ERROR, &e),
-        Err(e) => return html::error_page(StatusCode::INTERNAL_SERVER_ERROR, &en::err(e)),
-    };
     let per_kg = match (baby.birth, baby.birth_weight_g) {
-        (Some(b), Some(bw)) => crate::feeding::per_kg_days(&app.clock, b, bw, &since_birth, t, 28),
+        (Some(b), Some(bw)) => crate::feeding::per_kg_days(&app.clock, b, bw, since_birth, t, 28),
         _ => vec![],
     };
     let mut body = String::new();
@@ -1473,17 +1472,18 @@ pub async fn charts(
     body += &bars("Bottle per day", &days, &[
         ("breast milk", "#2f6f5e", |d| d.totals.breastmilk_ml),
         ("formula", "#c08a3e", |d| d.totals.formula_ml),
-    ], "ml", project(|t| t.total_ml));
+    ], "ml", project(|t| t.total_ml), "");
     body += &bars("Breast per day", &days, &[
         ("left", "#7b5ea7", |d| d.totals.breast_left_min as f64),
         ("right", "#d97a9c", |d| d.totals.breast_right_min as f64),
-    ], "min", project(|t| t.breast_min as f64));
+    ], "min", project(|t| t.breast_min as f64), "");
     body += &bars("Diapers per day", &days, &[
         ("wet", "#4a7fb5", |d| d.totals.wet_only as f64),
         ("wet + dirty", "url(#wet-dirty)", |d| d.totals.wet_and_dirty as f64),
         ("dirty", "#a5531d", |d| d.totals.dirty_only as f64),
-    ], "", project(|t| t.diapers as f64));
-    body += &bars("Feeds per day", &days, &[("feeds", "#6b6b70", |d| d.totals.feeds as f64)], "", project(|t| t.feeds as f64));
+    ], "", project(|t| t.diapers as f64), "");
+    body += &bars("Feeds per day", &days, &[("feeds", "#6b6b70", |d| d.totals.feeds as f64)], "", project(|t| t.feeds as f64), "");
+    body += &night_chart(&days);
     // Parents: look at the page as a viewer (say a grandparent) sees it.
     let mut view_as = String::new();
     if !user.viewer || preview {
@@ -1904,11 +1904,11 @@ mod tests {
         assert_eq!(expected_by_midnight(3.0, 8.0, 0.5), 7.0);
         assert_eq!(expected_by_midnight(3.0, 8.0, 1.5), 11.0, "clamped to a whole day");
         let day = |d: &str, f: u32| DayStats { date: d.into(), totals: en::Totals { feeds: f, ..Default::default() },
-            temp_min_c: None, temp_max_c: None, weight_g: None, weight_vs_birth: None, weight_percentile: None };
+            temp_min_c: None, temp_max_c: None, weight_g: None, weight_vs_birth: None, weight_percentile: None, longest_night_gap_min: None };
         let days = vec![day("2025-11-06", 8), day("2025-11-07", 3)];
-        let html = bars("Feeds", &days, &[("feeds", "#000", |d| d.totals.feeds as f64)], "", Some(7.0));
+        let html = bars("Feeds", &days, &[("feeds", "#000", |d| d.totals.feeds as f64)], "", Some(7.0), "");
         assert!(html.contains("stroke-dasharray") && html.contains(">~7<") && html.contains("expected by midnight"));
-        let html = bars("Feeds", &days, &[("feeds", "#000", |d| d.totals.feeds as f64)], "", Some(2.0));
+        let html = bars("Feeds", &days, &[("feeds", "#000", |d| d.totals.feeds as f64)], "", Some(2.0), "");
         assert!(!html.contains(">~2<"), "no projection below what is already there");
     }
 
@@ -2135,14 +2135,14 @@ mod preview {
                 .map(|(d, w, b, x)| crate::entries::DayStats {
                     date: d.to_string(),
                     totals: crate::entries::Totals { wet_only: *w, wet_and_dirty: *b, dirty_only: *x, ..Default::default() },
-                    temp_min_c: None, temp_max_c: None, weight_g: None, weight_vs_birth: None, weight_percentile: None,
+                    temp_min_c: None, temp_max_c: None, weight_g: None, weight_vs_birth: None, weight_percentile: None, longest_night_gap_min: None,
                 })
                 .collect();
             let html = super::bars("Diapers per day", &days, &[
                 ("wet", "#4a7fb5", |d| d.totals.wet_only as f64),
                 ("wet + dirty", "url(#wet-dirty)", |d| d.totals.wet_and_dirty as f64),
                 ("dirty", "#a5531d", |d| d.totals.dirty_only as f64),
-            ], "", Some(2.0 + 9.0 * 0.6));
+            ], "", Some(2.0 + 9.0 * 0.6), "");
             let svg = &html[html.find("<svg").unwrap()..html.find("</svg>").unwrap() + 6];
             let svg = svg.replacen("<svg ", r#"<svg xmlns="http://www.w3.org/2000/svg" width="640" height="200" style="background:#fff;font:11px sans-serif" "#, 1).replace(r#" width="100%""#, "");
             std::fs::write(std::env::var("OUT").unwrap(), svg).unwrap();
