@@ -45,6 +45,12 @@ impl App {
         Ok(App { cfg, db, clock, wa, mem: Mutex::new(Mem::default()), growth, change, push_client: crate::notify::client() })
     }
 
+    /// The in-memory state (ceremonies, codes); a panic elsewhere while it
+    /// was held doesn't make it unusable (as with the database).
+    pub fn mem(&self) -> std::sync::MutexGuard<'_, Mem> {
+        self.mem.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     pub fn baby(&self) -> Baby {
         Baby {
             name: self.cfg.baby.name.clone(),

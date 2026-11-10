@@ -291,7 +291,7 @@ pub async fn login_begin(State(app): State<Arc<App>>, headers: HeaderMap, Json(b
     match app.wa.start_passkey_authentication(&keys) {
         Ok((opts, state)) => {
             let id = random_token(16);
-            let mut m = app.mem.lock().unwrap();
+            let mut m = app.mem();
             m.gc();
             m.ceremonies
                 .insert(id.clone(), (Instant::now(), Ceremony::Login { state, next: safe_next(b.next.as_ref()) }));
@@ -311,7 +311,7 @@ pub async fn login_finish(State(app): State<Arc<App>>, headers: HeaderMap, Json(
     if !same_origin(&app, &headers) {
         return json_err(StatusCode::FORBIDDEN, "forbidden", "cross-site request");
     }
-    let cer = app.mem.lock().unwrap().ceremonies.remove(&b.id);
+    let cer = app.mem().ceremonies.remove(&b.id);
     let Some((_, Ceremony::Login { state, next })) = cer else {
         return json_err(StatusCode::BAD_REQUEST, "expired", "login expired; try again");
     };
@@ -445,7 +445,7 @@ pub async fn enroll_begin(State(app): State<Arc<App>>, headers: HeaderMap, Json(
     {
         Ok((opts, state)) => {
             let id = random_token(16);
-            let mut m = app.mem.lock().unwrap();
+            let mut m = app.mem();
             m.gc();
             m.ceremonies.insert(
                 id.clone(),
@@ -461,7 +461,7 @@ pub async fn enroll_finish(State(app): State<Arc<App>>, headers: HeaderMap, Json
     if !same_origin(&app, &headers) {
         return json_err(StatusCode::FORBIDDEN, "forbidden", "cross-site request");
     }
-    let cer = app.mem.lock().unwrap().ceremonies.remove(&b.id);
+    let cer = app.mem().ceremonies.remove(&b.id);
     let Some((_, Ceremony::Enroll { state, user_id, token_hash, name })) = cer else {
         return json_err(StatusCode::BAD_REQUEST, "expired", "enrollment expired; reload the page");
     };
@@ -707,7 +707,7 @@ pub async fn authorize(
     }
     let rid = random_token(16);
     {
-        let mut m = app.mem.lock().unwrap();
+        let mut m = app.mem();
         m.gc();
         m.authz.insert(
             rid.clone(),
@@ -757,7 +757,7 @@ pub async fn authorize_decide(State(app): State<Arc<App>>, headers: HeaderMap, F
     let Some(user) = session_user(&app, &headers).filter(|u| !u.viewer) else {
         return html::error_page(StatusCode::FORBIDDEN, "Not logged in (as a parent).");
     };
-    let Some((_, p)) = app.mem.lock().unwrap().authz.remove(&f.rid) else {
+    let Some((_, p)) = app.mem().authz.remove(&f.rid) else {
         return html::error_page(StatusCode::BAD_REQUEST, "This request expired; start again from Claude.");
     };
     let iss = app.cfg.origin().to_string();
@@ -769,7 +769,7 @@ pub async fn authorize_decide(State(app): State<Arc<App>>, headers: HeaderMap, F
         .into_response();
     }
     let code = random_token(32);
-    app.mem.lock().unwrap().codes.insert(
+    app.mem().codes.insert(
         code.clone(),
         (
             Instant::now(),
@@ -871,7 +871,7 @@ pub async fn token(State(app): State<Arc<App>>, headers: HeaderMap, Form(f): For
         }
         let user_id = match get("grant_type") {
             "authorization_code" => {
-                let code = app.mem.lock().unwrap().codes.remove(get("code"));
+                let code = app.mem().codes.remove(get("code"));
                 let Some((t, code)) = code.filter(|(t, _)| t.elapsed() < CODE_TTL) else {
                     return Ok(Err((StatusCode::BAD_REQUEST, "invalid_grant", "unknown or expired code".into())));
                 };
