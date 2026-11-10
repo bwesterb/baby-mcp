@@ -278,7 +278,10 @@ Same model as [healthsoft-mcp](https://github.com/bwesterb/healthsoft-mcp)'s, wr
 
 - **People** log in with passkeys (`webauthn-rs`). `baby-mcp user add NAME
   "Display name"` creates a user and prints a single-use enrollment link
-  (30 minutes). A person can enroll several passkeys. Web sessions are random
+  (30 minutes). A person can enroll several passkeys. Passkeys are
+  discoverable (resident): login asks the browser for any passkey of this
+  site, so the page never lists the enrolled credential ids, and the user
+  handle in the answer must belong to the passkey's user. Web sessions are random
   ids in a cookie (`Secure`, `HttpOnly`, `SameSite=Lax`), stored server-side;
   one expires 30 days after it was last used (renewed, cookie and all, at
   most once a day).

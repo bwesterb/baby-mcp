@@ -24,7 +24,7 @@ sha2 = "0.11.1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "signal", "sync"] }
 toml = "1.2.0"
 uuid = { version = "1.29.0", features = ["v4", "serde"] }
-webauthn-rs = "0.6"
+webauthn-rs = { version = "0.6", features = ["conditional-ui"] }
 
 [dev-dependencies]
 # Tests count the statements a status takes.

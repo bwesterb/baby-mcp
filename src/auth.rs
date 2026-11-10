@@ -122,7 +122,7 @@ pub fn build_webauthn(origin: &str, host: &str) -> Result<Webauthn, String> {
 // ------------------------------------------------------------- in-memory state
 
 pub enum Ceremony {
-    Login { state: PasskeyAuthentication, next: String },
+    Login { state: DiscoverableAuthentication, next: String },
     Enroll { state: PasskeyRegistration, user_id: i64, token_hash: String, name: String },
 }
 
@@ -306,18 +306,14 @@ pub async fn login_begin(State(app): State<Arc<App>>, headers: HeaderMap, Json(b
     if !same_origin(&app, &headers) {
         return json_err(StatusCode::FORBIDDEN, "forbidden", "cross-site request");
     }
-    let keys: Vec<Passkey> = match app.db.with(|c| {
-        let mut st = c.prepare("SELECT credential FROM passkey")?;
-        let rows = st.query_map([], |r| r.get::<_, String>(0))?;
-        rows.collect::<rusqlite::Result<Vec<_>>>()
-    }) {
-        Ok(v) => v.iter().filter_map(|s| serde_json::from_str(s).ok()).collect(),
+    match app.db.with(|c| c.query_row("SELECT count(*) FROM passkey", [], |r| r.get::<_, i64>(0))) {
+        Ok(0) => return json_err(StatusCode::BAD_REQUEST, "no_passkeys", "no passkeys enrolled yet; run `baby-mcp user add`"),
+        Ok(_) => {}
         Err(e) => return json_err(StatusCode::INTERNAL_SERVER_ERROR, "server_error", &err(e)),
-    };
-    if keys.is_empty() {
-        return json_err(StatusCode::BAD_REQUEST, "no_passkeys", "no passkeys enrolled yet; run `baby-mcp user add`");
     }
-    match app.wa.start_passkey_authentication(&keys) {
+    // Discoverable: the browser offers the passkeys it has for this site, so
+    // the page doesn't hand out the ids of every enrolled one.
+    match app.wa.start_discoverable_authentication() {
         Ok((opts, state)) => {
             let id = random_token(16);
             let mut m = app.mem();
@@ -348,14 +344,11 @@ pub async fn login_finish(State(app): State<Arc<App>>, headers: HeaderMap, Json(
         Ok(c) => c,
         Err(e) => return json_err(StatusCode::BAD_REQUEST, "bad_credential", &e.to_string()),
     };
-    let res = match app.wa.finish_passkey_authentication(&cred, &state) {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("login: passkey verification failed: {e}");
-            return json_err(StatusCode::FORBIDDEN, "denied", "passkey verification failed");
-        }
+    // Which passkey (and whose) it says it is; then verify it with that one.
+    let Ok((handle, cred_id)) = app.wa.identify_discoverable_authentication(&cred) else {
+        return json_err(StatusCode::BAD_REQUEST, "bad_credential", "no user handle");
     };
-    let key = cred_key(res.cred_id());
+    let key = cred_key(&CredentialID::from(cred_id.to_vec()));
     let found = app.db.with(|c| {
         c.query_row(
             "SELECT id, user_id, credential FROM passkey WHERE cred_id = ?1",
@@ -367,7 +360,20 @@ pub async fn login_finish(State(app): State<Arc<App>>, headers: HeaderMap, Json(
     let Ok(Some((pk_id, user_id, raw))) = found else {
         return json_err(StatusCode::FORBIDDEN, "denied", "unknown passkey");
     };
-    if let Ok(mut pk) = serde_json::from_str::<Passkey>(&raw) {
+    let Ok(mut pk) = serde_json::from_str::<Passkey>(&raw) else {
+        return json_err(StatusCode::INTERNAL_SERVER_ERROR, "server_error", "stored passkey unreadable");
+    };
+    if handle != user_uuid(user_id) {
+        return json_err(StatusCode::FORBIDDEN, "denied", "passkey of another user");
+    }
+    let res = match app.wa.finish_discoverable_authentication_v2(&cred, state, &pk) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("login: passkey verification failed: {e}");
+            return json_err(StatusCode::FORBIDDEN, "denied", "passkey verification failed");
+        }
+    };
+    {
         pk.update_credential(&res);
         let _ = app.db.with(|c| {
             c.execute(
@@ -473,6 +479,10 @@ pub async fn enroll_begin(State(app): State<Arc<App>>, headers: HeaderMap, Json(
         .start_passkey_registration(user_uuid(user_id), &display, &display, Some(existing))
     {
         Ok((opts, state)) => {
+            // Discoverable passkeys only: login offers no credential ids.
+            let mut opts = json!(opts);
+            opts["publicKey"]["authenticatorSelection"]["residentKey"] = json!("required");
+            opts["publicKey"]["authenticatorSelection"]["requireResidentKey"] = json!(true);
             let id = random_token(16);
             let mut m = app.mem();
             m.gc();
