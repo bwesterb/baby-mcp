@@ -299,6 +299,15 @@ async fn web_pages() {
     let t = setup();
     let r = send(&t, get("/").body(Body::empty()).unwrap()).await;
     assert!(r.location().starts_with("/login"), "status page without session");
+    // Sliding sessions: in use, the session (an hour left) is renewed, with
+    // the cookie; not again the same day.
+    let r = send(&t, get("/charts").header(header::COOKIE, &t.cookie).body(Body::empty()).unwrap()).await;
+    let set = r.headers.get(header::SET_COOKIE).map(|v| v.to_str().unwrap().to_string()).unwrap_or_default();
+    assert!(set.starts_with(&t.cookie) && set.contains("Max-Age=2592000"), "{set}");
+    let expires: i64 = t.app.db.with(|c| c.query_row("SELECT expires FROM session", [], |r| r.get(0))).unwrap();
+    assert!(expires > now() + 29 * 86400);
+    let r = send(&t, get("/charts").header(header::COOKIE, &t.cookie).body(Body::empty()).unwrap()).await;
+    assert!(r.headers.get(header::SET_COOKIE).is_none(), "renewed once a day");
     let r = send(&t, get("/").header(header::COOKIE, &t.cookie).body(Body::empty()).unwrap()).await;
     assert_eq!(r.status, StatusCode::OK);
     assert!(r.body.contains("Baby") && r.body.contains("Nothing logged yet today"));

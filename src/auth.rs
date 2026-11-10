@@ -23,7 +23,10 @@ use std::time::{Duration, Instant};
 use webauthn_rs::prelude::*;
 
 pub const SESSION_COOKIE: &str = "baby_session";
+/// A web session lasts this long after it was last used (renewed at most
+/// once per SESSION_RENEW, cookie and all).
 const SESSION_TTL: i64 = 30 * 24 * 3600;
+const SESSION_RENEW: i64 = 24 * 3600;
 const ACCESS_TTL: i64 = 3600;
 const REFRESH_TTL: i64 = 30 * 24 * 3600;
 const ENROLL_TTL: i64 = 30 * 60;
@@ -190,9 +193,35 @@ fn new_session(app: &App, user_id: i64) -> Result<String, String> {
             )
         })
         .map_err(err)?;
-    Ok(format!(
-        "{SESSION_COOKIE}={tok}; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age={SESSION_TTL}"
-    ))
+    Ok(session_cookie(&tok))
+}
+
+fn session_cookie(tok: &str) -> String {
+    format!("{SESSION_COOKIE}={tok}; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age={SESSION_TTL}")
+}
+
+/// Sliding sessions (middleware): a session in use is extended to
+/// SESSION_TTL from now, at most once a day, and the cookie with it; so the
+/// home-screen app doesn't ask for a login every month.
+pub async fn keep_session(State(app): State<Arc<App>>, req: axum::extract::Request, next: axum::middleware::Next) -> Response {
+    let tok = cookie(req.headers(), SESSION_COOKIE);
+    let mut resp = next.run(req).await;
+    // A login or logout sets its own cookie.
+    if let Some(tok) = tok.filter(|_| !resp.headers().contains_key(header::SET_COOKIE)) {
+        let t = now();
+        let renewed = app.db.with(|c| {
+            c.execute(
+                "UPDATE session SET expires = ?1 WHERE hash = ?2 AND expires > ?3 AND expires < ?4",
+                params![t + SESSION_TTL, sha256_hex(&tok), t, t + SESSION_TTL - SESSION_RENEW],
+            )
+        });
+        if renewed == Ok(1) {
+            if let Ok(v) = HeaderValue::from_str(&session_cookie(&tok)) {
+                resp.headers_mut().append(header::SET_COOKIE, v);
+            }
+        }
+    }
+    resp
 }
 
 /// Redirects to the login page, coming back to `next` afterwards.

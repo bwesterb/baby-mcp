@@ -279,7 +279,9 @@ Same model as [healthsoft-mcp](https://github.com/bwesterb/healthsoft-mcp)'s, wr
 - **People** log in with passkeys (`webauthn-rs`). `baby-mcp user add NAME
   "Display name"` creates a user and prints a single-use enrollment link
   (30 minutes). A person can enroll several passkeys. Web sessions are random
-  ids in a cookie (`Secure`, `HttpOnly`, `SameSite=Lax`), stored server-side.
+  ids in a cookie (`Secure`, `HttpOnly`, `SameSite=Lax`), stored server-side;
+  one expires 30 days after it was last used (renewed, cookie and all, at
+  most once a day).
 - **Claude** connects through a minimal OAuth 2.1 provider: dynamic client
   registration, redirect URIs restricted to https on claude.ai / claude.com
   or http on localhost; authorization code with PKCE (S256) only; the

@@ -90,6 +90,7 @@ pub fn router(app: Arc<app::App>) -> Router {
         .route("/oauth/authorize", get(auth::authorize).post(auth::authorize_decide))
         .route("/mcp", post(mcp::handle).get(mcp::not_allowed).delete(mcp::not_allowed))
         .fallback(web::not_found)
+        .layer(axum::middleware::from_fn_with_state(app.clone(), auth::keep_session))
         .with_state(app)
 }
 
