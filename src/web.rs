@@ -1185,7 +1185,8 @@ fn change_chart(baby: &en::Baby, weights: &[(i64, f64)], now: i64) -> String {
     }
     let mut pts: Vec<(f64, f64)> = vec![(0.0, 0.0)];
     pts.extend(weights.iter().filter(|(t, _)| *t > birth).map(|(t, g)| ((t - birth) as f64 / 86400.0, 100.0 * (g - bw) / bw)).filter(|(x, _)| *x <= span));
-    let show = (age.ceil() + 3.0).clamp(14.0, span);
+    // At least two weeks, as far as the table goes.
+    let show = (age.ceil() + 3.0).max(14.0).min(span);
     let days: Vec<f64> = (0..=(show * 4.0) as i64).map(|i| i as f64 / 4.0).collect();
     let curves: Vec<Vec<f64>> = days.iter().filter_map(|x| table.at(d, *x)).collect();
     let col = |k: usize| -> Vec<(f64, f64)> { days.iter().zip(&curves).map(|(x, v)| (*x, v[k])).collect() };
@@ -1232,10 +1233,12 @@ fn change_chart(baby: &en::Baby, weights: &[(i64, f64)], now: i64) -> String {
         svg += &format!(r##"<circle cx="{:.1}" cy="{:.1}" r="3.5" fill="#c0503e"><title>day {a:.1}: {v:+.1}%{p}</title></circle>"##, x(*a), y(*v));
     }
     svg += "</svg>";
+    // The bands' legend, when drawn (a table with fewer columns has none).
     let lbl = |k: usize| format!("P{:.0}", table.percentiles[k]);
+    let bands = if n >= 7 { format!("Bands: {}–{} and {}–{}, dashed", lbl(0), lbl(n - 1), lbl(2), lbl(n - 3)) } else { "Dashed".to_string() };
     format!(
-        r#"<div class="card"><h2>📉 Weight change since birth</h2>{svg}<p class="mut">Red: her weighings. Bands: {}–{} and {}–{}, dashed: median, for newborns after {} (Paul et al., Pediatrics 2016, all feeding types; read from the published figure, so approximate, especially in the first two days). A reference, not a diagnosis.</p></div>"#,
-        lbl(0), lbl(n - 1), lbl(2), lbl(n - 3), d.describe()
+        r#"<div class="card"><h2>📉 Weight change since birth</h2>{svg}<p class="mut">Red: her weighings. {bands}: median, for newborns after {} (Paul et al., Pediatrics 2016, all feeding types; read from the published figure, so approximate, especially in the first two days). A reference, not a diagnosis.</p></div>"#,
+        d.describe()
     )
 }
 
@@ -2106,6 +2109,18 @@ mod tests {
 
 #[cfg(test)]
 mod preview {
+    #[test]
+    fn change_chart_with_few_percentiles() {
+        // Two percentile columns pass the parser: the chart draws no bands, and doesn't panic.
+        let clock = crate::time::Clock::new("Europe/Amsterdam").unwrap();
+        let birth = clock.parse("2025-10-31 16:40", 0).unwrap();
+        let table = crate::growth::WeightChange::parse("delivery\tday\tp5\tp95\nvaginal\t0\t0\t0\nvaginal\t9\t-10\t5\ncesarean\t0\t0\t0\ncesarean\t9\t-12\t4\n").unwrap();
+        let baby = crate::entries::Baby { name: "B".into(), birth: Some(birth), birth_weight_g: Some(3900.0), sex: None, growth: None,
+            delivery: Some(crate::growth::Delivery::Cesarean), change: Some(std::sync::Arc::new(table)), aim_feeds_per_day: None, feed_prep_s: 0 };
+        let html = crate::web::change_chart(&baby, &[(birth + 2 * 86400, 3700.0)], birth + 4 * 86400);
+        assert!(html.contains("Dashed: median") && !html.contains("Bands"), "{html}");
+    }
+
     #[test]
     #[ignore]
     fn render_growth_chart() {
