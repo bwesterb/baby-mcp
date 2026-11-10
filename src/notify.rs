@@ -1,13 +1,19 @@
 //! Push notifications: once a minute, work out what is due and push it to
 //! every device of the users who want that kind.
 //!
-//! - `feed_soon`: 15 minutes before the next-feed estimate (the feed tile's);
-//! - `feed_overdue`: 30 minutes after it (not after 3 hours: then nobody is logging);
+//! - `feed_soon`: 15 minutes before it's time to start the next feed (the
+//!   estimate less the preparation time, diaper first: the feed tile's);
+//! - `feed_overdue`: 30 minutes after the estimate (not after 3 hours: then
+//!   nobody is logging);
+//! - `feed_warning`: an NVK warning (close to the longest pause, or too few
+//!   feeds in 24 hours);
+//! - `vitamins`: from 18:00 when one wasn't given that day;
 //! - `attention`: an entry needs the user (🙋) and was left unchanged for 20
-//!   minutes (whoever just made it knows; finished in time, nothing is sent).
+//!   minutes (whoever just made it knows; finished in time, nothing is sent);
+//! - `changes` (off by default): someone else logged, changed or deleted an entry.
 //!
-//! Each (user, kind, key) is sent once; the key is the last feed's time or
-//! the entry and its version.
+//! Each (user, kind, key) is sent once; the key is the last feed's time, the
+//! warning's, the day, or the entry (and its reason or version).
 
 use crate::app::App;
 use crate::push::{self, Outcome, Subscription};
@@ -106,7 +112,7 @@ pub fn due(c: &Connection, clock: &Clock, status: &Status, name: &str, now: i64)
     }
     let give = status.vitamins.as_ref().map(|v| v.to_give()).unwrap_or_default();
     if let (false, Some(remind)) = (give.is_empty(), status.vitamins.as_ref().map(|v| v.remind_at))
-        && now >= remind && now < clock.next_day_start(now) {
+        && now >= remind {
             let what = give.iter().map(|l| format!("vitamin {l}")).collect::<Vec<_>>().join(" and ");
             out.push(Notice {
                 kind: "vitamins",
@@ -118,17 +124,13 @@ pub fn due(c: &Connection, clock: &Clock, status: &Status, name: &str, now: i64)
                 by: None,
             });
         }
-    let mut st = c
-        .prepare(
-            "SELECT entry_id, version, at, text, needs_attention_why FROM entry \
-             WHERE deleted = 0 AND needs_attention_by != 0 AND needs_attention_by & 1 AND changed_at >= ?1 AND changed_at <= ?2 ORDER BY at",
-        )
-        .map_err(|e| e.to_string())?;
-    let rows = st
-        .query_map([now - ATTENTION_QUIET - ATTENTION_WINDOW, now - ATTENTION_QUIET], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?, r.get::<_, String>(3)?, r.get::<_, Option<String>>(4)?)))
-        .map_err(|e| e.to_string())?;
-    for row in rows {
-        let (id, _version, at, text, why) = row.map_err(|e| e.to_string())?;
+    let quiet = crate::entries::query(
+        c,
+        "deleted = 0 AND needs_attention_by & ?1 != 0 AND changed_at >= ?2 AND changed_at <= ?3 ORDER BY at",
+        params![crate::entries::BY_USER, now - ATTENTION_QUIET - ATTENTION_WINDOW, now - ATTENTION_QUIET],
+    )?;
+    for e in quiet {
+        let (id, at, text, why) = (e.entry_id, e.at, e.text, e.attention_why);
         let short: String = text.chars().take(80).collect();
         out.push(Notice {
             kind: "attention",
@@ -206,7 +208,6 @@ pub fn badge(status: &Status, now: i64) -> Vec<String> {
     items
 }
 
-/// The badge for the current state.
 /// The badge items, and the notification groups that still apply: those with
 /// a notice due now, and attention while an entry needs a parent. A shown
 /// notification of any other group is stale (changes and tests are once).
@@ -351,25 +352,26 @@ async fn tick(app: &App, client: &reqwest::Client) -> Result<(), String> {
     let baby = app.baby();
     let jobs: Vec<(i64, Notice)> = app
         .db
-        .with(|c| {
-            let status = crate::status::status(c, &app.clock, &baby, t).map_err(rusqlite::Error::InvalidParameterName)?;
-            let notices = due(c, &app.clock, &status, &baby.name, t).map_err(rusqlite::Error::InvalidParameterName)?;
+        .run(|c| {
+            let err = crate::entries::err;
+            let status = crate::status::status(c, &app.clock, &baby, t)?;
+            let notices = due(c, &app.clock, &status, &baby.name, t)?;
             let users: Vec<i64> = {
-                let mut st = c.prepare("SELECT DISTINCT s.user_id FROM push_subscription s JOIN user u ON u.id = s.user_id WHERE u.role = 'parent'")?;
-                st.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?
+                let mut st = c.prepare("SELECT DISTINCT s.user_id FROM push_subscription s JOIN user u ON u.id = s.user_id WHERE u.role = 'parent'").map_err(err)?;
+                st.query_map([], |r| r.get(0)).map_err(err)?.collect::<rusqlite::Result<_>>().map_err(err)?
             };
             // Per user and group: everything current, and whether any of it is new.
             let mut current: Vec<((i64, &'static str), Vec<Notice>, bool)> = vec![];
             for n in notices {
                 for &u in &users {
-                    if n.by == Some(u) || !wants(c, u, n.kind)? {
+                    if n.by == Some(u) || !wants(c, u, n.kind).map_err(err)? {
                         continue;
                     }
                     // Mark first: never twice, even if delivery fails.
                     let fresh = c.execute(
                         "INSERT OR IGNORE INTO push_sent (user_id, kind, key, at) VALUES (?1, ?2, ?3, ?4)",
                         params![u, n.kind, n.key, t],
-                    )? == 1;
+                    ).map_err(err)? == 1;
                     let k = (u, group(n.kind));
                     match current.iter_mut().find(|x| x.0 == k) {
                         Some(x) => {
@@ -380,11 +382,10 @@ async fn tick(app: &App, client: &reqwest::Client) -> Result<(), String> {
                     }
                 }
             }
-            c.execute("DELETE FROM push_sent WHERE at < ?1", [t - 7 * 86400])?;
+            c.execute("DELETE FROM push_sent WHERE at < ?1", [t - 7 * 86400]).map_err(err)?;
             // A group with something new goes out as one notification with all of it.
             Ok(current.into_iter().filter(|x| x.2).map(|((u, g), ns, _)| (u, merge(g, &baby.name, ns))).collect())
-        })
-        .map_err(|e| e.to_string())?;
+        })?;
     // One failure must not hold back the others (they are marked sent).
     for (u, n) in jobs {
         if let Err(e) = deliver(app, client, u, &n, group(n.kind)).await {

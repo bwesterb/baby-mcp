@@ -452,8 +452,11 @@ Web Push (RFC 8030) with aes128gcm message encryption (RFC 8291) and VAPID
 worker at `/sw.js`; on iOS only from the home-screen app), lists the user's
 devices, sends a test, and has per-user choices (default on):
 
-- **Feed soon**: 15 minutes before the feed tile's next-feed estimate;
-- **Feed overdue**: 30 minutes after it (not after 3 hours: nobody is logging);
+- **Feed soon**: 15 minutes before it's time to start the next feed (the
+  estimate less `feed_prep_minutes`, as on the feed tile);
+- **Feed overdue**: 30 minutes after the estimate (not after 3 hours: nobody
+  is logging);
+- **Feeding minimum**: an NVK warning (see Feeding guidance), once each;
 - **Entries need attention**: an entry marked for the user (🙋) and left
   unchanged for 20 minutes (whoever just made it knows).
 - **Any change** (off by default): when someone else logs, changes or deletes
