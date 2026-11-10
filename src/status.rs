@@ -468,7 +468,7 @@ mod tests {
         db.with(|c| {
             // A weighing and a temperature long ago; then five days of feeds,
             // diapers, vitamins and the sleep side, and a bath.
-            let mut log = |t: i64, f: Value| insert(c, u, &NewEntry { at: t, duration_s: None, text: "x".into(),
+            let log = |t: i64, f: Value| insert(c, u, &NewEntry { at: t, duration_s: None, text: "x".into(),
                 fields: f.as_object().cloned().unwrap(), attention_by: 0, attention_why: None }, now).unwrap();
             log(at("2025-11-01 10:00"), json!({"weight_g": 3700, "temp_c": 36.8}));
             for k in 0..40 {
