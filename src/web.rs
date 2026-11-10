@@ -735,7 +735,7 @@ fn attention_label(user: bool, agent: bool) -> String {
 
 /// The last weighing of `entries`, with how it compares (see `weight_line`).
 fn weight_of(entries: &[en::Entry], baby: &en::Baby) -> Option<(f64, Option<String>)> {
-    weight_line(entries.iter().filter(|e| e.num("weight_g").is_some()).last()?, baby, false)
+    weight_line(entries.iter().rfind(|e| e.num("weight_g").is_some())?, baby, false)
 }
 
 /// A weighing: grams, and its percentile and change since birth (as of the
@@ -1052,8 +1052,11 @@ fn grid_step(max: f64, n: f64) -> f64 {
     step.max(1.0)
 }
 
+/// A series of bars: its name, colour, and value per day.
+type Series<'a> = (&'a str, &'a str, fn(&DayStats) -> f64);
+
 /// Bars per day, stacked by series; `note` goes under the legend.
-fn bars(title: &str, days: &[DayStats], series: &[(&str, &str, fn(&DayStats) -> f64)], unit: &str, projection: Option<f64>, note: &str) -> String {
+fn bars(title: &str, days: &[DayStats], series: &[Series], unit: &str, projection: Option<f64>, note: &str) -> String {
     let (w, h, pad) = (640.0, 180.0, 40.0);
     let data_max = days
         .iter()
@@ -1500,14 +1503,12 @@ pub async fn add_page(State(app): State<Arc<App>>, headers: HeaderMap) -> Respon
         Ok(u) => u,
         Err(r) => return r,
     };
-    let body = format!(
-        r#"<div class="card"><h1>Add</h1>
+    let body = r#"<div class="card"><h1>Add</h1>
 <form method="post" action="/add">
 <p><textarea id="text" name="text" rows="4" required placeholder="What happened? e.g. 60 ml pumped milk and a wet diaper. Mention a time if it wasn't just now."></textarea></p>
 <div class="row"><button class="primary">Save</button></div>
 </form>
-<p class="mut">Saved as you write it. Claude fills in the details later, including the time if you mention one; otherwise it is logged as now.</p></div>"#
-    );
+<p class="mut">Saved as you write it. Claude fills in the details later, including the time if you mention one; otherwise it is logged as now.</p></div>"#.to_string();
     html::render(Page { title: "Add · baby-mcp", body, nav: Some(&user.display_name), refresh: None, viewer: false, footer_extra: String::new() })
 }
 

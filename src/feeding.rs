@@ -165,7 +165,7 @@ pub fn per_kg_days(clock: &Clock, birth: i64, birth_weight: f64, entries: &[Entr
         let (w0, w1) = (interpolated_weight(&weights, start), interpolated_weight(&weights, end));
         // The weight to divide by: the middle of the day, else the last known.
         let kg = interpolated_weight(&weights, start + (end - start) / 2)
-            .unwrap_or_else(|| weights.iter().filter(|w| w.0 <= end).last().map(|w| w.1).unwrap_or(birth_weight))
+            .unwrap_or_else(|| weights.iter().rfind(|w| w.0 <= end).map(|w| w.1).unwrap_or(birth_weight))
             / 1000.0;
         let ml: f64 = day.iter().map(|e| bottle_ml(e)).sum();
         out.push(PerKgDay {
@@ -497,15 +497,13 @@ pub fn for_status(clock: &Clock, baby: &Baby, last_weight: Option<(f64, i64)>, e
     let mut g = guidance(clock, &Inputs { now, birth, birth_weight_g: baby.birth_weight_g, aim_feeds: baby.aim_feeds_per_day, prep_s: baby.feed_prep_s, weight_g: weight, entries });
     // Growth as a check: flag a weight change below P25 for the delivery
     // mode, read at the age of the weighing (not today's).
-    if let Some((w, at)) = last_weight {
-        if let Some((_, p, label)) = baby.change_percentile(w, at) {
-            if p < 25.0 {
+    if let Some((w, at)) = last_weight
+        && let Some((_, p, label)) = baby.change_percentile(w, at)
+            && p < 25.0 {
                 g.growth_check = Some(format!(
                     "Her weight change is at {label} for her delivery mode, below P25: worth discussing with the midwife or consultatiebureau."
                 ));
             }
-        }
-    }
     Some(g)
 }
 

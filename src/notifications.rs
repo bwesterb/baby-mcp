@@ -54,6 +54,8 @@ fn device_label(headers: &HeaderMap) -> String {
     format!("{os}{browser}")
 }
 
+/// A device: id, label, added, last delivered, last error.
+type Device = (i64, String, i64, Option<i64>, Option<String>);
 
 pub async fn page(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
     let user = match require(&app, &headers) {
@@ -64,7 +66,7 @@ pub async fn page(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
         let vapid = crate::push::vapid(c)?;
         let prefs: Vec<bool> = KINDS.iter().map(|(k, _, _)| notify::wants(c, user.id, k)).collect::<rusqlite::Result<_>>()?;
         let mut st = c.prepare("SELECT id, label, created_at, last_ok, last_error FROM push_subscription WHERE user_id = ?1 ORDER BY created_at")?;
-        let devices: Vec<(i64, String, i64, Option<i64>, Option<String>)> =
+        let devices: Vec<Device> =
             st.query_map([user.id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))?.collect::<rusqlite::Result<_>>()?;
         Ok((vapid.public, prefs, devices))
     });

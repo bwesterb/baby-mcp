@@ -438,11 +438,7 @@ fn run_sql(app: &App, q: &str) -> Result<Value, String> {
             _ => Authorization::Deny,
         },
         AuthAction::Select | AuthAction::Function { .. } | AuthAction::Recursive => Authorization::Allow,
-        AuthAction::Pragma { pragma_name, .. }
-            if matches!(pragma_name, "table_info" | "table_xinfo" | "table_list") =>
-        {
-            Authorization::Allow
-        }
+        AuthAction::Pragma { pragma_name: "table_info" | "table_xinfo" | "table_list", .. } => Authorization::Allow,
         _ => Authorization::Deny,
     }))
     .map_err(en::err)?;

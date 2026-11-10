@@ -535,7 +535,7 @@ pub fn stats_of(clock: &Clock, baby: &Baby, all: &[Entry], from: i64, to: i64) -
         let end = clock.next_day_start(start);
         let day: Vec<&Entry> = all.iter().filter(|e| e.at >= start && e.at < end).collect();
         let temps: Vec<f64> = day.iter().filter_map(|e| e.num("temp_c")).collect();
-        let weight = day.iter().filter_map(|e| e.num("weight_g")).last();
+        let weight = day.iter().filter_map(|e| e.num("weight_g")).next_back();
         out.push(DayStats {
             date: clock.day(start),
             totals: totals_from(all.iter().filter(|e| e.at >= start - FEED_LOOKBACK && e.at < end), start),
@@ -544,9 +544,7 @@ pub fn stats_of(clock: &Clock, baby: &Baby, all: &[Entry], from: i64, to: i64) -
             weight_g: weight,
             weight_vs_birth: weight.and_then(|w| weight_vs_birth(w, baby.birth_weight_g)),
             weight_percentile: day
-                .iter()
-                .filter(|e| e.num("weight_g").is_some())
-                .last()
+                .iter().rfind(|e| e.num("weight_g").is_some())
                 .and_then(|e| baby.weight_percentile(e.num("weight_g")?, e.at))
                 .map(|(p, _)| crate::growth::label(p)),
             longest_night_gap_min: night_stretch(clock, &eps, start).map(|s| (s + 30) / 60),

@@ -26,6 +26,10 @@ toml = "1.2.0"
 uuid = { version = "1.29.0", features = ["v4", "serde"] }
 webauthn-rs = { version = "0.6", features = ["conditional-ui"] }
 
+[lints.clippy]
+# Handlers return an axum Response as the error (a redirect, an error page).
+result_large_err = "allow"
+
 [dev-dependencies]
 # Tests count the statements a status takes.
 rusqlite = { version = "0.41.1", features = ["bundled", "hooks", "trace"] }

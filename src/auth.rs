@@ -215,11 +215,10 @@ pub async fn keep_session(State(app): State<Arc<App>>, req: axum::extract::Reque
                 params![t + SESSION_TTL, sha256_hex(&tok), t, t + SESSION_TTL - SESSION_RENEW],
             )
         });
-        if renewed == Ok(1) {
-            if let Ok(v) = HeaderValue::from_str(&session_cookie(&tok)) {
+        if renewed == Ok(1)
+            && let Ok(v) = HeaderValue::from_str(&session_cookie(&tok)) {
                 resp.headers_mut().append(header::SET_COOKIE, v);
             }
-        }
     }
     resp
 }
@@ -856,7 +855,7 @@ pub fn verify_access(app: &App, tok: &str) -> Result<i64, &'static str> {
     let payload = msg.strip_prefix("bm1.").ok_or("malformed token")?;
     let key = app.db.with(|c| signing_key(c)).map_err(|_| "server error")?;
     let expect = mac(&key, msg);
-    if expect.len() != sig.len() || !bool::from(subtle_eq(expect.as_bytes(), sig.as_bytes())) {
+    if expect.len() != sig.len() || !subtle_eq(expect.as_bytes(), sig.as_bytes()) {
         return Err("bad signature");
     }
     let v: Value = B64

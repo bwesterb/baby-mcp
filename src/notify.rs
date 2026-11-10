@@ -105,8 +105,8 @@ pub fn due(c: &Connection, clock: &Clock, status: &Status, name: &str, now: i64)
         });
     }
     let give = status.vitamins.as_ref().map(|v| v.to_give()).unwrap_or_default();
-    if let (false, Some(remind)) = (give.is_empty(), status.vitamins.as_ref().map(|v| v.remind_at)) {
-        if now >= remind && now < clock.next_day_start(now) {
+    if let (false, Some(remind)) = (give.is_empty(), status.vitamins.as_ref().map(|v| v.remind_at))
+        && now >= remind && now < clock.next_day_start(now) {
             let what = give.iter().map(|l| format!("vitamin {l}")).collect::<Vec<_>>().join(" and ");
             out.push(Notice {
                 kind: "vitamins",
@@ -118,7 +118,6 @@ pub fn due(c: &Connection, clock: &Clock, status: &Status, name: &str, now: i64)
                 by: None,
             });
         }
-    }
     let mut st = c
         .prepare(
             "SELECT entry_id, version, at, text, needs_attention_why FROM entry \

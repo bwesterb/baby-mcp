@@ -441,7 +441,8 @@ async fn push_notifications() {
     use std::sync::Mutex;
     let t = setup();
     // A fake push service: records requests; /gone answers 410.
-    let seen: Arc<Mutex<Vec<(axum::http::HeaderMap, Vec<u8>)>>> = Arc::default();
+    type Seen = Vec<(axum::http::HeaderMap, Vec<u8>)>;
+    let seen: Arc<Mutex<Seen>> = Arc::default();
     let s2 = seen.clone();
     let fake = axum::Router::new()
         .route("/ok", axum::routing::post(move |h: axum::http::HeaderMap, b: axum::body::Bytes| {

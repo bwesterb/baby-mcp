@@ -124,6 +124,7 @@ pub fn topic(group: &str) -> String {
 }
 
 /// Sends one push carrying `payload` (encrypted) to a subscription.
+#[allow(clippy::too_many_arguments)]
 pub async fn send(client: &reqwest::Client, v: &Vapid, s: &Subscription, payload: &[u8], ttl: u32, topic: &str, sub: &str, now: i64) -> Outcome {
     let (Ok(p256dh), Ok(auth)) = (B64.decode(s.p256dh.trim_end_matches('=')), B64.decode(s.auth.trim_end_matches('='))) else {
         return Outcome::Gone;

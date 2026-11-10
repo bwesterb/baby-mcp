@@ -75,11 +75,10 @@ pub enum Cmd {
 
 /// Refuse to run as root: SQLite would create files the service cannot open.
 fn not_root() -> Result<(), String> {
-    if let Ok(s) = std::fs::read_to_string("/proc/self/status") {
-        if s.lines().any(|l| l.starts_with("Uid:") && l.split_whitespace().nth(2) == Some("0")) {
+    if let Ok(s) = std::fs::read_to_string("/proc/self/status")
+        && s.lines().any(|l| l.starts_with("Uid:") && l.split_whitespace().nth(2) == Some("0")) {
             return Err("run admin commands as the service user, e.g. `sudo -u baby-mcp baby-mcp ...`".into());
         }
-    }
     Ok(())
 }
 
