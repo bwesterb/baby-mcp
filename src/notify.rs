@@ -147,12 +147,8 @@ pub fn due(c: &Connection, clock: &Clock, status: &Status, name: &str, now: i64)
     }
     // Any change: every new version in the last 15 minutes, for the others.
     let names = crate::entries::user_names(c)?;
-    let ids: Vec<i64> = {
-        let mut st = c.prepare("SELECT entry_id FROM entry WHERE changed_at >= ?1 ORDER BY changed_at").map_err(|e| e.to_string())?;
-        st.query_map([now - ATTENTION_WINDOW], |r| r.get(0)).map_err(|e| e.to_string())?.collect::<rusqlite::Result<_>>().map_err(|e| e.to_string())?
-    };
-    for id in ids {
-        let e = crate::entries::get(c, id)?;
+    for e in crate::entries::query(c, "changed_at >= ?1 ORDER BY changed_at", [now - ATTENTION_WINDOW])? {
+        let id = e.entry_id;
         let who = names.get(&e.changed_by).cloned().unwrap_or_else(|| "someone".into());
         let verb = if e.deleted { "deleted" } else if e.version == 1 { "logged" } else { "changed" };
         let what = crate::web::entry_summary(&e);

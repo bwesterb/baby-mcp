@@ -5,7 +5,7 @@
 
 use crate::entries::{
     self as en, Baby, Entry, Totals, BY_AGENT, BY_USER, ESTIMATE_BACK, FEED_SQL, TOP_UP_WITHIN, attention, feed_episodes,
-    feed_gap, last_where, list, totals_between, user_names, view,
+    feed_gap, last_where, list, user_names, view,
 };
 use crate::feeding::Guidance;
 use crate::time::{Clock, fmt_dur};
@@ -312,30 +312,43 @@ pub fn wet_warning(clock: &Clock, baby: &Baby, day: &[Entry], now: i64) -> Optio
 /// is shown (she may not be down yet).
 const PUT_DOWN_WITHIN: i64 = 2 * 3600;
 
+/// How far back `status` reads the log in one go (from the start of today):
+/// the feeding guidance's three full days and more. Older "last" entries
+/// (a weighing a week ago) are looked up on their own.
+const WINDOW_DAYS: i64 = 4;
+
 pub fn status(c: &Connection, clock: &Clock, baby: &Baby, now: i64) -> Result<Status, String> {
-    let last_weight = last_where(c, "weight_g IS NOT NULL")?;
-    let recent = list(c, now - ESTIMATE_BACK, now + 1, false)?;
-    let day = list(c, now - 24 * 3600, now + 1, false)?;
+    // One read of the recent log; the parts below slice it.
+    let start = clock.day_start(now) - WINDOW_DAYS * 86400;
+    let window = list(c, start, i64::MAX, false)?;
+    let upto_now = &window[..window.partition_point(|e| e.at <= now)];
+    let since = |from: i64| &upto_now[upto_now.partition_point(|e| e.at < from)..];
+    // Totals over [from, to) as `totals_between` (a feed just before `from`
+    // only tells whether the first ones are top-ups).
+    let totals = |from: i64, to: i64| en::totals_from(since(from - TOP_UP_WITHIN).iter().filter(|e| e.at < to), from);
+    // The last matching entry: from the window, or else the database.
+    let last = |pred: &dyn Fn(&Entry) -> bool, cond: &str| match window.iter().rev().find(|e| pred(e)) {
+        Some(e) => Ok(Some(e.clone())),
+        None => last_where(c, cond),
+    };
+    let has = |k: &'static str| move |e: &Entry| e.fields.get(k).is_some_and(|v| !v.is_null());
+
+    let last_weight = last(&has("weight_g"), "weight_g IS NOT NULL")?;
     let regained = match (baby.birth_weight_g, baby.birth) {
         // Back at birth weight: the first weighing at or above it after birth.
-        (Some(bw), Some(b)) => Some(
-            en::query(c, "deleted = 0 AND weight_g IS NOT NULL AND at > ?1 ORDER BY at", [b])?
-                .into_iter()
-                .find(|e| e.num("weight_g").is_some_and(|w| w >= bw))
-                .map(|e| e.at),
-        ),
+        (Some(bw), Some(b)) => Some(en::query(c, "deleted = 0 AND weight_g >= ?2 AND at > ?1 ORDER BY at LIMIT 1", rusqlite::params![b, bw])?.pop().map(|e| e.at)),
         _ => None,
     };
-    let guidance = crate::feeding::for_status(c, clock, baby, last_weight.as_ref().and_then(|e| Some((e.num("weight_g")?, e.at))), now)?;
+    let guidance = crate::feeding::for_status(clock, baby, last_weight.as_ref().and_then(|e| Some((e.num("weight_g")?, e.at))), upto_now, now);
 
-    let last = last_where(c, "bath IN ('with_soap', 'without_soap')")?;
-    let due_day = clock.day_start(last.as_ref().map(|e| e.at + en::BATH_EVERY).unwrap_or(now));
+    let last_bath = last(&|e| matches!(e.str("bath"), Some("with_soap" | "without_soap")), "bath IN ('with_soap', 'without_soap')")?;
+    let due_day = clock.day_start(last_bath.as_ref().map(|e| e.at + en::BATH_EVERY).unwrap_or(now));
     let bath = Bath {
-        due_at: if last.is_some() { due_day + en::BATH_REMIND_HOUR * 3600 } else { now },
+        due_at: if last_bath.is_some() { due_day + en::BATH_REMIND_HOUR * 3600 } else { now },
         day_end: clock.next_day_start(due_day),
         due_day,
-        last,
-        last_any: last_where(c, "bath IS NOT NULL")?,
+        last: last_bath,
+        last_any: last(&has("bath"), "bath IS NOT NULL")?,
     };
 
     let vitamins = match baby.birth {
@@ -343,12 +356,12 @@ pub fn status(c: &Connection, clock: &Clock, baby: &Baby, now: i64) -> Result<St
         Some(b) => {
             let today = clock.day_start(now);
             let from = en::day_plus(clock, b, jiff::Span::new().days(7));
-            let formula_yesterday = totals_between(c, clock.day_start(today - 3600), today)?.formula_ml;
+            let formula_yesterday = totals(clock.day_start(today - 3600), today).formula_ml;
             let mut vs = vec![];
             for (key, field, label) in en::VITAMINS {
                 let until = en::day_plus(clock, b, if key == "k" { jiff::Span::new().weeks(12) } else { jiff::Span::new().years(4) });
                 let active = today >= from && today < until;
-                let last = last_where(c, &format!("{field} = 1"))?;
+                let last = last(&|e| e.is(field), &format!("{field} = 1"))?;
                 vs.push(Vitamin {
                     key,
                     label,
@@ -365,11 +378,19 @@ pub fn status(c: &Connection, clock: &Clock, baby: &Baby, now: i64) -> Result<St
     };
 
     let mut sleep = None;
-    let last_side = last_where(c, "sleep_facing IS NOT NULL")?;
+    let last_side = last(&has("sleep_facing"), "sleep_facing IS NOT NULL")?;
     if let Some((e, side)) = last_side.as_ref().and_then(|e| Some((e, e.str("sleep_facing")?))) {
         let other = |s: &str| if s == "left" { "right" } else { "left" }.to_string();
         // Feeds since (a top-up isn't a new feed: no new put-down).
-        let since: Vec<(i64, i64)> = feed_episodes(&list(c, e.at - TOP_UP_WITHIN, now + 1, false)?).into_iter().filter(|f| f.0 > e.at).collect();
+        let from = e.at - TOP_UP_WITHIN;
+        let older;
+        let es = if from >= start {
+            since(from)
+        } else {
+            older = list(c, from, now + 1, false)?;
+            &older[..]
+        };
+        let since: Vec<(i64, i64)> = feed_episodes(es).into_iter().filter(|f| f.0 > e.at).collect();
         let current = if since.len().is_multiple_of(2) { side.to_string() } else { other(side) };
         sleep = Some(SleepFacing {
             last: side.to_string(),
@@ -383,16 +404,16 @@ pub fn status(c: &Connection, clock: &Clock, baby: &Baby, now: i64) -> Result<St
 
     Ok(Status {
         now,
-        last_feed: last_where(c, FEED_SQL)?,
-        next_feed: estimate_feed(&feed_episodes(&recent), guidance.as_ref().map(|g| g.max_gap)),
+        last_feed: last(&Entry::is_feed, FEED_SQL)?,
+        next_feed: estimate_feed(&feed_episodes(since(now - ESTIMATE_BACK)), guidance.as_ref().map(|g| g.max_gap)),
         prep_s: baby.feed_prep_s,
-        last_wet: last_where(c, "wet = 1")?,
-        last_dirty: last_where(c, "dirty = 1")?,
-        last_temp: last_where(c, "temp_c IS NOT NULL")?,
-        wet_warning: wet_warning(clock, baby, &day, now),
+        last_wet: last(&|e| e.is("wet"), "wet = 1")?,
+        last_dirty: last(&|e| e.is("dirty"), "dirty = 1")?,
+        last_temp: last(&has("temp_c"), "temp_c IS NOT NULL")?,
+        wet_warning: wet_warning(clock, baby, since(now - 24 * 3600), now),
         last_weight,
-        today: totals_between(c, clock.day_start(now), now + 1)?,
-        last_24h: totals_between(c, now - 24 * 3600, now + 1)?,
+        today: totals(clock.day_start(now), now + 1),
+        last_24h: totals(now - 24 * 3600, now + 1),
         attention: attention(c, BY_USER | BY_AGENT)?,
         regained,
         guidance,
@@ -424,4 +445,49 @@ pub fn vitamins(clock: &Clock, from: &str, remind_at: i64, k: (bool, bool), d: (
         key, label, active, given_today, until: clock.date_start(until).unwrap() + 86400, last: None, not_needed: false,
     };
     Vitamins { from: clock.date_start(from).unwrap(), remind_at, formula_yesterday: 0.0, k: v("k", "K", k, "2026-01-22"), d: v("d", "D", d, "2029-10-30") }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::entries::{NewEntry, insert};
+    use serde_json::json;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// A status reads the recent log once: a few statements, not one per part.
+    #[test]
+    fn few_queries() {
+        let (_d, db, u) = crate::entries::tests::setup();
+        let clock = Clock::new("Europe/Amsterdam").unwrap();
+        let at = |s: &str| clock.parse(s, 0).unwrap();
+        let now = at("2025-11-10 12:00");
+        let baby = Baby { name: "B".into(), birth: Some(at("2025-10-31 16:40")), birth_weight_g: Some(3900.0), sex: None, growth: None,
+                          delivery: None, change: None, aim_feeds_per_day: Some(7.0), feed_prep_s: 900 };
+        let n = Arc::new(AtomicUsize::new(0));
+        db.with(|c| {
+            // A weighing and a temperature long ago; then five days of feeds,
+            // diapers, vitamins and the sleep side, and a bath.
+            let mut log = |t: i64, f: Value| insert(c, u, &NewEntry { at: t, duration_s: None, text: "x".into(),
+                fields: f.as_object().cloned().unwrap(), attention_by: 0, attention_why: None }, now).unwrap();
+            log(at("2025-11-01 10:00"), json!({"weight_g": 3700, "temp_c": 36.8}));
+            for k in 0..40 {
+                let t = at("2025-11-05 08:00") + k * 3 * 3600;
+                if t < now {
+                    log(t, json!({"bottle_formula_ml": 70, "wet": true, "dirty": k % 3 == 0, "sleep_facing": "left", "vitamin_d": k % 8 == 0, "vitamin_k": k % 8 == 0}));
+                }
+            }
+            log(at("2025-11-08 19:00"), json!({"bath": "with_soap"}));
+            let counter = n.clone();
+            c.trace_v2(rusqlite::trace::TraceEventCodes::SQLITE_TRACE_STMT, Some(move |_: rusqlite::trace::TraceEvent<'_>| {
+                counter.fetch_add(1, Ordering::Relaxed);
+            }))?;
+            let s = status(c, &clock, &baby, now).unwrap();
+            assert!(s.next_feed.is_some() && s.vitamins.is_some() && s.sleep.is_some() && s.last_temp.is_some());
+            Ok(())
+        }).unwrap();
+        // The window, attention, names, birth weight regained, and the last
+        // weighing and temperature (older than the window).
+        assert_eq!(n.load(Ordering::Relaxed), 6);
+    }
 }

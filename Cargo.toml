@@ -27,5 +27,7 @@ uuid = { version = "1.29.0", features = ["v4", "serde"] }
 webauthn-rs = "0.6"
 
 [dev-dependencies]
+# Tests count the statements a status takes.
+rusqlite = { version = "0.41.1", features = ["bundled", "hooks", "trace"] }
 tempfile = "3.27.0"
 tower = { version = "0.5", features = ["util"] }

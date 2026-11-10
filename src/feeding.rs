@@ -489,13 +489,12 @@ pub fn warnings(clock: &Clock, min: &Minimum, aim: Option<f64>, feeds: &[i64], b
 
 /// Feeding guidance for the status, or None without birth and weight.
 /// `last_weight` is the last weighing: grams and when.
-pub fn for_status(c: &rusqlite::Connection, clock: &Clock, baby: &Baby, last_weight: Option<(f64, i64)>, now: i64) -> Result<Option<Guidance>, String> {
+/// `entries`: from at least four days before the start of today, up to now.
+pub fn for_status(clock: &Clock, baby: &Baby, last_weight: Option<(f64, i64)>, entries: &[Entry], now: i64) -> Option<Guidance> {
     let (Some(birth), Some(weight)) = (baby.birth, last_weight.map(|w| w.0).or(baby.birth_weight_g)) else {
-        return Ok(None);
+        return None;
     };
-    let from = clock.day_start(now) - 4 * 86400;
-    let entries = crate::entries::list(c, from, now + 1, false)?;
-    let mut g = guidance(clock, &Inputs { now, birth, birth_weight_g: baby.birth_weight_g, aim_feeds: baby.aim_feeds_per_day, prep_s: baby.feed_prep_s, weight_g: weight, entries: &entries });
+    let mut g = guidance(clock, &Inputs { now, birth, birth_weight_g: baby.birth_weight_g, aim_feeds: baby.aim_feeds_per_day, prep_s: baby.feed_prep_s, weight_g: weight, entries });
     // Growth as a check: flag a weight change below P25 for the delivery
     // mode, read at the age of the weighing (not today's).
     if let Some((w, at)) = last_weight {
@@ -507,7 +506,7 @@ pub fn for_status(c: &rusqlite::Connection, clock: &Clock, baby: &Baby, last_wei
             }
         }
     }
-    Ok(Some(g))
+    Some(g)
 }
 
 #[cfg(test)]
