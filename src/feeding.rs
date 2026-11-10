@@ -232,7 +232,7 @@ pub fn guidance(clock: &Clock, i: &Inputs) -> Guidance {
     let dol = day_of_life(clock, i.birth, i.now);
     let kg = i.weight_g / 1000.0;
 
-    // Feeds as episodes: a top-up within 1h30 counts with its feed.
+    // Feeds as episodes: a top-up within 1h30 counts with its feed (up to 2 h).
     let eps = crate::entries::feed_episodes(i.entries.iter().filter(|e| e.at <= i.now));
     // Feeds per day: median over the last three full local days since birth.
     let today = clock.day_start(i.now);
@@ -587,6 +587,11 @@ mod tests {
         let eps = crate::entries::feed_episodes(&es);
         assert_eq!(eps.len(), 8);
         assert_eq!(*eps.last().unwrap(), (at("2025-11-07 23:00"), at("2025-11-08 01:00")));
+        // Cluster feeding every 80 minutes for 8 hours: not one feed, but one
+        // every time the feed so far would run past 2 hours (0:00, 2:40, 5:20, 8:00).
+        let cluster: Vec<Entry> = (0..7).map(|k| entry(at("2025-11-09 10:00") + k * 80 * 60, json!({"bottle_formula_ml": 40}))).collect();
+        assert_eq!(crate::entries::feed_episodes(&cluster).len(), 4);
+        assert_eq!(crate::entries::totals(&cluster).feeds, 4);
         assert_eq!(crate::entries::totals(&es).feeds, 8, "top-ups aren't feeds of their own");
         // The day from midnight: the top-ups at 00:30 and 01:00 belong to the
         // 23:00 feed of the day before.

@@ -384,6 +384,10 @@ Later: length and head circumference (fields and WHO tables), once measured.
 
 ## Feeding guidance
 
+Feeds are counted as episodes: a feed entry within 1h30 of the previous one
+is a top-up of the same feed, as long as that feed started at most 2 hours
+before (so cluster feeding counts as several feeds).
+
 `feeding.rs` gives a guide for how much and when, from rules of thumb (no
 official guideline; Dutch hospital and kraamzorg information): in the first
 week about 10 ml × day of life per feed (day 1 = the birth day, as the

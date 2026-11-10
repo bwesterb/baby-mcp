@@ -325,7 +325,7 @@ pub fn status(c: &Connection, clock: &Clock, baby: &Baby, now: i64) -> Result<St
     let since = |from: i64| &upto_now[upto_now.partition_point(|e| e.at < from)..];
     // Totals over [from, to) as `totals_between` (a feed just before `from`
     // only tells whether the first ones are top-ups).
-    let totals = |from: i64, to: i64| en::totals_from(since(from - TOP_UP_WITHIN).iter().filter(|e| e.at < to), from);
+    let totals = |from: i64, to: i64| en::totals_from(since(from - en::FEED_LOOKBACK).iter().filter(|e| e.at < to), from);
     // The last matching entry: from the window, or else the database.
     let last = |pred: &dyn Fn(&Entry) -> bool, cond: &str| match window.iter().rev().find(|e| pred(e)) {
         Some(e) => Ok(Some(e.clone())),
@@ -382,7 +382,7 @@ pub fn status(c: &Connection, clock: &Clock, baby: &Baby, now: i64) -> Result<St
     if let Some((e, side)) = last_side.as_ref().and_then(|e| Some((e, e.str("sleep_facing")?))) {
         let other = |s: &str| if s == "left" { "right" } else { "left" }.to_string();
         // Feeds since (a top-up isn't a new feed: no new put-down).
-        let from = e.at - TOP_UP_WITHIN;
+        let from = e.at - en::FEED_LOOKBACK;
         let older;
         let es = if from >= start {
             since(from)

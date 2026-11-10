@@ -199,7 +199,7 @@ pub fn nearby(c: &Connection, at: i64, window: i64, groups: &[Group]) -> Result<
 /// Totals of the entries in [from, to), with a top-up of a feed just before
 /// `from` counted with that feed.
 pub fn totals_between(c: &Connection, from: i64, to: i64) -> Result<Totals, String> {
-    Ok(totals_from(&list(c, from - TOP_UP_WITHIN, to, false)?, from))
+    Ok(totals_from(&list(c, from - FEED_LOOKBACK, to, false)?, from))
 }
 
 pub fn last_where(c: &Connection, cond: &str) -> Result<Option<Entry>, String> {
@@ -311,18 +311,19 @@ pub fn totals<'a>(entries: impl IntoIterator<Item = &'a Entry>) -> Totals {
     totals_from(entries, i64::MIN)
 }
 
-/// Totals of the entries from `from`; the earlier ones (up to TOP_UP_WITHIN
+/// Totals of the entries from `from`; the earlier ones (up to FEED_LOOKBACK
 /// before) only tell whether the first feeds are top-ups.
 pub fn totals_from<'a>(entries: impl IntoIterator<Item = &'a Entry>, from: i64) -> Totals {
     let mut t = Totals::default();
-    let mut last_feed: Option<i64> = None;
+    // The feed so far: its start and last entry.
+    let mut feed: Option<(i64, i64)> = None;
     for e in entries {
         if e.deleted {
             continue;
         }
-        let new_feed = e.is_feed() && last_feed.is_none_or(|l| e.at - l > TOP_UP_WITHIN);
+        let new_feed = e.is_feed() && !feed.is_some_and(|f| is_top_up(f, e.at));
         if e.is_feed() {
-            last_feed = Some(e.at);
+            feed = Some(if new_feed { (e.at, e.at) } else { (feed.map_or(e.at, |f| f.0), e.at) });
         }
         if e.at < from {
             continue;
@@ -414,16 +415,27 @@ pub(crate) fn weight_vs_birth(w: f64, birth: Option<f64>) -> Option<String> {
 }
 
 /// A feed entry at most this long after the previous one is a top-up: part of
-/// the same feed.
+/// the same feed, as long as that feed started at most FEED_SPAN_MAX before.
 pub const TOP_UP_WITHIN: i64 = 90 * 60;
+/// The longest one feed lasts, top-ups included: frequent feeds (cluster
+/// feeding) are separate feeds after this, not one ever longer feed.
+pub const FEED_SPAN_MAX: i64 = 2 * 3600;
+/// How far before a range to look to tell whether its first feeds are top-ups.
+pub const FEED_LOOKBACK: i64 = FEED_SPAN_MAX;
+
+/// Whether a feed entry at `at` tops up the feed `(start, last entry)`.
+pub fn is_top_up(feed: (i64, i64), at: i64) -> bool {
+    at - feed.1 <= TOP_UP_WITHIN && at - feed.0 <= FEED_SPAN_MAX
+}
 
 /// Feeds as episodes (start, end): feed entries within TOP_UP_WITHIN of the
-/// previous one are top-ups of the same feed. Entries oldest first.
+/// previous one (and FEED_SPAN_MAX of the start) are top-ups of the same
+/// feed. Entries oldest first.
 pub fn feed_episodes<'a>(es: impl IntoIterator<Item = &'a Entry>) -> Vec<(i64, i64)> {
     let mut out: Vec<(i64, i64)> = vec![];
     for e in es.into_iter().filter(|e| e.is_feed() && !e.deleted) {
         match out.last_mut() {
-            Some(last) if e.at - last.1 <= TOP_UP_WITHIN => last.1 = e.at,
+            Some(last) if is_top_up(*last, e.at) => last.1 = e.at,
             _ => out.push((e.at, e.at)),
         }
     }
@@ -490,7 +502,7 @@ pub struct DayStats {
 
 /// Per-day statistics for the local days from `from` (a day start) up to `to`.
 pub fn stats(c: &Connection, clock: &Clock, baby: &Baby, from: i64, to: i64) -> Result<Vec<DayStats>, String> {
-    let all = list(c, from - TOP_UP_WITHIN, to, false)?;
+    let all = list(c, from - FEED_LOOKBACK, to, false)?;
     let mut out = vec![];
     let mut start = clock.day_start(from);
     while start < to {
@@ -500,7 +512,7 @@ pub fn stats(c: &Connection, clock: &Clock, baby: &Baby, from: i64, to: i64) -> 
         let weight = day.iter().filter_map(|e| e.num("weight_g")).last();
         out.push(DayStats {
             date: clock.day(start),
-            totals: totals_from(all.iter().filter(|e| e.at >= start - TOP_UP_WITHIN && e.at < end), start),
+            totals: totals_from(all.iter().filter(|e| e.at >= start - FEED_LOOKBACK && e.at < end), start),
             temp_min_c: temps.iter().copied().reduce(f64::min),
             temp_max_c: temps.iter().copied().reduce(f64::max),
             weight_g: weight,
