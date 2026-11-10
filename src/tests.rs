@@ -362,6 +362,11 @@ async fn web_pages() {
     assert!(part.body.starts_with(r#"<div class="card">"#) && part.body.contains("day 3 of life") && !part.body.contains("<html"), "{}", part.body);
     let tl = send(&t, get(&format!("/timeline?date={day3}&z=3")).header(header::COOKIE, &t.cookie).body(Body::empty()).unwrap()).await;
     assert!(tl.body.starts_with("<svg x=") && tl.body.contains(&format!(r#"data-day="{day3}""#)), "{}", tl.body);
+    // At the week zoom: the week (of life) below the timeline, days zoom in.
+    let wk = send(&t, get(&format!("/log?date={day3}&z=3")).header(header::COOKIE, &t.cookie).body(Body::empty()).unwrap()).await;
+    assert!(wk.body.contains("<h2>Week 1") && wk.body.contains("day 1–7 of life") && wk.body.contains(&format!(r#"data-day="{day3}" data-zoom="2""#)), "{}", wk.body);
+    let r = send(&t, get("/").header(header::COOKIE, format!("{}; tlz2=3", t.cookie)).body(Body::empty()).unwrap()).await;
+    assert!(r.body.contains(r#"<div class="now-only" hidden>"#) && r.body.contains("<h2>Week ") && r.body.contains(r#"data-week-z="3""#), "week zoom: the week instead of today");
     let r = send(&t, get("/day?date=2099-01-01").header(header::COOKIE, &t.cookie).body(Body::empty()).unwrap()).await;
     assert_eq!(r.location(), "/", "future day should go to today");
 }

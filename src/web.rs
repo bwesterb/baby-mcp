@@ -303,7 +303,7 @@ fn timeline(clock: &crate::time::Clock, tr: &Track, days: &str, now: i64, focus:
     let list: Vec<String> = tl_days(clock, tr, now).iter().map(|(a, _)| format!("{}:{a}", clock.day(*a))).collect();
     let pxh: Vec<String> = TL_ZOOM.iter().map(|z| z.pxh.to_string()).collect();
     format!(
-        r#"<div class="card timeline"><div class="tl-zoom"><button type="button" data-zoom="-1" aria-label="Zoom out" title="Zoom out">−</button><button type="button" data-zoom="1" aria-label="Zoom in" title="Zoom in">+</button></div><div class="tl-scroll" id="tl" data-from="{}" data-to="{}" data-now="{now}" data-today="{}" data-at="{TL_NOW_AT}" data-z="{}" data-pxh="{}" data-pad="{TL_PAD}" data-days="{}" data-focus="{}"><svg class="tl" width="{:.0}" height="{}" role="img" aria-label="Timeline: feeds, diapers and the rest, by day">{days}</svg></div></div>"#,
+        r#"<div class="card timeline"><div class="tl-zoom"><button type="button" data-zoom="-1" aria-label="Zoom out" title="Zoom out">−</button><button type="button" data-zoom="1" aria-label="Zoom in" title="Zoom in">+</button></div><div class="tl-scroll" id="tl" data-from="{}" data-to="{}" data-now="{now}" data-today="{}" data-at="{TL_NOW_AT}" data-z="{}" data-pxh="{}" data-pad="{TL_PAD}" data-week-z="{TL_WEEK}" data-days="{}" data-focus="{}"><svg class="tl" width="{:.0}" height="{}" role="img" aria-label="Timeline: feeds, diapers and the rest, by day">{days}</svg></div></div>"#,
         tr.from,
         tr.to,
         clock.day(now),
@@ -819,7 +819,8 @@ pub async fn status(State(app): State<Arc<App>>, headers: HeaderMap, Query(q): Q
             };
             let entries = en::list(c, a - en::ESTIMATE_BACK, t + 1, false)?;
             let days = tl_render(clock, &tr, &entries, &s, t, a, b);
-            let log = daylog(&app, c, day.unwrap_or(today_start), t, &s)?;
+            // At the week zoom: the week (of the day in view) instead.
+            let log = if z == TL_WEEK { weeklog(&app, c, &tr, day.unwrap_or(today_start), t)? } else { daylog(&app, c, day.unwrap_or(today_start), t, &s)? };
             Ok::<_, String>((s, tr, days, log))
         })())
     });
@@ -888,9 +889,93 @@ pub async fn status(State(app): State<Arc<App>>, headers: HeaderMap, Query(q): Q
         r#"<div class="head"><a href="/?day={0}" data-day="{0}">{prev}</a><h2>Today</h2><span class="next-none" aria-hidden="true">{prev}</span></div>"#,
         clock.day(yesterday)
     );
-    body += &format!(r#"<div class="now-only"{}>{}</div>"#, if day.is_some() { " hidden" } else { "" }, whats_next(&head, tiles));
-    body += &format!(r#"<div id="daylog" data-day="{}">{log}</div>"#, clock.day(day.unwrap_or(today_start)));
+    // At the week zoom the week is shown instead (keyed by its first day).
+    let week = tr.z == TL_WEEK;
+    let shown = if week { week_of(clock, &tr, day.unwrap_or(today_start)).1 } else { day.unwrap_or(today_start) };
+    body += &format!(r#"<div class="now-only"{}>{}</div>"#, if day.is_some() || week { " hidden" } else { "" }, whats_next(&head, tiles));
+    body += &format!(r#"<div id="daylog" data-day="{}">{log}</div>"#, clock.day(shown));
     html::render(Page { title: "Status · baby-mcp", body, nav: Some(&user.display_name), refresh: Some(60), viewer: false, footer_extra: String::new() })
+}
+
+/// The start of the day `n` days after the day of `t`.
+fn add_days(clock: &crate::time::Clock, t: i64, n: i64) -> i64 {
+    let d = clock.zoned(t).date().checked_add(jiff::Span::new().days(n)).expect("date in range");
+    clock.date_start(&d.to_string()).expect("valid date")
+}
+
+/// The week (of life: from the track's first day, in sevens) a day is in:
+/// its number (from 1) and its first day.
+fn week_of(clock: &crate::time::Clock, tr: &Track, day: i64) -> (i64, i64) {
+    let idx = ((clock.day_start(day) - tr.from) as f64 / 86400.0).round() as i64;
+    let w = idx.max(0) / 7;
+    (w + 1, add_days(clock, tr.from, 7 * w))
+}
+
+/// The week below the timeline at the week zoom: the averages per day over
+/// its complete days, the weight change, and a row per day (a day's link
+/// zooms in on it: `data-zoom`).
+fn weeklog(app: &App, c: &rusqlite::Connection, tr: &Track, day: i64, now: i64) -> Result<String, String> {
+    let clock = &app.clock;
+    let today = clock.day_start(now);
+    let (n, start) = week_of(clock, tr, day);
+    let end = add_days(clock, start, 7);
+    let link = |d: i64, text: &str| {
+        let date = clock.day(d);
+        let href = if d >= today { "/".to_string() } else { format!("/?day={date}") };
+        format!(r#"<a href="{href}" data-day="{date}">{text}</a>"#)
+    };
+    let prev_text = format!("← week {}", n - 1);
+    let prev = if n > 1 { link(add_days(clock, start, -7), &prev_text) } else { format!(r#"<span class="next-none" aria-hidden="true">{prev_text}</span>"#) };
+    let next_text = format!("week {} →", n + 1);
+    let next = if end <= today { link(end, &next_text) } else { format!(r#"<span class="next-none" aria-hidden="true">{next_text}</span>"#) };
+    let last_day = add_days(clock, start, 6);
+    let span = format!("{} – {}", clock.zoned(start).strftime("%a %-d %b"), clock.zoned(last_day).strftime("%a %-d %b"));
+    let life = app.baby().birth.map(|b| {
+        let d0 = (start - clock.day_start(b)) / 86400 + 1;
+        format!(" · day {}–{} of life", d0, d0 + 6)
+    }).unwrap_or_default();
+    let title = if start <= today && today < end { format!("Week {n} (this week)") } else { format!("Week {n}") };
+    let head = format!(r#"<div class="head">{prev}<h2>{title}</h2>{next}</div><p class="mut">{span}{life}</p>"#);
+
+    // Per day: totals; the averages over the complete days.
+    let mut rows = String::new();
+    let (mut k, mut feeds, mut ml, mut wet, mut dirty, mut breast) = (0u32, 0u32, 0.0, 0u32, 0u32, 0i64);
+    let mut d = start;
+    while d < end && d <= today {
+        let e = clock.next_day_start(d);
+        let t = en::totals_between(c, d, e.min(now + 1))?;
+        let complete = e <= today;
+        if complete {
+            (k, feeds, ml, wet, dirty, breast) = (k + 1, feeds + t.feeds, ml + t.total_ml, wet + t.wet, dirty + t.dirty, breast + t.breast_min);
+        }
+        let label = clock.zoned(d).strftime("%a %-d").to_string();
+        rows += &format!(
+            r#"<tr><td class="time"><a href="{}" data-day="{}" data-zoom="{TL_SUMMARY}">{label}</a>{}</td><td>🍼 {}</td><td>{:.0} ml</td><td>💧 {}</td><td>💩 {}</td></tr>"#,
+            if d >= today { "/".to_string() } else { format!("/?day={}", clock.day(d)) },
+            clock.day(d),
+            if complete { "" } else { r#" <span class="mut">so far</span>"# },
+            t.feeds, t.total_ml, t.wet, t.dirty
+        );
+        d = e;
+    }
+    let avg = |v: f64| if k == 0 { "—".to_string() } else { format!("{:.1}", v / k as f64).trim_end_matches(".0").to_string() };
+    let per = if k == 0 { "no complete day yet".to_string() } else { format!("per day, over {k} complete day{}", if k == 1 { "" } else { "s" }) };
+    let mut out = format!(r#"<div class="card">{head}<div class="grid">"#);
+    out += &stat("Feeds", &avg(feeds as f64), &if k == 0 { String::new() } else { format!("🤱 {:.0}′ at the breast a day", breast as f64 / k as f64) });
+    out += &stat("🍼 Bottle", &if k == 0 { "—".into() } else { format!("{:.0} ml", ml / k as f64) }, &per);
+    out += &stat("Diapers", &format!("💧 {} · 💩 {}", avg(wet as f64), avg(dirty as f64)), "wet · dirty a day");
+    // Weight: the last weighing in the week, against the last one before it.
+    let weighed = |from: i64, to: i64| -> Result<Option<(i64, f64)>, String> {
+        Ok(en::list(c, from, to, false)?.iter().rev().find_map(|e| e.num("weight_g").map(|w| (e.at, w))))
+    };
+    if let Some((_, w)) = weighed(start, end.min(now + 1))? {
+        let before = weighed(tr.from - 86400, start)?;
+        let sub = before.map(|(_, b)| format!("{:+.0} g since the week before", w - b)).unwrap_or_default();
+        out += &stat("⚖️ Weight", &format!("{w:.0} g"), &sub);
+    }
+    out += "</div></div>";
+    out += &format!(r#"<div class="card"><h2>Days</h2><table class="week">{rows}</table></div>"#);
+    Ok(out)
 }
 
 /// The day below the timeline: today's totals and log so far (entries
@@ -943,7 +1028,8 @@ fn daylog(app: &App, c: &rusqlite::Connection, start: i64, now: i64, s: &Value) 
     Ok(out)
 }
 
-/// The day log of one day (`?date=…`), for the script to swap in.
+/// The day log of one day (`?date=…`), for the script to swap in; with
+/// `z` the week zoom, the week it is in.
 pub async fn log_part(State(app): State<Arc<App>>, headers: HeaderMap, Query(q): Query<HashMap<String, String>>) -> Response {
     if let Err(r) = require(&app, &headers, "/") {
         return r;
@@ -953,8 +1039,13 @@ pub async fn log_part(State(app): State<Arc<App>>, headers: HeaderMap, Query(q):
     let Some(start) = q.get("date").and_then(|d| clock.date_start(d).ok()).map(|d| d.min(clock.day_start(t))) else {
         return (StatusCode::BAD_REQUEST, "bad date").into_response();
     };
+    let z = q.get("z").and_then(|z| z.parse().ok()).filter(|z| *z < TL_ZOOM.len()).unwrap_or(TL_Z);
     let res = app.db.with(|c| {
         Ok((|| {
+            if z == TL_WEEK {
+                let tr = track(c, clock, &app.baby(), t, z)?;
+                return weeklog(&app, c, &tr, start, t);
+            }
             let s = if start >= clock.day_start(t) { en::status(c, clock, &app.baby(), t)? } else { Value::Null };
             daylog(&app, c, start, t, &s)
         })())

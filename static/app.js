@@ -243,21 +243,35 @@ if ($('push')) {
     }
   }
 
-  // The day in view: the one at AT of the width.
+  // What the log shows: the day at AT of the width or, at the week zoom,
+  // the week it is in (keyed by its first day).
+  const WZ = Number(d.weekZ);
   const dayAt = (t) => days.reduce((r, day) => (day.start <= t ? day : r), days[0]);
-  const inView = () => dayAt(tAt(ref())).date;
-  // Day logs fetched, kept briefly (the page reloads every minute anyway).
-  const logs = new Map();
-  const getLog = (date) => {
-    if (!logs.has(date)) {
-      logs.set(date, fetch('/log?date=' + date, {cache: 'no-store'})
-        .then((r) => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.text(); })
-        .catch((e) => { logs.delete(date); throw e; }));
-    }
-    return logs.get(date);
+  const unit = (date) => {
+    if (z !== WZ) return date;
+    const i = days.findIndex((dd) => dd.date === date);
+    return days[Math.max(0, i - (i % 7))].date;
   };
-  const near = (date, k) => { const i = days.findIndex((dd) => dd.date === date); return days[i + k] && days[i + k].date; };
-  // A bar under the day the log shows.
+  const inView = () => unit(dayAt(tAt(ref())).date);
+  function span(key) { // the time a day (or week) covers
+    const i = days.findIndex((dd) => dd.date === key);
+    if (i < 0) return null;
+    const last = z === WZ ? days[Math.min(days.length - 1, i + 6)] : days[i];
+    return {i, start: days[i].start, end: last.end, now: NOW >= days[i].start && NOW < last.end};
+  }
+  // Logs fetched, kept briefly (the page reloads every minute anyway).
+  const logs = new Map();
+  const getLog = (key, zz) => {
+    const k = zz + ':' + key;
+    if (!logs.has(k)) {
+      logs.set(k, fetch('/log?date=' + key + (zz === WZ ? '&z=' + zz : ''), {cache: 'no-store'})
+        .then((r) => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.text(); })
+        .catch((e) => { logs.delete(k); throw e; }));
+    }
+    return logs.get(k);
+  };
+  const near = (key, k) => { const s = span(key); const n = s && days[s.i + k * (z === WZ ? 7 : 1)]; return n && n.date; };
+  // A bar under the day (or week) the log shows.
   const bar = document.createElementNS(SVGNS, 'rect');
   bar.setAttribute('class', 'on');
   bar.setAttribute('height', '3');
@@ -268,14 +282,14 @@ if ($('push')) {
   ahead.setAttribute('class', 'on-next');
   ahead.setAttribute('y1', bar.getAttribute('y') * 1 + 1.5);
   ahead.setAttribute('y2', bar.getAttribute('y') * 1 + 1.5);
-  function mark(date) {
-    const day = days.find((dd) => dd.date === date);
-    if (!day) return;
-    const a = ux(day.start) + 2, b = ux(date === TODAY ? NOW : day.end) - 2;
+  function mark(key) {
+    const s = span(key);
+    if (!s) return;
+    const a = ux(s.start) + 2, b = ux(s.now ? NOW : s.end) - 2;
     bar.setAttribute('x', String(a));
     bar.setAttribute('width', String(Math.max(0, b - a)));
     svg.appendChild(bar);
-    if (date === TODAY) {
+    if (s.now && z !== WZ) {
       ahead.setAttribute('x1', String(ux(NOW) + 3.5));
       ahead.setAttribute('x2', String(ux(TO) - 1.5));
       svg.appendChild(ahead);
@@ -283,57 +297,65 @@ if ($('push')) {
       ahead.remove();
     }
   }
-  let shown = log ? log.dataset.day : TODAY, seq = 0;
+  let shown = log ? log.dataset.day : TODAY, shownZ = z, seq = 0;
   mark(shown);
-  async function show(date) {
-    if (!log || date === shown) return;
-    const was = shown, my = ++seq;
-    shown = date;
-    mark(date);
+  async function show(key) {
+    if (!log || (key === shown && z === shownZ)) return;
+    const was = [shown, shownZ], my = ++seq, zz = z;
+    shown = key;
+    shownZ = zz;
+    mark(key);
     try {
-      const html = await getLog(date);
+      const html = await getLog(key, zz);
       if (my !== seq) return;
       log.innerHTML = html;
-      log.dataset.day = date;
-      for (const el of document.querySelectorAll('.now-only')) el.hidden = date !== TODAY;
-      // The days next to it, for scrolling on.
-      for (const k of [-1, 1]) { const n = near(date, k); if (n) getLog(n).catch(() => {}); }
+      log.dataset.day = key;
+      for (const el of document.querySelectorAll('.now-only')) el.hidden = !(key === TODAY && zz !== WZ);
+      // The ones next to it, for scrolling on.
+      for (const k of [-1, 1]) { const n = near(key, k); if (n) getLog(n, zz).catch(() => {}); }
     } catch (e) {
-      if (my === seq) { shown = was; mark(was); }
+      if (my === seq) { [shown, shownZ] = was; mark(shown); }
     }
   }
   // The address follows when scrolling stops (Safari limits how often).
   function setUrl() {
-    const url = shown === TODAY ? '/' : '/?day=' + shown;
+    const s = span(shown);
+    const url = s && s.now ? '/' : '/?day=' + shown;
     if (location.pathname + location.search !== url) try { history.replaceState(null, '', url); } catch (e) { /* too often */ }
   }
   const home = () => x(NOW) - AT * W();
   // While the timeline glides to a chosen day, the log doesn't follow the
   // days it passes; touching it again hands back control.
   let gliding = false;
-  function goTo(date, smooth) {
-    const day = days.find((dd) => dd.date === date);
-    if (!day) return;
+  function goTo(key, smooth) {
+    const s = span(key);
+    if (!s) return;
     gliding = smooth;
-    const left = date === TODAY ? home() : x((day.start + day.end) / 2) - AT * W();
+    const left = s.now ? home() : x((s.start + s.end) / 2) - AT * W();
     tl.scrollTo({left, behavior: smooth ? 'smooth' : 'auto'});
-    show(date).then(setUrl);
+    show(key).then(setUrl);
   }
   // The links to other days (in the log, or over what's next) scroll the
-  // timeline there.
+  // timeline there; a day in the week's list zooms in on it (data-zoom).
   if (log) {
     document.addEventListener('click', (e) => {
       const a = e.target.closest('a[data-day]');
       if (!a || e.metaKey || e.ctrlKey || e.shiftKey) return;
       e.preventDefault();
+      const day = days.find((dd) => dd.date === a.dataset.day);
+      if (a.dataset.zoom && day && z === WZ) {
+        touched = true;
+        zoomTo(Number(a.dataset.zoom), {sx: AT * W(), t: day.date === TODAY ? NOW : (day.start + day.end) / 2});
+        return;
+      }
       goTo(a.dataset.day, true);
     });
   }
 
   // A tap on another day in the timeline goes there too (a swipe gives no click).
   tl.addEventListener('click', (e) => {
-    const date = dayAt(tAt(tl.scrollLeft + e.clientX - tl.getBoundingClientRect().left)).date;
-    if (date !== shown) goTo(date, true);
+    const key = unit(dayAt(tAt(tl.scrollLeft + e.clientX - tl.getBoundingClientRect().left)).date);
+    if (key !== shown || z !== shownZ) goTo(key, true);
   });
 
   // Where to open.
@@ -436,16 +458,16 @@ if ($('push')) {
   const start = (sx) => ({sx, ax: tl.scrollLeft + sx, t: tAt(tl.scrollLeft + sx), s: 1});
   const left0 = () => tl.getBoundingClientRect().left;
   let pinch = null;
-  const span = (e) => Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
+  const fingers = (e) => Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
   tl.addEventListener('touchstart', (e) => {
     if (e.touches.length !== 2) return;
     pinch = start((e.touches[0].clientX + e.touches[1].clientX) / 2 - left0());
-    pinch.d = span(e);
+    pinch.d = fingers(e);
   }, {passive: true});
   tl.addEventListener('touchmove', (e) => {
     if (!pinch || e.touches.length !== 2) return;
     e.preventDefault();
-    pinch.s = clamp(span(e) / pinch.d);
+    pinch.s = clamp(fingers(e) / pinch.d);
     preview(pinch);
   }, {passive: false});
   const end = () => { if (pinch) { const p = pinch; pinch = null; commit(p); } };
