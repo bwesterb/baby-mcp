@@ -1,7 +1,7 @@
 //! Entries: storage, versions, and the status and statistics derived from them.
 
 use crate::registry::{self, Group};
-use crate::time::{Clock, fmt_dur};
+use crate::time::Clock;
 use rusqlite::{Connection, OptionalExtension, Row, params};
 use serde::Serialize;
 use serde_json::{Map, Value, json};
@@ -52,7 +52,7 @@ fn from_row(r: &Row, superseded: bool) -> rusqlite::Result<Entry> {
     })
 }
 
-fn query(c: &Connection, sql_where: &str, p: impl rusqlite::Params) -> Result<Vec<Entry>, String> {
+pub(crate) fn query(c: &Connection, sql_where: &str, p: impl rusqlite::Params) -> Result<Vec<Entry>, String> {
     let sql = format!("SELECT {COLS} FROM entry WHERE {sql_where}");
     let mut st = c.prepare(&sql).map_err(err)?;
     let rows = st.query_map(p, |r| from_row(r, false)).map_err(err)?;
@@ -390,7 +390,7 @@ impl Baby {
         Some((change, p, table.label(p)))
     }
 
-    fn change_json(&self, grams: f64, t: i64) -> Value {
+    pub(crate) fn change_json(&self, grams: f64, t: i64) -> Value {
         match (self.change_percentile(grams, t), self.delivery) {
             (Some((c, p, label)), Some(d)) => json!({
                 "percent_change": (c * 10.0).round() / 10.0, "percentile": p.round(), "label": label,
@@ -401,7 +401,7 @@ impl Baby {
         }
     }
 
-    fn percentile_json(&self, grams: f64, t: i64) -> Value {
+    pub(crate) fn percentile_json(&self, grams: f64, t: i64) -> Value {
         match self.weight_percentile(grams, t) {
             Some((p, z)) => json!({"percentile": (p * 10.0).round() / 10.0, "label": crate::growth::label(p),
                                    "z": (z * 100.0).round() / 100.0}),
@@ -410,24 +410,10 @@ impl Baby {
     }
 }
 
-fn weight_vs_birth(w: f64, birth: Option<f64>) -> Option<String> {
+pub(crate) fn weight_vs_birth(w: f64, birth: Option<f64>) -> Option<String> {
     let b = birth.filter(|b| *b > 0.0)?;
     Some(format!("{:+.0} g ({:+.1}%)", w - b, 100.0 * (w - b) / b))
 }
-
-fn since(e: &Option<Entry>, clock: &Clock, now: i64, extra: Option<Value>) -> Value {
-    match e {
-        None => Value::Null,
-        Some(e) => {
-            let mut v = json!({"at": clock.fmt(e.at), "ago": fmt_dur(now - e.at), "entry_id": e.entry_id});
-            if let Some(x) = extra {
-                v["value"] = x;
-            }
-            v
-        }
-    }
-}
-
 
 /// A feed entry at most this long after the previous one is a top-up: part of
 /// the same feed.
@@ -452,63 +438,11 @@ pub fn feed_gap(eps: &[(i64, i64)]) -> Option<i64> {
     median(eps.windows(2).map(|w| w[1].0 - w[0].1).filter(|g| *g >= ESTIMATE_MIN_GAP).rev().take(8).collect())
 }
 
-/// The next feed: the end of the last one (its last top-up) plus the usual gap.
-fn estimate_feed(clock: &Clock, eps: &[(i64, i64)], now: i64) -> Value {
-    let (Some(gap), Some(&(_, last))) = (feed_gap(eps), eps.last()) else {
-        return Value::Null;
-    };
-    let at = last + gap;
-    let n = eps.len().min(9);
-    let mut v = json!({
-        "at": clock.fmt(at),
-        "basis": format!("last feed + median gap ({}) of the last {n} feeds (a top-up within {} counts with its feed)", fmt_dur(gap), fmt_dur(TOP_UP_WITHIN)),
-    });
-    if at >= now {
-        v["due_in"] = json!(fmt_dur(at - now));
-    } else {
-        v["overdue_by"] = json!(fmt_dur(now - at));
-    }
-    v
-}
-
 /// Gaps shorter than this don't count for the feed estimate.
 const ESTIMATE_MIN_GAP: i64 = 30 * 60;
 
 /// How far back the feed estimate looks.
 pub const ESTIMATE_BACK: i64 = 36 * 3600;
-
-/// Fewer wet diapers in the last 24 hours than usual for her age: at least as
-/// many as the day of life up to day 5, then at least 6 (breastfeeding and
-/// kraamzorg guidance). Only once she is a day old and while someone is
-/// logging (an entry in the last 6 hours). `day` is the last 24 hours.
-pub fn wet_warning(clock: &Clock, baby: &Baby, day: &[Entry], now: i64) -> Value {
-    let Some(birth) = baby.birth else { return Value::Null };
-    if now - birth < 86400 || !day.iter().any(|e| e.at > now - 6 * 3600) {
-        return Value::Null;
-    }
-    let dol = crate::feeding::day_of_life(clock, birth, now);
-    let min = dol.min(6) as usize;
-    let wet = day.iter().filter(|e| e.is("wet")).count();
-    if wet >= min {
-        return Value::Null;
-    }
-    let rule = if dol >= 6 { "usually at least 6 from day 6".to_string() } else { format!("usually at least {min} on day {dol}") };
-    json!({"wet_24h": wet, "minimum": min, "text": format!("Only {wet} wet diaper{} in the last 24 h ({rule})", if wet == 1 { "" } else { "s" })})
-}
-
-/// When to start the routine for the next feed (diaper first): the estimate
-/// moved up by `prep` seconds, with due_in / overdue_by from that time.
-fn feed_start(clock: &Clock, next: &Value, prep: i64, now: i64) -> Value {
-    let Some(at) = next["at"].as_str().and_then(|a| clock.parse(a, now).ok()) else { return Value::Null };
-    let start = at - prep;
-    let mut v = json!({"at": clock.fmt(start), "prep": fmt_dur(prep), "feed_at": clock.fmt(at)});
-    if start >= now {
-        v["due_in"] = json!(fmt_dur(start - now));
-    } else {
-        v["overdue_by"] = json!(fmt_dur(now - start));
-    }
-    v
-}
 
 fn median(mut v: Vec<i64>) -> Option<i64> {
     if v.is_empty() {
@@ -528,160 +462,16 @@ pub const VITAMIN_K_FORMULA_ML: f64 = 500.0;
 pub const VITAMIN_REMIND_HOUR: i64 = 18;
 
 /// The start of the local day `span` after the local day of `t`.
-fn day_plus(clock: &Clock, t: i64, span: jiff::Span) -> i64 {
+pub(crate) fn day_plus(clock: &Clock, t: i64, span: jiff::Span) -> i64 {
     let d = clock.zoned(t).date().checked_add(span).expect("date in range");
     clock.date_start(&d.to_string()).expect("valid date")
 }
-
-/// After a feed without a side logged, how long "put her down now facing …"
-/// is shown (she may not be down yet).
-const PUT_DOWN_WITHIN: i64 = 2 * 3600;
 
 /// Two baths a week, alternating with and without soap.
 pub const BATH_EVERY: i64 = 84 * 3600;
 pub const BATH_GOAL: &str = "two baths a week, alternating with and without soap: a bath is due on the day 3.5 days after the last one (a sponge wash doesn't count), of the other kind than the last; reminded at 18:00 that day, overdue once the day is over";
 /// The bath reminder: this hour on the day a bath is due.
 pub const BATH_REMIND_HOUR: i64 = 18;
-
-pub fn status(c: &Connection, clock: &Clock, baby: &Baby, now: i64) -> Result<Value, String> {
-    let names = user_names(c)?;
-    let last_feed = last_where(c, FEED_SQL)?;
-    let last_wet = last_where(c, "wet = 1")?;
-    let last_dirty = last_where(c, "dirty = 1")?;
-    let last_temp = last_where(c, "temp_c IS NOT NULL")?;
-    let last_weight = last_where(c, "weight_g IS NOT NULL")?;
-    let recent = list(c, now - ESTIMATE_BACK, now + 1, false)?;
-    let day = list(c, now - 24 * 3600, now + 1, false)?;
-
-    let next_feed = estimate_feed(clock, &feed_episodes(&recent), now);
-
-    let mut out = json!({
-        "now": clock.fmt(now),
-        "baby": baby.name,
-        "last_feed": since(&last_feed, clock, now, last_feed.as_ref().map(|e| view(e, clock, &names))),
-        "next_feed_estimate": next_feed,
-        "next_feed_start": feed_start(clock, &next_feed, baby.feed_prep_s, now),
-        "last_wet_diaper": since(&last_wet, clock, now, None),
-        "wet_diaper_warning": wet_warning(clock, baby, &day, now),
-        "last_dirty_diaper": since(&last_dirty, clock, now, last_dirty.as_ref().and_then(|e| e.fields.get("stool_color").cloned())),
-        "last_temperature": since(&last_temp, clock, now, last_temp.as_ref().and_then(|e| e.fields.get("temp_c").cloned())),
-        "last_weight": since(&last_weight, clock, now, last_weight.as_ref().and_then(|e| e.fields.get("weight_g").cloned())),
-        "today": totals_between(c, clock.day_start(now), now + 1)?,
-        "last_24h": totals_between(c, now - 24 * 3600, now + 1)?,
-        "needs_attention": attention(c, BY_USER | BY_AGENT)?.iter().map(|e| view(e, clock, &names)).collect::<Vec<_>>(),
-    });
-    if let Some(b) = baby.birth {
-        out["age"] = json!(fmt_dur(now - b));
-    }
-    if let Some(bw) = baby.birth_weight_g {
-        out["birth_weight_g"] = json!(bw);
-    }
-    if let Some(w) = last_weight.as_ref().and_then(|e| e.num("weight_g")) {
-        out["weight_vs_birth"] = json!(weight_vs_birth(w, baby.birth_weight_g));
-        let wt = last_weight.as_ref().map(|e| e.at).unwrap_or(now);
-        out["weight_percentile"] = baby.percentile_json(w, wt);
-        out["weight_change_percentile"] = baby.change_json(w, wt);
-    }
-    if let (Some(bw), Some(b)) = (baby.birth_weight_g, baby.birth) {
-        out["birth_weight_percentile"] = baby.percentile_json(bw, b);
-        // Back at birth weight: the first weighing at or above it after birth.
-        let back = query(c, "deleted = 0 AND weight_g IS NOT NULL AND at > ?1 ORDER BY at", [b])?
-            .into_iter()
-            .find(|e| e.num("weight_g").is_some_and(|w| w >= bw));
-        out["birth_weight_regained"] = match back {
-            Some(e) => json!({"regained": true, "on": clock.day(e.at), "age_days": crate::growth::age_days(b, e.at)}),
-            None => json!({"regained": false}),
-        };
-    }
-    out["feeding_guidance"] = crate::feeding::for_status(c, clock, baby, last_weight.as_ref().and_then(|e| Some((e.num("weight_g")?, e.at))), now)?;
-    // Baths: due on the day 3.5 days after the last real bath falls on (a
-    // sponge wash doesn't count), alternating with and without soap; the
-    // reminder (`at`) that evening, overdue once that day is over. Never
-    // logged = due now.
-    let last = last_where(c, "bath IN ('with_soap', 'without_soap')")?;
-    let due_day = clock.day_start(last.as_ref().map(|e| e.at + BATH_EVERY).unwrap_or(now));
-    let due_at = if last.is_some() { due_day + BATH_REMIND_HOUR * 3600 } else { now };
-    let day_end = clock.next_day_start(due_day);
-    let mut due = json!({"on": clock.day(due_day), "at": clock.fmt(due_at)});
-    if last.is_none() {
-        due["never"] = json!(true);
-    } else if now >= day_end {
-        due["overdue_by"] = json!(fmt_dur(now - day_end));
-    } else {
-        if now >= due_day {
-            due["today"] = json!(true);
-        }
-        if due_at > now {
-            due["due_in"] = json!(fmt_dur(due_at - now));
-        }
-    }
-    let next_kind = match last.as_ref().and_then(|e| e.str("bath")) {
-        Some("with_soap") => json!("without_soap"),
-        Some(_) => json!("with_soap"),
-        None => Value::Null,
-    };
-    let last_any = last_where(c, "bath IS NOT NULL")?;
-    out["bath"] = json!({
-        "goal": BATH_GOAL,
-        "last": since(&last, clock, now, last.as_ref().and_then(|e| e.fields.get("bath").cloned())),
-        "last_any": since(&last_any, clock, now, last_any.as_ref().and_then(|e| e.fields.get("bath").cloned())),
-        "due": due,
-        "next_kind": next_kind,
-    });
-
-    // Vitamins: which are due today and whether they were given.
-    if let Some(b) = baby.birth {
-        let today = clock.day_start(now);
-        let from = day_plus(clock, b, jiff::Span::new().days(7));
-        let mut v = json!({"from": clock.day(from), "remind_at": clock.fmt(today + VITAMIN_REMIND_HOUR * 3600),
-                           "rule": "vitamin K daily from day 8 until 12 weeks, not needed with at least 500 ml formula a day (judged on yesterday's total); vitamin D daily from day 8 until 4 years (RIVM)"});
-        let formula_yesterday = totals_between(c, clock.day_start(today - 3600), today)?.formula_ml;
-        let mut to_give = vec![];
-        for (key, field, label) in VITAMINS {
-            let until = day_plus(clock, b, if key == "k" { jiff::Span::new().weeks(12) } else { jiff::Span::new().years(4) });
-            let active = today >= from && today < until;
-            let last = last_where(c, &format!("{field} = 1"))?;
-            let given_today = last.as_ref().is_some_and(|e| e.at >= today);
-            let not_needed = key == "k" && active && formula_yesterday >= VITAMIN_K_FORMULA_ML;
-            if active && !given_today && !not_needed {
-                to_give.push(label);
-            }
-            v[key] = json!({"active": active, "until": clock.day(until - 1), "given_today": given_today,
-                            "last": since(&last, clock, now, None)});
-            if not_needed {
-                v[key]["not_needed"] = json!(format!("{formula_yesterday:.0} ml formula yesterday: with at least {VITAMIN_K_FORMULA_ML:.0} ml a day, formula gives enough vitamin K"));
-            }
-        }
-        v["to_give_today"] = json!(to_give);
-        out["vitamins"] = v;
-    }
-
-    // Sleeping position: alternate the side the face is turned to after every
-    // feed. Feeds after the last logged side are assumed to have been followed
-    // by a put-down on the other side each time.
-    if let Some(e) = last_where(c, "sleep_facing IS NOT NULL")? {
-        if let Some(side) = e.str("sleep_facing") {
-            let other = |s: &str| if s == "left" { "right" } else { "left" };
-            // Feeds since (a top-up isn't a new feed: no new put-down).
-            let since: Vec<(i64, i64)> = feed_episodes(&list(c, e.at - TOP_UP_WITHIN, now + 1, false)?).into_iter().filter(|f| f.0 > e.at).collect();
-            let feeds_since = since.len();
-            let current = if feeds_since % 2 == 0 { side } else { other(side) };
-            let mut v = json!({"last": side, "last_at": clock.fmt(e.at), "feeds_since": feeds_since, "next": other(current),
-                               "note": "alternate the side the face is turned to after every feed; feeds since the last logged side are assumed to have alternated"});
-            if feeds_since > 0 {
-                v["assumed_current"] = json!(current);
-            }
-            // Right after a feed without a side logged she may not be down
-            // yet: the side for now (that feed's put-down), besides the next.
-            if since.last().is_some_and(|f| now - f.1 < PUT_DOWN_WITHIN) {
-                v["put_down_now"] = json!(current);
-            }
-            out["sleep_facing"] = v;
-        }
-    }
-    out["growth_note"] = json!("weight_percentile compares with the WHO Child Growth Standards (weight-for-age), which ignore the normal weight loss of the first days; weight_change_percentile compares the change since birth with newborns of the same delivery mode during the first month. References, not a diagnosis.");
-    Ok(out)
-}
 
 #[derive(Debug, Serialize)]
 pub struct DayStats {
@@ -794,17 +584,17 @@ pub mod tests {
             fields: fields(json!({"wet": wet})), attention_by: 0, attention_why: None, deleted: false, changed_at: 0, changed_by: 1, superseded_at: None };
         // Day 3 (2 Nov): at least 3; two wet diapers → warning.
         let day = [e("2025-11-02 02:00", true), e("2025-11-02 08:00", true), e("2025-11-02 11:00", false)];
-        let w = wet_warning(&clock, &baby, &day, at("2025-11-02 12:00"));
-        assert_eq!(w["text"], "Only 2 wet diapers in the last 24 h (usually at least 3 on day 3)");
+        let w = crate::status::wet_warning(&clock, &baby, &day, at("2025-11-02 12:00")).unwrap();
+        assert_eq!(w.text, "Only 2 wet diapers in the last 24 h (usually at least 3 on day 3)");
         // Day 8: at least 6.
         let day: Vec<Entry> = (0..5).map(|k| e(&format!("2025-11-07 {:02}:00", 1 + k * 4), true)).collect();
-        assert_eq!(wet_warning(&clock, &baby, &day, at("2025-11-07 22:00"))["minimum"], 6);
+        assert_eq!(crate::status::wet_warning(&clock, &baby, &day, at("2025-11-07 22:00")).unwrap().minimum, 6);
         let day: Vec<Entry> = (0..6).map(|k| e(&format!("2025-11-07 {:02}:00", 1 + k * 3), true)).collect();
-        assert!(wet_warning(&clock, &baby, &day, at("2025-11-07 22:00")).is_null(), "six is enough");
+        assert!(crate::status::wet_warning(&clock, &baby, &day, at("2025-11-07 22:00")).is_none(), "six is enough");
         // Nobody logging for 6 hours: no warning.
-        assert!(wet_warning(&clock, &baby, &day[..1], at("2025-11-07 22:00")).is_null());
+        assert!(crate::status::wet_warning(&clock, &baby, &day[..1], at("2025-11-07 22:00")).is_none());
         // First day: nothing yet.
-        assert!(wet_warning(&clock, &baby, &[e("2025-10-31 20:00", false)], at("2025-10-31 22:00")).is_null());
+        assert!(crate::status::wet_warning(&clock, &baby, &[e("2025-10-31 20:00", false)], at("2025-10-31 22:00")).is_none());
     }
 
     #[test]
@@ -838,7 +628,7 @@ pub mod tests {
                 insert(c, u, &NewEntry { at: clock.parse(t, now).unwrap(), duration_s: None, text: t.into(),
                     fields: fields(f), attention_by: 0, attention_why: None }, now).unwrap();
             }
-            let s = status(c, &clock, &baby, now).unwrap();
+            let s = crate::status::status_json(c, &clock, &baby, now).unwrap();
             assert_eq!(s["last_feed"]["at"], "2025-11-06 09:00");
             assert_eq!(s["last_dirty_diaper"]["value"], "yellow");
             assert_eq!(s["weight_vs_birth"], "-240 g (-6.2%)");
@@ -860,7 +650,7 @@ pub mod tests {
             let later = clock.parse("2025-11-07 19:00", 0).unwrap();
             insert(c, u, &NewEntry { at: clock.parse("2025-11-07 09:00", 0).unwrap(), duration_s: None, text: "vit D".into(),
                 fields: fields(json!({"vitamin_d": true})), attention_by: 0, attention_why: None }, later).unwrap();
-            let s2 = status(c, &clock, &baby, later).unwrap();
+            let s2 = crate::status::status_json(c, &clock, &baby, later).unwrap();
             assert_eq!(s2["vitamins"]["to_give_today"], json!(["K"]));
             assert_eq!(s2["vitamins"]["d"]["given_today"], true);
             assert_eq!(s2["vitamins"]["remind_at"], "2025-11-07 18:00");
@@ -869,21 +659,21 @@ pub mod tests {
             assert_eq!(s2["sleep_facing"]["feeds_since"], 0);
             insert(c, u, &NewEntry { at: clock.parse("2025-11-07 12:00", 0).unwrap(), duration_s: None, text: "60 ml".into(),
                 fields: fields(json!({"bottle_formula_ml": 60})), attention_by: 0, attention_why: None }, later).unwrap();
-            let s3 = status(c, &clock, &baby, later).unwrap();
+            let s3 = crate::status::status_json(c, &clock, &baby, later).unwrap();
             assert_eq!((s3["sleep_facing"]["feeds_since"].as_i64(), s3["sleep_facing"]["assumed_current"].as_str(), s3["sleep_facing"]["next"].as_str()),
                        (Some(1), Some("right"), Some("left")));
             insert(c, u, &NewEntry { at: clock.parse("2025-11-07 15:00", 0).unwrap(), duration_s: None, text: "70 ml".into(),
                 fields: fields(json!({"bottle_formula_ml": 70})), attention_by: 0, attention_why: None }, later).unwrap();
-            assert_eq!(status(c, &clock, &baby, later).unwrap()["sleep_facing"]["next"], "right", "two feeds: back to the logged side's opposite");
+            assert_eq!(crate::status::status_json(c, &clock, &baby, later).unwrap()["sleep_facing"]["next"], "right", "two feeds: back to the logged side's opposite");
             // A top-up 20 minutes later is part of that feed: no new put-down.
             insert(c, u, &NewEntry { at: clock.parse("2025-11-07 15:20", 0).unwrap(), duration_s: None, text: "+20 ml".into(),
                 fields: fields(json!({"bottle_formula_ml": 20})), attention_by: 0, attention_why: None }, later).unwrap();
-            assert_eq!(status(c, &clock, &baby, later).unwrap()["sleep_facing"]["next"], "right", "a top-up doesn't flip the side");
+            assert_eq!(crate::status::status_json(c, &clock, &baby, later).unwrap()["sleep_facing"]["next"], "right", "a top-up doesn't flip the side");
             // Right after a feed without a side: the side for now as well.
             let just = clock.parse("2025-11-07 16:00", 0).unwrap();
-            let v = &status(c, &clock, &baby, just).unwrap()["sleep_facing"];
+            let v = &crate::status::status_json(c, &clock, &baby, just).unwrap()["sleep_facing"];
             assert_eq!((v["put_down_now"].as_str(), v["next"].as_str()), (Some("left"), Some("right")), "{v}");
-            assert!(status(c, &clock, &baby, later).unwrap()["sleep_facing"]["put_down_now"].is_null(), "not hours later");
+            assert!(crate::status::status_json(c, &clock, &baby, later).unwrap()["sleep_facing"]["put_down_now"].is_null(), "not hours later");
             if baby.growth.is_some() {
                 assert_eq!(s["birth_weight_percentile"]["label"], "P92");
                 assert!(s["weight_percentile"]["label"].as_str().unwrap().starts_with('P'));
@@ -903,7 +693,7 @@ pub mod tests {
                     fields: fields(json!({"bottle_formula_ml": ml})), attention_by: 0, attention_why: None }, later).unwrap();
             }
             let next_day = clock.parse("2025-11-08 10:00", 0).unwrap();
-            let s3 = status(c, &clock, &baby, next_day).unwrap();
+            let s3 = crate::status::status_json(c, &clock, &baby, next_day).unwrap();
             assert_eq!(s3["vitamins"]["to_give_today"], json!(["D"]), "{}", s3["vitamins"]);
             assert!(s3["vitamins"]["k"]["not_needed"].as_str().unwrap().contains(" ml formula yesterday: with at least 500 ml a day"));
             Ok(())

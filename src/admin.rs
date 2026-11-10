@@ -208,7 +208,7 @@ pub fn run(cfg: &Config, cmd: Cmd) -> Result<(), String> {
         Cmd::Status => {
             // The same overview the MCP tool gives, including growth and feeding guidance.
             let app = crate::app::App::new(cfg.clone())?;
-            let s = app.db.with(|c| Ok(en::status(c, &app.clock, &app.baby(), now()))).map_err(en::err)??;
+            let s = app.db.with(|c| Ok(crate::status::status_json(c, &app.clock, &app.baby(), now()))).map_err(en::err)??;
             println!("{}", serde_json::to_string_pretty(&s).unwrap());
         }
         Cmd::PushTest { name } => {

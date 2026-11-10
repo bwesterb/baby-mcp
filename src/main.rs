@@ -16,6 +16,7 @@ mod notifications;
 mod notify;
 mod push;
 mod registry;
+mod status;
 #[cfg(test)]
 mod tests;
 mod time;

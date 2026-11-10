@@ -5,6 +5,8 @@ use crate::app::App;
 use crate::auth::{self, User, same_origin, session_user, to_login};
 use crate::entries::{self as en, BY_AGENT, DayStats, NewEntry};
 use crate::html::{self, Page, esc};
+use crate::status::{Bath, SleepFacing, Status, Vitamins};
+use crate::time::fmt_dur;
 use crate::time::now;
 use axum::extract::{Form, Query, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -114,80 +116,69 @@ pub(crate) fn entry_summary(e: &en::Entry) -> String {
 /// small, when it last happened.
 struct Next {
     title: &'static str,
-    at: Option<String>, // "YYYY-MM-DD HH:MM"
+    at: Option<i64>,
     html: String,
 }
 
-
-/// Like `next_tile`, with an extra line (already HTML) under the estimate.
-fn next_tile_extra(title: &'static str, last: &Value, last_detail: &str, next: &Value, extra: &str) -> Next {
-    let last_line = match last.as_object() {
-        Some(o) => {
-            let ago = o.get("ago").and_then(Value::as_str).unwrap_or("");
-            let at = o.get("at").and_then(Value::as_str).map(|a| &a[11..]).unwrap_or("");
+/// A tile with the time of the next one (`next`), when the last one was
+/// (with a detail), and an extra line (already HTML) under the estimate;
+/// orange when overdue or with `warn`.
+fn next_tile_extra(clock: &crate::time::Clock, title: &'static str, last: Option<(i64, &str)>, next: Option<i64>, extra: &str, warn: bool, now: i64) -> Next {
+    let hm = |t: i64| clock.zoned(t).strftime("%H:%M").to_string();
+    let last_line = match last {
+        Some((t, last_detail)) => {
             let detail = if last_detail.is_empty() { String::new() } else { format!(" · {last_detail}") };
-            format!("last {ago} ago · {at}{detail}")
+            format!("last {} ago · {}{detail}", fmt_dur(now - t), hm(t))
         }
         None => "nothing logged yet".into(),
     };
-    let at = next["at"].as_str().map(str::to_string);
-    let (when, sub, overdue) = match &at {
+    let (when, sub, overdue) = match next {
         None => ("—".to_string(), "not enough data yet".to_string(), false),
-        Some(a) => match (next["due_in"].as_str(), next["overdue_by"].as_str()) {
-            (_, Some(d)) => (format!("~{}", &a[11..]), format!("⏰ {d} overdue"), true),
-            (Some(d), _) => (format!("~{}", &a[11..]), format!("in {d}"), false),
-            _ => (format!("~{}", &a[11..]), String::new(), false),
-        },
+        Some(t) if t < now => (format!("~{}", hm(t)), format!("⏰ {} overdue", fmt_dur(now - t)), true),
+        Some(t) => (format!("~{}", hm(t)), format!("in {}", fmt_dur(t - now)), false),
     };
     let html = format!(
         r#"<div class="next{}"><div class="t">{}</div><div class="v">{}</div><div class="{}">{}</div>{extra}<div class="last">{}</div></div>"#,
-        if overdue { " overdue" } else { "" },
+        if overdue || warn { " overdue" } else { "" },
         esc(title),
         esc(&when),
         if overdue { "warn" } else { "mut" },
         esc(&sub),
         esc(&last_line)
     );
-    Next { title, at, html }
+    Next { title, at: next, html }
 }
 
 /// "🍼 about 80 ml" (the suggested amount for the next feed) for the feed tile.
-fn amount_line(g: &Value) -> String {
-    let mut s = match g["next_feed"]["amount_ml"].as_f64() {
-        Some(ml) => format!(r#"<div class="side">🍼 about {ml:.0} ml</div>"#),
-        None => String::new(),
-    };
-    if let (Some(side), Some(why)) = (g["breast_side"]["start"].as_str(), g["breast_side"]["reason"].as_str()) {
-        s += &format!(r#"<div class="side">🤱 start {} <span class="mut">({})</span></div>"#, esc(side), esc(why));
+fn amount_line(clock: &crate::time::Clock, g: &crate::feeding::Guidance) -> String {
+    let hm = |t: i64| clock.zoned(t).strftime("%H:%M").to_string();
+    let mut s = format!(r#"<div class="side">🍼 about {:.0} ml</div>"#, g.amount_ml);
+    if let Some(b) = &g.breast_side {
+        s += &format!(r#"<div class="side">🤱 start {} <span class="mut">({})</span></div>"#, esc(b.start), esc(&b.reason));
     }
-    for w in g["warnings"].as_array().into_iter().flatten() {
-        if let Some(t) = w["text"].as_str() {
-            s += &format!(r#"<div class="side warn">⚠️ {}</div>"#, esc(t));
-        }
+    for w in &g.warnings {
+        s += &format!(r#"<div class="side warn">⚠️ {}</div>"#, esc(&w.text));
     }
-    if let Some(latest) = g["next_feed"]["latest_at"].as_str().filter(|l| l.len() >= 16) {
-        match g["next_feed"]["latest_start_at"].as_str().filter(|l| l.len() >= 16) {
+    if let Some((latest, why)) = &g.latest {
+        match g.latest_start() {
             Some(start) => s += &format!(
                 r#"<div class="side">⏳ start by {} <span class="mut">(feed by {} · {})</span></div>"#,
-                esc(&start[11..16]),
-                esc(&latest[11..16]),
-                esc(g["next_feed"]["latest_reason"].as_str().unwrap_or(""))
+                esc(&hm(start)),
+                esc(&hm(*latest)),
+                esc(why)
             ),
-            None => s += &format!(
-                r#"<div class="side">⏳ at the latest {} <span class="mut">({})</span></div>"#,
-                esc(&latest[11..16]),
-                esc(g["next_feed"]["latest_reason"].as_str().unwrap_or(""))
-            ),
+            None => s += &format!(r#"<div class="side">⏳ at the latest {} <span class="mut">({})</span></div>"#, esc(&hm(*latest)), esc(why)),
         }
     }
     s
 }
 
 /// "😴 face ➡️ right" (the next side to put her down on) for the feed tile.
-fn sleep_line(v: &Value) -> String {
-    let Some(next) = v["next"].as_str() else { return String::new() };
+fn sleep_line(v: &SleepFacing) -> String {
+    let next = &v.next;
     // Right after a feed without a side logged: the side for now first.
-    if let Some(now) = v["put_down_now"].as_str() {
+    if v.put_down_now {
+        let now = &v.current;
         return format!(
             r#"<div class="side">😴 now {} {} <span class="mut">· next {} {}</span></div>"#,
             side_arrow(now),
@@ -196,12 +187,12 @@ fn sleep_line(v: &Value) -> String {
             esc(next)
         );
     }
-    let assumed = match v["feeds_since"].as_u64() {
-        Some(n) if n > 0 => format!(
+    let assumed = match v.feeds_since {
+        0 => String::new(),
+        n => format!(
             r#" <span class="mut">(assumed: alternated after {n} feed{} since the last logged side)</span>"#,
             if n == 1 { "" } else { "s" }
         ),
-        _ => String::new(),
     };
     format!(r#"<div class="side">😴 face {} {}{assumed}</div>"#, side_arrow(next), esc(next))
 }
@@ -290,7 +281,7 @@ fn tl_days(clock: &crate::time::Clock, tr: &Track, now: i64) -> Vec<(i64, i64)> 
 
 /// The days of a track overlapping `from..to`, rendered (today's with what's
 /// expected, from the status `s`).
-fn tl_render(clock: &crate::time::Clock, tr: &Track, entries: &[en::Entry], s: &Value, now: i64, from: i64, to: i64) -> String {
+fn tl_render(clock: &crate::time::Clock, tr: &Track, entries: &[en::Entry], s: &Status, now: i64, from: i64, to: i64) -> String {
     let today = clock.day_start(now);
     tl_days(clock, tr, now)
         .into_iter()
@@ -322,7 +313,7 @@ fn timeline(clock: &crate::time::Clock, tr: &Track, days: &str, now: i64, focus:
 /// expected: faded, or overdue just after "now" with an orange ring. The
 /// expected feed is when to start (diaper first). At the widest zoom, a
 /// summary of the day instead.
-fn tl_day(clock: &crate::time::Clock, tr: &Track, entries: &[en::Entry], s: Option<&Value>, now: i64, from: i64, to: i64) -> String {
+fn tl_day(clock: &crate::time::Clock, tr: &Track, entries: &[en::Entry], s: Option<&Status>, now: i64, from: i64, to: i64) -> String {
     let zoom = &TL_ZOOM[tr.z];
     let h = TL_H;
     let x = |t: i64| (t - from) as f64 / 3600.0 * zoom.pxh;
@@ -512,26 +503,22 @@ fn tl_day(clock: &crate::time::Clock, tr: &Track, entries: &[en::Entry], s: Opti
         }
         out
     };
-    let at = |v: &Value| v["at"].as_str().and_then(|a| clock.parse(a, now).ok());
     // The feed: when to start (diaper first), if there is a preparation time.
-    let feed_at = at(&s["next_feed_estimate"]);
-    let prep = match (at(&s["next_feed_start"]), feed_at) {
-        (Some(start), Some(feed)) if feed > start => feed - start,
-        _ => 0,
-    };
+    let feed_at = s.next_feed.map(|f| f.at);
+    let prep = s.prep_s.max(0);
     let feed_label = |t: i64| if prep > 0 { format!("start (feed ~{})", hm(t + prep)) } else { "feed".to_string() };
     expect(0, "🍼", feed_at.map(|t| t - prep), feed_at.map(|t| feed_label(t - prep)).unwrap_or_default(), ".45");
     let feed_gap = en::feed_gap(&en::feed_episodes(entries.iter().filter(|e| e.at > now - en::ESTIMATE_BACK && e.at <= now)));
     for t in later(feed_at, feed_gap, prep) {
         expect(0, "🍼", Some(t), feed_label(t), ".25");
     }
-    if s["vitamins"]["to_give_today"].as_array().is_some_and(|a| !a.is_empty()) {
-        expect(2, "💊", s["vitamins"]["remind_at"].as_str().and_then(|a| clock.parse(a, now).ok()), "vitamins".into(), ".45");
+    if let Some(v) = s.vitamins.as_ref().filter(|v| !v.to_give().is_empty()) {
+        expect(2, "💊", Some(v.remind_at), "vitamins".into(), ".45");
     }
-    if s["bath"]["due"]["at"].is_string() && !s["bath"]["due"]["never"].as_bool().unwrap_or(false) {
+    let bath = &s.bath;
+    if !bath.never() {
         // Due today and past the reminder: still today, not overdue.
-        let today = s["bath"]["due"]["today"] == true;
-        expect(2, "🛁", at(&s["bath"]["due"]).map(|t| if today { t.max(now + 60) } else { t }), "bath".into(), ".45");
+        expect(2, "🛁", Some(if bath.today(now) { bath.due_at.max(now + 60) } else { bath.due_at }), "bath".into(), ".45");
     }
     svg + "</svg>"
 }
@@ -552,11 +539,11 @@ pub async fn timeline_day(State(app): State<Arc<App>>, headers: HeaderMap, Query
             let tr = track(c, clock, &app.baby(), t, z)?;
             let Some((a, b)) = tl_days(clock, &tr, t).into_iter().find(|(a, _)| *a == start) else { return Ok(None) };
             let today = a >= clock.day_start(t);
-            let s = if today { en::status(c, clock, &app.baby(), t)? } else { Value::Null };
+            let s = if today { Some(crate::status::status(c, clock, &app.baby(), t)?) } else { None };
             // By week, a week's first day summarises the whole week.
             let until = if z == TL_WEEK { a + 8 * 86400 } else { b };
             let entries = en::list(c, a - en::ESTIMATE_BACK, until.min(t + 1), false)?;
-            Ok::<_, String>(Some(tl_day(clock, &tr, &entries, today.then_some(&s), t, a, b)))
+            Ok::<_, String>(Some(tl_day(clock, &tr, &entries, s.as_ref(), t, a, b)))
         })())
     });
     match res {
@@ -570,22 +557,22 @@ pub async fn timeline_day(State(app): State<Arc<App>>, headers: HeaderMap, Query
 /// One diaper tile: when the last diapers were, and the wet diaper warning.
 /// Not predicted: diapers are checked at feeds, wet at nearly every one and
 /// dirty at most, with nothing in the log telling which (backtested).
-fn diaper_tile(s: &Value) -> Next {
-    let kinds = [("💧", &s["last_wet_diaper"]), ("💩", &s["last_dirty_diaper"])];
-    let latest = kinds.iter().filter(|k| k.1["at"].is_string()).max_by_key(|k| k.1["at"].as_str().unwrap_or("").to_string());
-    let when = latest.and_then(|k| k.1["ago"].as_str()).map(|a| format!("{a} ago")).unwrap_or_else(|| "—".to_string());
+fn diaper_tile(s: &Status) -> Next {
+    let kinds = [("💧", &s.last_wet), ("💩", &s.last_dirty)];
+    let ago = |e: &en::Entry| fmt_dur(s.now - e.at);
+    let latest = kinds.iter().filter_map(|k| k.1.as_ref()).map(|e| e.at).max();
+    let when = latest.map(|t| format!("{} ago", fmt_dur(s.now - t))).unwrap_or_else(|| "—".to_string());
     // What the last diaper was; a kind from an earlier one with its time.
-    let latest_at = latest.and_then(|k| k.1["at"].as_str());
     let parts: Vec<String> = kinds
         .iter()
         .filter_map(|(emoji, last)| {
-            let color = last["value"].as_str().map(stool_emoji).unwrap_or("");
-            let ago = last["ago"].as_str()?;
-            Some(if last["at"].as_str() == latest_at { format!("{emoji}{color}") } else { format!("{emoji}{color} {ago} ago") })
+            let e = last.as_ref()?;
+            let color = if *emoji == "💩" { e.str("stool_color").map(stool_emoji).unwrap_or("") } else { "" };
+            Some(if Some(e.at) == latest { format!("{emoji}{color}") } else { format!("{emoji}{color} {} ago", ago(e)) })
         })
         .collect();
     let sub = if parts.is_empty() { "nothing logged yet".to_string() } else { parts.join(" · ") };
-    let warning = s["wet_diaper_warning"]["text"].as_str().map(|t| format!(r#"<div class="side warn">⚠️ {}</div>"#, esc(t))).unwrap_or_default();
+    let warning = s.wet_warning.as_ref().map(|w| format!(r#"<div class="side warn">⚠️ {}</div>"#, esc(&w.text))).unwrap_or_default();
     let html = format!(
         r#"<div class="next{}"><div class="t">🧷 Diaper</div><div class="v">{}</div><div class="mut">{}</div>{warning}<div class="last">checked at feeds</div></div>"#,
         if warning.is_empty() { "" } else { " overdue" },
@@ -598,35 +585,27 @@ fn diaper_tile(s: &Value) -> Next {
 /// The vitamins tile: what is still to give today (orange from 18:00), or
 /// "tomorrow" when all were given; "starts …" before day 8. None when no
 /// vitamin applies any more.
-fn vitamins_tile(clock: &crate::time::Clock, v: &Value, now: i64) -> Option<Next> {
+fn vitamins_tile(clock: &crate::time::Clock, v: &Vitamins, now: i64) -> Option<Next> {
     // Not needed today (vitamin K with enough formula) counts as not active.
-    let active: Vec<&str> = [("k", "K"), ("d", "D")].iter().filter(|(k, _)| v[*k]["active"] == true && !v[*k]["not_needed"].is_string()).map(|(_, l)| *l).collect();
-    let skipped: Vec<String> = [("k", "K"), ("d", "D")]
-        .iter()
-        .filter_map(|(k, l)| v[*k]["not_needed"].as_str().map(|why| format!("{l} not needed today ({})", why.split(':').next().unwrap_or(why))))
+    let active: Vec<&str> = v.all().iter().filter(|x| x.active && !x.not_needed).map(|x| x.label).collect();
+    let skipped: Vec<String> = v.all().iter().filter(|x| x.not_needed)
+        .map(|x| format!("{} not needed today ({:.0} ml formula yesterday)", x.label, v.formula_yesterday))
         .collect();
-    let from = v["from"].as_str()?;
-    let until: Vec<String> = [("k", "K"), ("d", "D")]
-        .iter()
-        .filter_map(|(k, l)| v[*k]["until"].as_str().map(|u| format!("{l} until {}", clock.parse(&format!("{u} 12:00"), now).map(|t| clock.zoned(t).strftime("%-d %b %Y").to_string()).unwrap_or_default())))
-        .collect();
-    let remind = v["remind_at"].as_str().unwrap_or("").to_string();
-    let to_give: Vec<&str> = v["to_give_today"].as_array().map(|a| a.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
+    let until: Vec<String> = v.all().iter().map(|x| format!("{} until {}", x.label, clock.zoned(x.until - 1).strftime("%-d %b %Y"))).collect();
+    let to_give = v.to_give();
+    let tomorrow = v.remind_at + 86400;
     let (when, sub, at, overdue) = if active.is_empty() && !skipped.is_empty() {
-        let tomorrow = clock.parse(&remind, now).map(|r| clock.fmt(r + 86400)).unwrap_or_default();
         ("tomorrow".to_string(), "nothing to give today".to_string(), tomorrow, false)
     } else if active.is_empty() {
-        let start = clock.date_start(from).ok()?;
-        if start <= now {
+        if v.from <= now {
             return None; // past 4 years
         }
-        (clock.zoned(start).strftime("%a %-d %b").to_string(), "starts (day 8)".to_string(), format!("{from} 00:00"), false)
+        (clock.zoned(v.from).strftime("%a %-d %b").to_string(), "starts (day 8)".to_string(), v.from, false)
     } else if !to_give.is_empty() {
-        let late = clock.parse(&remind, now).is_ok_and(|r| now >= r);
+        let late = now >= v.remind_at;
         let what = to_give.iter().map(|l| format!("vitamin {l}")).collect::<Vec<_>>().join(" + ");
-        ("today".to_string(), format!("{}{what} still to give", if late { "⏰ " } else { "" }), remind.clone(), late)
+        ("today".to_string(), format!("{}{what} still to give", if late { "⏰ " } else { "" }), v.remind_at, late)
     } else {
-        let tomorrow = clock.parse(&remind, now).map(|r| clock.fmt(r + 86400)).unwrap_or_default();
         ("tomorrow".to_string(), format!("✓ {} given today", active.join(" + ")), tomorrow, false)
     };
     let html = format!(
@@ -642,41 +621,38 @@ fn vitamins_tile(clock: &crate::time::Clock, v: &Value, now: i64) -> Option<Next
 
 /// The bath tile: when the next bath is due (as a day, not a clock time) and
 /// whether to use soap (the other kind than last time).
-fn bath_tile(clock: &crate::time::Clock, b: &Value, now: i64) -> Next {
-    let day = |at: &str| match clock.parse(at, now) {
-        Ok(t) if clock.day(t) <= clock.day(now) => "today".to_string(),
-        Ok(t) if clock.day(t) == clock.day(now + 86400) => "tomorrow".to_string(),
-        Ok(t) => clock.zoned(t).strftime("%a %-d %b").to_string(),
-        Err(_) => at.to_string(),
+fn bath_tile(clock: &crate::time::Clock, b: &Bath, now: i64) -> Next {
+    let day = |t: i64| {
+        if clock.day(t) <= clock.day(now) {
+            "today".to_string()
+        } else if clock.day(t) == clock.day(now + 86400) {
+            "tomorrow".to_string()
+        } else {
+            clock.zoned(t).strftime("%a %-d %b").to_string()
+        }
     };
     let kind = |k: &str| match k {
         "with_soap" => "🧼 with soap",
         "without_soap" => "🛁 without soap",
         _ => "🧽 sponge",
     };
-    let d = &b["due"];
-    let never = d["never"].as_bool() == Some(true);
     // Due on a day: "today" all that day; overdue only once it's over.
-    let (when, sub, overdue) = if never {
+    let (when, sub, overdue) = if b.never() {
         ("—".to_string(), "nothing logged yet".to_string(), false)
-    } else if let Some(o) = d["overdue_by"].as_str() {
-        ("now".to_string(), format!("⏰ {o} overdue"), true)
-    } else if d["today"] == true {
+    } else if let Some(o) = b.overdue(now) {
+        ("now".to_string(), format!("⏰ {} overdue", fmt_dur(o)), true)
+    } else if b.today(now) {
         ("today".to_string(), String::new(), false)
     } else {
-        (d["at"].as_str().map(day).unwrap_or_default(), format!("in {}", d["due_in"].as_str().unwrap_or("")), false)
+        (day(b.due_at), format!("in {}", fmt_dur(b.due_at - now)), false)
     };
-    let next = match b["next_kind"].as_str() {
+    let next = match b.next_kind() {
         Some(k) => format!(r#"<div class="side">{}</div>"#, kind(k)),
         None => String::new(),
     };
     let sub = if sub.is_empty() { String::new() } else { format!(r#"<div class="{}">{}</div>"#, if overdue { "warn" } else { "mut" }, esc(&sub)) };
-    let last = match b["last"].as_object() {
-        Some(o) => format!(
-            "last {} ago · {}",
-            o.get("ago").and_then(Value::as_str).unwrap_or(""),
-            kind(o.get("value").and_then(Value::as_str).unwrap_or(""))
-        ),
+    let last = match &b.last {
+        Some(e) => format!("last {} ago · {}", fmt_dur(now - e.at), kind(e.str("bath").unwrap_or(""))),
         None => "two a week, alternating with and without soap".into(),
     };
     let html = format!(
@@ -685,7 +661,7 @@ fn bath_tile(clock: &crate::time::Clock, b: &Value, now: i64) -> Next {
         esc(&when),
         esc(&last)
     );
-    Next { title: "🛁 Bath", at: if never { None } else { d["at"].as_str().map(str::to_string) }, html }
+    Next { title: "🛁 Bath", at: (!b.never()).then_some(b.due_at), html }
 }
 
 /// What's next, soonest (or most overdue) first; kinds without an estimate
@@ -774,8 +750,14 @@ fn attention_label(user: bool, agent: bool) -> String {
     }
 }
 
+/// The last weighing of `entries`, with how it compares (see `weight_line`).
 fn weight_of(entries: &[en::Entry], baby: &en::Baby) -> Option<(f64, Option<String>)> {
-    let e = entries.iter().filter(|e| e.num("weight_g").is_some()).last()?;
+    weight_line(entries.iter().filter(|e| e.num("weight_g").is_some()).last()?, baby, false)
+}
+
+/// A weighing: grams, and its percentile and change since birth (as of the
+/// weighing); with `regained`, that she is back at birth weight.
+fn weight_line(e: &en::Entry, baby: &en::Baby, regained: bool) -> Option<(f64, Option<String>)> {
     let w = e.num("weight_g")?;
     let mut sub = vec![];
     if let Some((p, _)) = baby.weight_percentile(w, e.at) {
@@ -788,6 +770,9 @@ fn weight_of(entries: &[en::Entry], baby: &en::Baby) -> Option<(f64, Option<Stri
                 sub.push(format!("{:+.1}% vs birth", 100.0 * (w - b) / b));
             }
         }
+    }
+    if regained {
+        sub.push("✅ birth weight regained".into());
     }
     Some((w, (!sub.is_empty()).then(|| sub.join(" · "))))
 }
@@ -805,7 +790,7 @@ pub async fn status(State(app): State<Arc<App>>, headers: HeaderMap, Query(q): Q
     let z = zoom(&headers);
     let res = app.db.with(|c| {
         Ok((|| {
-            let s = en::status(c, clock, &app.baby(), t)?;
+            let s = crate::status::status(c, clock, &app.baby(), t)?;
             let tr = track(c, clock, &app.baby(), t, z)?;
             // The days around the opening view (the script loads the rest).
             let span = match z {
@@ -820,7 +805,7 @@ pub async fn status(State(app): State<Arc<App>>, headers: HeaderMap, Query(q): Q
             let entries = en::list(c, a - en::ESTIMATE_BACK, t + 1, false)?;
             let days = tl_render(clock, &tr, &entries, &s, t, a, b);
             // At the week zoom: the week (of the day in view) instead.
-            let log = if z == TL_WEEK { weeklog(&app, c, &tr, day.unwrap_or(today_start), t)? } else { daylog(&app, c, day.unwrap_or(today_start), t, &s)? };
+            let log = if z == TL_WEEK { weeklog(&app, c, &tr, day.unwrap_or(today_start), t)? } else { daylog(&app, c, day.unwrap_or(today_start), t, Some(&s))? };
             Ok::<_, String>((s, tr, days, log))
         })())
     });
@@ -830,30 +815,31 @@ pub async fn status(State(app): State<Arc<App>>, headers: HeaderMap, Query(q): Q
         Err(e) => return html::error_page(StatusCode::INTERNAL_SERVER_ERROR, &en::err(e)),
     };
 
+    let baby = app.baby();
     let mut body = format!(
         r#"<div class="card top"><h1>{}</h1><span class="mut">{}{}</span></div>"#,
         esc(&app.cfg.baby.name),
-        s["age"].as_str().map(|a| format!("{a} old · ")).unwrap_or_default(),
-        esc(s["now"].as_str().unwrap_or(""))
+        baby.birth.map(|b| format!("{} old · ", fmt_dur(t - b))).unwrap_or_default(),
+        esc(&clock.fmt(t))
     );
 
     // Needs attention, first: today's and older.
-    if let Some(list) = s["needs_attention"].as_array().filter(|l| !l.is_empty()) {
+    if !s.attention.is_empty() {
         body += r#"<div class="card"><h2 class="warn">Needs attention</h2><table>"#;
-        for e in list {
-            let by: Vec<&str> = e["needs_attention"]["by"].as_array().map(|v| v.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
+        for e in &s.attention {
+            let (u, a) = (e.attention_by & en::BY_USER != 0, e.attention_by & BY_AGENT != 0);
             body += &format!(
                 "<tr><td class=\"time\"><a href=\"/entry/{}\">{}</a> <span title=\"{}\">{}</span></td><td>{}{}</td></tr>",
-                e["id"].as_i64().unwrap_or(0),
-                esc(&e["at"].as_str().unwrap_or("")[5..]),
-                esc(&attention_label(by.contains(&"user"), by.contains(&"agent"))),
-                attention_emoji(by.contains(&"user"), by.contains(&"agent")),
-                esc(e["text"].as_str().unwrap_or("")),
-                e["needs_attention"]["why"].as_str().map(|w| format!(r#"<div class="sub warn">{}</div>"#, esc(w))).unwrap_or_default()
+                e.entry_id,
+                esc(&clock.zoned(e.at).strftime("%m-%d %H:%M").to_string()),
+                esc(&attention_label(u, a)),
+                attention_emoji(u, a),
+                esc(&e.text),
+                e.attention_why.as_deref().map(|w| format!(r#"<div class="sub warn">{}</div>"#, esc(w))).unwrap_or_default()
             );
         }
         body += "</table>";
-        if list.iter().any(|e| e["needs_attention"]["by"].as_array().is_some_and(|v| v.iter().any(|x| x == "agent"))) {
+        if s.attention.iter().any(|e| e.attention_by & BY_AGENT != 0) {
             body += AGENT_HINT;
         }
         body += "</div>";
@@ -861,25 +847,26 @@ pub async fn status(State(app): State<Arc<App>>, headers: HeaderMap, Query(q): Q
 
     body += &timeline(clock, &tr, &days, t, day.map(|d| d + 12 * 3600));
 
-    let feed_what = s["last_feed"]["value"]["fields"].as_object().map(feed_summary).unwrap_or_default();
-    let feed_warning = s["feeding_guidance"]["warnings"].as_array().is_some_and(|w| !w.is_empty());
+    let feed_what = s.last_feed.as_ref().map(|e| feed_summary(&e.fields)).unwrap_or_default();
     // With a preparation time, the tile shows when to start (diaper first).
-    let start = &s["next_feed_start"];
-    let (feed_next, prep_line) = match (start["at"].as_str(), start["feed_at"].as_str()) {
-        (Some(_), Some(f)) if start["prep"] != "0m" => (start, format!(r#"<div class="side">🧷 diaper first; feed ~{}</div>"#, esc(&f[11..16]))),
-        _ => (&s["next_feed_estimate"], String::new()),
+    let (feed_next, prep_line) = match s.next_feed {
+        Some(f) if s.prep_s > 0 => (s.feed_start(), format!(r#"<div class="side">🧷 diaper first; feed ~{}</div>"#, esc(&clock.zoned(f.at).strftime("%H:%M").to_string()))),
+        f => (f.map(|f| f.at), String::new()),
     };
-    let mut feed = next_tile_extra("🍼 Feed", &s["last_feed"], &feed_what, feed_next,
-            &format!("{prep_line}{}{}", amount_line(&s["feeding_guidance"]), sleep_line(&s["sleep_facing"])));
-    if feed_warning {
-        feed.html = feed.html.replacen(r#"<div class="next">"#, r#"<div class="next overdue">"#, 1);
-    }
+    let extra = format!(
+        "{prep_line}{}{}",
+        s.guidance.as_ref().map(|g| amount_line(clock, g)).unwrap_or_default(),
+        s.sleep.as_ref().map(sleep_line).unwrap_or_default()
+    );
+    // An NVK warning makes the tile orange, even when not overdue.
+    let warn = s.guidance.as_ref().is_some_and(|g| !g.warnings.is_empty());
+    let feed = next_tile_extra(clock, "🍼 Feed", s.last_feed.as_ref().map(|e| (e.at, feed_what.as_str())), feed_next, &extra, warn, t);
     let mut tiles = vec![
         feed,
         diaper_tile(&s),
-        bath_tile(clock, &s["bath"], t),
+        bath_tile(clock, &s.bath, t),
     ];
-    tiles.extend(vitamins_tile(clock, &s["vitamins"], t));
+    tiles.extend(s.vitamins.as_ref().and_then(|v| vitamins_tile(clock, v, t)));
     // What's next is about now: hidden while a past day is in view. Its
     // heading is today's in the days' layout (prev · day · next), so the
     // links stay in place when stepping through days onto today.
@@ -982,7 +969,8 @@ fn weeklog(app: &App, c: &rusqlite::Connection, tr: &Track, day: i64, now: i64) 
 /// needing attention are in their own card at the start, not repeated), or
 /// a past day's, with links to the days around it (`data-day`: the script
 /// scrolls the timeline there instead).
-fn daylog(app: &App, c: &rusqlite::Connection, start: i64, now: i64, s: &Value) -> Result<String, String> {
+/// The log of one day; today's (with `s`, the status) under "Today so far".
+fn daylog(app: &App, c: &rusqlite::Connection, start: i64, now: i64, s: Option<&Status>) -> Result<String, String> {
     let clock = &app.clock;
     let today = clock.day_start(now);
     let end = clock.next_day_start(start);
@@ -995,23 +983,8 @@ fn daylog(app: &App, c: &rusqlite::Connection, start: i64, now: i64, s: &Value) 
         format!(r#"<a href="{href}" data-day="{date}">{text}</a>"#)
     };
     if start >= today {
-        let weight = s["last_weight"]["value"].as_f64().map(|w| {
-            let mut sub = vec![];
-            if let Some(l) = s["weight_percentile"]["label"].as_str() {
-                sub.push(l.to_string());
-            }
-            let change = &s["weight_change_percentile"];
-            if let (Some(c), Some(l)) = (change["percent_change"].as_f64(), change["label"].as_str()) {
-                let mode = app.cfg.baby.delivery.map(|d| d.describe()).unwrap_or("");
-                sub.push(format!("{c:+.1}% vs birth ({l} for {mode})"));
-            } else if let Some(v) = s["weight_vs_birth"].as_str().and_then(|v| v.split('(').nth(1)) {
-                sub.push(format!("{} vs birth", v.trim_end_matches(')')));
-            }
-            if s["birth_weight_regained"]["regained"] == true {
-                sub.push("✅ birth weight regained".into());
-            }
-            (w, (!sub.is_empty()).then(|| sub.join(" · ")))
-        });
+        // The last weighing, whichever day it was.
+        let weight = s.and_then(|s| weight_line(s.last_weight.as_ref()?, &app.baby(), s.regained.flatten().is_some()));
         let mut out = totals_card("<h2>Today so far</h2>", &totals, weight);
         let rest: Vec<en::Entry> = entries.iter().filter(|e| e.attention_by == 0).cloned().collect();
         out += &log_card("<h2>Today's log</h2>", &rest, &loggers, clock, if entries.is_empty() { "Nothing logged yet today." } else { "Only entries that need attention so far." });
@@ -1046,8 +1019,8 @@ pub async fn log_part(State(app): State<Arc<App>>, headers: HeaderMap, Query(q):
                 let tr = track(c, clock, &app.baby(), t, z)?;
                 return weeklog(&app, c, &tr, start, t);
             }
-            let s = if start >= clock.day_start(t) { en::status(c, clock, &app.baby(), t)? } else { Value::Null };
-            daylog(&app, c, start, t, &s)
+            let s = if start >= clock.day_start(t) { Some(crate::status::status(c, clock, &app.baby(), t)?) } else { None };
+            daylog(&app, c, start, t, s.as_ref())
         })())
     });
     match res {
@@ -1945,51 +1918,53 @@ mod tests {
 
     #[test]
     fn bath() {
+        use crate::status::entry;
         use serde_json::json;
         let clock = crate::time::Clock::new("Europe/Amsterdam").unwrap();
-        let now = clock.parse("2025-11-07 10:00", 0).unwrap();
-        // Last bath with soap on 5 Nov 13:45 → due 9 Nov 01:45, next without soap.
-        let b = json!({"due": {"at": "2025-11-10 01:45", "due_in": "2d15h"}, "next_kind": "without_soap",
-                       "last": {"ago": "20h15m", "value": "with_soap"}});
-        let t = bath_tile(&clock, &b, now);
-        assert_eq!(t.at.as_deref(), Some("2025-11-10 01:45"));
-        assert!(t.html.contains(">Mon 10 Nov<") && t.html.contains("in 2d15h") && t.html.contains(r#"<div class="side">🛁 without soap</div>"#) && !t.html.contains("next:"), "{}", t.html);
-        assert!(t.html.contains("last 20h15m ago · 🧼 with soap") && !t.html.contains("overdue"));
-        let b = json!({"due": {"at": "2025-11-06 01:45", "overdue_by": "1d8h"}, "next_kind": "with_soap", "last": {"ago": "4d", "value": "without_soap"}});
-        let t = bath_tile(&clock, &b, now);
-        assert!(t.html.contains(r#"class="next overdue""#) && t.html.contains(">now<") && t.html.contains(">🧼 with soap<"), "{}", t.html);
+        let at = |s: &str| clock.parse(s, 0).unwrap();
+        let now = at("2025-11-07 10:00");
+        let due = |day: &str, last: Option<(&str, &str)>| {
+            let d = clock.date_start(day).unwrap();
+            Bath { last: last.map(|(t, k)| entry(at(t), json!({"bath": k}))), last_any: None, due_day: d, due_at: d + 18 * 3600, day_end: d + 86400 }
+        };
+        // Last bath with soap on 6 Nov 13:45 → due Mon 10 Nov, next without soap.
+        let t = bath_tile(&clock, &due("2025-11-10", Some(("2025-11-06 13:45", "with_soap"))), now);
+        assert_eq!(t.at, Some(at("2025-11-10 18:00")));
+        assert!(t.html.contains(">Mon 10 Nov<") && t.html.contains("in 3d8h") && t.html.contains(r#"<div class="side">🛁 without soap</div>"#) && !t.html.contains("next:"), "{}", t.html);
+        assert!(t.html.contains("last 20h15m ago · 🧼 with soap") && !t.html.contains("overdue"), "{}", t.html);
+        let t = bath_tile(&clock, &due("2025-11-05", Some(("2025-11-03 10:00", "without_soap"))), now);
+        assert!(t.html.contains(r#"class="next overdue""#) && t.html.contains(">now<") && t.html.contains(">🧼 with soap<") && t.html.contains("⏰ 1d10h overdue"), "{}", t.html);
         // Due today, before or after the evening reminder: "today", not overdue.
-        let b = json!({"due": {"on": "2025-11-07", "at": "2025-11-07 18:00", "today": true, "due_in": "8h"}, "next_kind": "without_soap", "last": {"ago": "3d", "value": "with_soap"}});
-        let t = bath_tile(&clock, &b, now);
+        let t = bath_tile(&clock, &due("2025-11-07", Some(("2025-11-04 10:00", "with_soap"))), now);
         assert!(t.html.contains(">today<") && !t.html.contains("in 8h") && !t.html.contains("overdue") && t.html.contains(">🛁 without soap<"), "{}", t.html);
         // Nothing logged: no estimate, sorted last.
-        let t = bath_tile(&clock, &json!({"due": {"never": true, "at": "2025-11-07 10:00"}, "next_kind": null, "last": null}), now);
+        let t = bath_tile(&clock, &due("2025-11-07", None), now);
         assert!(t.at.is_none() && t.html.contains("nothing logged yet") && !t.html.contains(r#"class="side""#));
     }
 
     #[test]
     fn vitamins() {
-        use serde_json::json;
+        use crate::status::vitamins;
         let clock = crate::time::Clock::new("Europe/Amsterdam").unwrap();
-        let v = |k: bool, d: bool, give: serde_json::Value| json!({"from": "2025-11-07", "remind_at": "2025-11-07 18:00", "to_give_today": give,
-            "k": {"active": k, "until": "2026-01-22"}, "d": {"active": d, "until": "2029-10-30"}});
         let at = |s: &str| clock.parse(s, 0).unwrap();
-        let t = vitamins_tile(&clock, &v(true, true, json!(["K", "D"])), at("2025-11-07 10:00")).unwrap();
+        // Active (and given today or not) for K and D.
+        let v = |k: (bool, bool), d: (bool, bool)| vitamins(&clock, "2025-11-07", at("2025-11-07 18:00"), k, d);
+        let t = vitamins_tile(&clock, &v((true, false), (true, false)), at("2025-11-07 10:00")).unwrap();
         assert!(t.html.contains(">today<") && t.html.contains("vitamin K + vitamin D still to give") && !t.html.contains("overdue"), "{}", t.html);
-        assert!(t.html.contains("K until 22 Jan 2026 · D until 30 Oct 2029"));
-        let t = vitamins_tile(&clock, &v(true, true, json!(["K"])), at("2025-11-07 18:30")).unwrap();
+        assert!(t.html.contains("K until 22 Jan 2026 · D until 30 Oct 2029"), "{}", t.html);
+        let t = vitamins_tile(&clock, &v((true, false), (true, true)), at("2025-11-07 18:30")).unwrap();
         assert!(t.html.contains(r#"class="next overdue""#) && t.html.contains("⏰ vitamin K still to give"), "{}", t.html);
-        let t = vitamins_tile(&clock, &v(true, true, json!([])), at("2025-11-07 19:00")).unwrap();
-        assert!(t.html.contains(">tomorrow<") && t.html.contains("✓ K + D given today") && t.at.as_deref() == Some("2025-11-08 18:00"));
-        let t = vitamins_tile(&clock, &v(false, false, json!([])), at("2025-11-03 10:00")).unwrap();
+        let t = vitamins_tile(&clock, &v((true, true), (true, true)), at("2025-11-07 19:00")).unwrap();
+        assert!(t.html.contains(">tomorrow<") && t.html.contains("✓ K + D given today") && t.at == Some(at("2025-11-08 18:00")));
+        let t = vitamins_tile(&clock, &v((false, false), (false, false)), at("2025-11-03 10:00")).unwrap();
         assert!(t.html.contains(">Fri 7 Nov<") && t.html.contains("starts"));
-        assert!(vitamins_tile(&clock, &v(false, false, json!([])), at("2031-01-01 10:00")).is_none());
+        assert!(vitamins_tile(&clock, &v((false, false), (false, false)), at("2031-01-01 10:00")).is_none());
         // Vitamin K not needed (enough formula yesterday): only D, and why.
-        let mut vk = v(true, true, json!(["D"]));
-        vk["k"]["not_needed"] = json!("520 ml formula yesterday: with at least 500 ml a day, formula gives enough vitamin K");
+        let mut vk = v((true, false), (true, false));
+        (vk.k.not_needed, vk.formula_yesterday) = (true, 520.0);
         let t = vitamins_tile(&clock, &vk, at("2025-11-07 10:00")).unwrap();
         assert!(t.html.contains("vitamin D still to give") && t.html.contains("K not needed today (520 ml formula yesterday)"), "{}", t.html);
-        vk["to_give_today"] = json!([]);
+        vk.d.given_today = true;
         let t = vitamins_tile(&clock, &vk, at("2025-11-07 19:00")).unwrap();
         assert!(t.html.contains("✓ D given today") && !t.html.contains("K + D"), "{}", t.html);
     }
@@ -2004,23 +1979,30 @@ mod tests {
 
     #[test]
     fn one_diaper_tile() {
+        use crate::status::{WetWarning, entry};
         use serde_json::json;
-        let s = json!({
-            "last_wet_diaper": {"ago": "4h54m", "at": "2025-11-07 09:00"},
-            "last_dirty_diaper": {"ago": "10h46m", "at": "2025-11-07 03:08", "value": "yellow"},
-        });
+        let clock = crate::time::Clock::new("Europe/Amsterdam").unwrap();
+        let at = |s: &str| clock.parse(s, 0).unwrap();
+        let now = at("2025-11-07 13:54");
+        let s = Status {
+            now,
+            last_wet: Some(entry(at("2025-11-07 09:00"), json!({"wet": true}))),
+            last_dirty: Some(entry(at("2025-11-07 03:08"), json!({"dirty": true, "stool_color": "yellow"}))),
+            ..Default::default()
+        };
         let t = diaper_tile(&s);
         assert!(t.at.is_none(), "not predicted");
         assert!(t.html.contains(">4h54m ago<") && t.html.contains(">💧 · 💩🟡 10h46m ago<") && t.html.contains(r#"class="next""#), "{}", t.html);
         // Both in the last diaper: just what it was.
-        let both = json!({"last_wet_diaper": {"ago": "1h", "at": "2025-11-07 13:00"}, "last_dirty_diaper": {"ago": "1h", "at": "2025-11-07 13:00", "value": "yellow"}});
-        assert!(diaper_tile(&both).html.contains(">1h ago<") && diaper_tile(&both).html.contains(">💧 · 💩🟡<"));
+        let one = entry(at("2025-11-07 12:54"), json!({"wet": true, "dirty": true, "stool_color": "yellow"}));
+        let both = Status { now, last_wet: Some(one.clone()), last_dirty: Some(one), ..Default::default() };
+        assert!(diaper_tile(&both).html.contains(">1h00m ago<") && diaper_tile(&both).html.contains(">💧 · 💩🟡<"), "{}", diaper_tile(&both).html);
         // The warning makes the tile orange.
         let mut s2 = s.clone();
-        s2["wet_diaper_warning"] = json!({"text": "Only 4 wet diapers in the last 24 h (usually at least 6 from day 6)"});
+        s2.wet_warning = Some(WetWarning { wet: 4, minimum: 6, text: "Only 4 wet diapers in the last 24 h (usually at least 6 from day 6)".into() });
         let t = diaper_tile(&s2);
         assert!(t.html.contains("⚠️ Only 4 wet") && t.html.contains(r#"class="next overdue""#), "{}", t.html);
-        assert!(diaper_tile(&json!({})).html.contains("nothing logged yet"));
+        assert!(diaper_tile(&Status::default()).html.contains("nothing logged yet"));
     }
 
     #[test]
@@ -2069,7 +2051,7 @@ mod tests {
                        e("2025-11-07 07:00", json!({"bottle_formula_ml": 60})),
                        e("2025-11-07 10:30", json!({"bottle_formula_ml": 80, "wet": true, "dirty": true})),
                        e("2025-11-07 12:00", json!({"vitamin_d": true, "vitamin_k": true}))];
-        let s = json!({"next_feed_estimate": {"at": "2025-11-07 13:30"}});
+        let s = Status { next_feed: Some(crate::status::FeedEstimate { at: at("2025-11-07 13:30"), gap: 0, n: 0 }), ..Default::default() };
         let tr = Track { from: at("2025-11-05 00:00"), to: now + TL_FUTURE, z: TL_Z };
         let days = tl_days(&clock, &tr, now);
         assert_eq!(days, vec![(tr.from, at("2025-11-06 00:00")), (at("2025-11-06 00:00"), at("2025-11-07 00:00")), (at("2025-11-07 00:00"), tr.to)], "today runs on");
@@ -2089,8 +2071,8 @@ mod tests {
         assert!(past.contains("09:00 🍼 50 ml formula") && !past.contains("expected") && !past.contains(r#"class="now""#), "{past}");
         // With a preparation time the expected feed is the start.
         let mut s2 = s.clone();
-        s2["next_feed_estimate"] = json!({"at": "2025-11-07 15:30"});
-        s2["next_feed_start"] = json!({"at": "2025-11-07 15:15", "feed_at": "2025-11-07 15:30", "prep": "15m"});
+        s2.next_feed = Some(crate::status::FeedEstimate { at: at("2025-11-07 15:30"), gap: 0, n: 0 });
+        s2.prep_s = 15 * 60;
         let all = tl_render(&clock, &tr, &entries, &s2, now, now - TL_PAST, tr.to);
         assert!(all.contains("15:15 start (feed ~15:30) (expected)"), "{all}");
         assert!(all.contains("18:45 start (feed ~19:00)") && all.contains("01:45 start (feed ~02:00)") && !all.contains("feed ~05:30"), "{all}");
@@ -2114,11 +2096,13 @@ mod tests {
 
     #[test]
     fn whats_next_order() {
-        use serde_json::json;
+        let clock = crate::time::Clock::new("Europe/Amsterdam").unwrap();
+        let at = |s: &str| clock.parse(s, 0).unwrap();
+        let now = at("2025-11-07 15:00");
         let html = whats_next("", vec![
-            next_tile_extra("🍼 Feed", &json!({"ago": "1h", "at": "2025-11-07 13:00"}), "", &json!({"at": "2025-11-07 16:00", "due_in": "1h"}), ""),
-            next_tile_extra("💩 Dirty diaper", &Value::Null, "", &Value::Null, ""),
-            next_tile_extra("💧 Wet diaper", &json!({"ago": "3h", "at": "2025-11-07 11:00"}), "", &json!({"at": "2025-11-07 14:30", "overdue_by": "30m"}), ""),
+            next_tile_extra(&clock, "🍼 Feed", Some((at("2025-11-07 13:00"), "")), Some(at("2025-11-07 16:00")), "", false, now),
+            next_tile_extra(&clock, "💩 Dirty diaper", None, None, "", false, now),
+            next_tile_extra(&clock, "💧 Wet diaper", Some((at("2025-11-07 11:00"), "")), Some(at("2025-11-07 14:30")), "", false, now),
         ]);
         let (w, f, d) = (html.find("Wet").unwrap(), html.find("Feed").unwrap(), html.find("Dirty").unwrap());
         assert!(w < f && f < d, "overdue first, no estimate last");

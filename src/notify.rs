@@ -13,7 +13,7 @@ use crate::app::App;
 use crate::push::{self, Outcome, Subscription};
 use crate::time::{Clock, now};
 use rusqlite::{Connection, params};
-use serde_json::Value;
+use crate::status::Status;
 use std::sync::Arc;
 
 pub const KINDS: [(&str, &str, &str); 6] = [
@@ -45,26 +45,26 @@ pub struct Notice {
 }
 
 /// What is due now, for everyone (before choices and deduplication).
-pub fn due(c: &Connection, clock: &Clock, status: &Value, name: &str, now: i64) -> Result<Vec<Notice>, String> {
+pub fn due(c: &Connection, clock: &Clock, status: &Status, name: &str, now: i64) -> Result<Vec<Notice>, String> {
     let mut out = vec![];
-    let at = status["next_feed_estimate"]["at"].as_str().and_then(|s| clock.parse(s, now).ok());
-    let last = status["last_feed"]["at"].as_str().and_then(|s| clock.parse(s, now).ok());
+    let at = status.next_feed.map(|f| f.at);
+    let last = status.last_feed.as_ref().map(|e| e.at);
     if let (Some(at), Some(last)) = (at, last) {
         let mut extra = vec![];
-        if let Some(ml) = status["feeding_guidance"]["next_feed"]["amount_ml"].as_f64() {
-            extra.push(format!("about {ml:.0} ml"));
+        if let Some(g) = &status.guidance {
+            extra.push(format!("about {:.0} ml", g.amount_ml));
         }
-        if let Some(side) = status["feeding_guidance"]["breast_side"]["start"].as_str() {
-            extra.push(format!("start {side} breast"));
+        if let Some(b) = status.guidance.as_ref().and_then(|g| g.breast_side.as_ref()) {
+            extra.push(format!("start {} breast", b.start));
         }
-        if let Some(side) = status["sleep_facing"]["next"].as_str() {
-            extra.push(format!("then face {side}"));
+        if let Some(s) = &status.sleep {
+            extra.push(format!("then face {}", s.next));
         }
         let extra = if extra.is_empty() { String::new() } else { format!(" · {}", extra.join(" · ")) };
         let hm = clock.zoned(at).strftime("%H:%M").to_string();
         let last_hm = clock.zoned(last).strftime("%H:%M").to_string();
         // With a preparation time (diaper first), "soon" counts from the start.
-        let start = status["next_feed_start"]["at"].as_str().and_then(|s| clock.parse(s, now).ok()).unwrap_or(at);
+        let start = status.feed_start().unwrap_or(at);
         if now >= start - SOON && now < start {
             let body = if start < at {
                 format!("Start around {} (diaper first), feed ~{hm} (last feed {last_hm}){extra}", clock.zoned(start).strftime("%H:%M"))
@@ -93,21 +93,19 @@ pub fn due(c: &Connection, clock: &Clock, status: &Value, name: &str, now: i64) 
             });
         }
     }
-    for w in status["feeding_guidance"]["warnings"].as_array().into_iter().flatten() {
-        if let (Some(key), Some(text)) = (w["key"].as_str(), w["text"].as_str()) {
-            out.push(Notice {
-                kind: "feed_warning",
-                key: key.to_string(),
-                title: format!("⚠️ {name}: feeding"),
-                body: text.to_string(),
-                url: "/".into(),
-                ttl: 2 * 3600,
-                by: None,
-            });
-        }
+    for w in status.guidance.iter().flat_map(|g| &g.warnings) {
+        out.push(Notice {
+            kind: "feed_warning",
+            key: w.key.clone(),
+            title: format!("⚠️ {name}: feeding"),
+            body: w.text.clone(),
+            url: "/".into(),
+            ttl: 2 * 3600,
+            by: None,
+        });
     }
-    let give: Vec<&str> = status["vitamins"]["to_give_today"].as_array().map(|a| a.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
-    if let (false, Some(remind)) = (give.is_empty(), status["vitamins"]["remind_at"].as_str().and_then(|s| clock.parse(s, now).ok())) {
+    let give = status.vitamins.as_ref().map(|v| v.to_give()).unwrap_or_default();
+    if let (false, Some(remind)) = (give.is_empty(), status.vitamins.as_ref().map(|v| v.remind_at)) {
         if now >= remind && now < clock.next_day_start(now) {
             let what = give.iter().map(|l| format!("vitamin {l}")).collect::<Vec<_>>().join(" and ");
             out.push(Notice {
@@ -176,40 +174,38 @@ pub fn due(c: &Connection, clock: &Clock, status: &Value, name: &str, now: i64) 
 /// and one each for feeding (due within 15 minutes, overdue, or an NVK
 /// warning), vitamins not given yet after 18:00, and a bath due today (from
 /// 18:00) or overdue.
-pub fn badge(clock: &Clock, status: &Value, now: i64) -> Vec<String> {
+pub fn badge(status: &Status, now: i64) -> Vec<String> {
     let mut items = vec![];
-    for e in status["needs_attention"].as_array().into_iter().flatten() {
-        if e["needs_attention"]["by"].as_array().is_some_and(|b| b.iter().any(|x| x == "user")) {
-            items.push(format!("🙋 {}", e["needs_attention"]["why"].as_str().unwrap_or("needs attention")));
+    for e in status.needs_user() {
+        items.push(format!("🙋 {}", e.attention_why.as_deref().unwrap_or("needs attention")));
+    }
+    // With a preparation time, "soon" and "overdue" count from the start.
+    if let Some(w) = status.guidance.as_ref().and_then(|g| g.warnings.first()) {
+        items.push(format!("⚠️ {}", w.text));
+    } else if let Some(start) = status.feed_start() {
+        if now > start {
+            items.push("🍼 feed overdue".into());
+        } else if start - now <= SOON {
+            items.push("🍼 feed due soon".into());
         }
     }
-    let g = &status["feeding_guidance"];
-    // With a preparation time, "soon" and "overdue" count from the start.
-    let next = if status["next_feed_start"]["at"].is_string() { &status["next_feed_start"] } else { &status["next_feed_estimate"] };
-    if let Some(w) = g["warnings"].as_array().and_then(|w| w.first()).and_then(|w| w["text"].as_str()) {
-        items.push(format!("⚠️ {w}"));
-    } else if next["overdue_by"].is_string() {
-        items.push("🍼 feed overdue".into());
-    } else if next["at"].as_str().and_then(|a| clock.parse(a, now).ok()).is_some_and(|t| t - now <= SOON) {
-        items.push("🍼 feed due soon".into());
-    }
-    let give: Vec<&str> = status["vitamins"]["to_give_today"].as_array().map(|a| a.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
-    if !give.is_empty() && status["vitamins"]["remind_at"].as_str().and_then(|r| clock.parse(r, now).ok()).is_some_and(|r| now >= r) {
+    let give = status.vitamins.as_ref().map(|v| v.to_give()).unwrap_or_default();
+    if !give.is_empty() && status.vitamins.as_ref().is_some_and(|v| now >= v.remind_at) {
         items.push(format!("💊 vitamin {} not given yet", give.join(" + ")));
     }
-    if let Some(w) = status["wet_diaper_warning"]["text"].as_str() {
-        items.push(format!("💧 {w}"));
+    if let Some(w) = &status.wet_warning {
+        items.push(format!("💧 {}", w.text));
     }
     // The bath: from the evening it's due (with which kind), overdue after.
-    let bath = &status["bath"];
-    let kind = match bath["next_kind"].as_str() {
+    let bath = &status.bath;
+    let kind = match bath.next_kind() {
         Some("with_soap") => " (with soap)",
         Some("without_soap") => " (without soap)",
         _ => "",
     };
-    if bath["due"]["overdue_by"].is_string() {
+    if bath.overdue(now).is_some() {
         items.push(format!("🛁 bath overdue{kind}"));
-    } else if bath["due"]["today"] == true && bath["due"]["at"].as_str().and_then(|a| clock.parse(a, now).ok()).is_some_and(|t| now >= t) {
+    } else if bath.today(now) && now >= bath.due_at {
         items.push(format!("🛁 bath today{kind}"));
     }
     items
@@ -224,7 +220,7 @@ pub fn current(app: &App, now: i64) -> Result<(Vec<String>, Vec<&'static str>), 
     app.db
         .with(|c| {
             Ok((|| {
-                let status = crate::entries::status(c, &app.clock, &baby, now)?;
+                let status = crate::status::status(c, &app.clock, &baby, now)?;
                 let mut groups: Vec<&'static str> = vec![];
                 for n in due(c, &app.clock, &status, &baby.name, now)? {
                     let g = group(n.kind);
@@ -232,12 +228,10 @@ pub fn current(app: &App, now: i64) -> Result<(Vec<String>, Vec<&'static str>), 
                         groups.push(g);
                     }
                 }
-                let needs_user = status["needs_attention"].as_array().into_iter().flatten()
-                    .any(|e| e["needs_attention"]["by"].as_array().is_some_and(|b| b.iter().any(|x| x == "user")));
-                if needs_user && !groups.contains(&"attention") {
+                if status.needs_user().next().is_some() && !groups.contains(&"attention") {
                     groups.push("attention");
                 }
-                Ok::<_, String>((badge(&app.clock, &status, now), groups))
+                Ok::<_, String>((badge(&status, now), groups))
             })())
         })
         .map_err(|e| e.to_string())?
@@ -366,7 +360,7 @@ async fn tick(app: &App, client: &reqwest::Client) -> Result<(), String> {
     let jobs: Vec<(i64, Notice)> = app
         .db
         .with(|c| {
-            let status = crate::entries::status(c, &app.clock, &baby, t).map_err(rusqlite::Error::InvalidParameterName)?;
+            let status = crate::status::status(c, &app.clock, &baby, t).map_err(rusqlite::Error::InvalidParameterName)?;
             let notices = due(c, &app.clock, &status, &baby.name, t).map_err(rusqlite::Error::InvalidParameterName)?;
             let users: Vec<i64> = {
                 let mut st = c.prepare("SELECT DISTINCT s.user_id FROM push_subscription s JOIN user u ON u.id = s.user_id WHERE u.role = 'parent'")?;
@@ -424,7 +418,8 @@ pub async fn run(app: Arc<App>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
+    use crate::status::{Bath, FeedEstimate, SleepFacing, entry, vitamins};
+    use serde_json::{Value, json};
 
     #[test]
     fn feed_notices() {
@@ -436,13 +431,14 @@ mod tests {
             Ok(())
         }).unwrap();
         let c = rusqlite::Connection::open(dir.path().join("t.sqlite")).unwrap();
-        let status = json!({
-            "last_feed": {"at": "2025-11-07 10:00"},
-            "next_feed_estimate": {"at": "2025-11-07 13:00"},
-            "feeding_guidance": {"next_feed": {"amount_ml": 90.0}},
-            "sleep_facing": {"next": "right"},
-        });
         let at = |s: &str| clock.parse(s, 0).unwrap();
+        let status = Status {
+            last_feed: Some(entry(at("2025-11-07 10:00"), json!({"bottle_formula_ml": 60}))),
+            next_feed: Some(FeedEstimate { at: at("2025-11-07 13:00"), gap: 3 * 3600, n: 8 }),
+            guidance: Some(crate::feeding::Guidance { amount_ml: 90.0, ..Default::default() }),
+            sleep: Some(SleepFacing { next: "right".into(), ..Default::default() }),
+            ..Default::default()
+        };
         let kinds = |t: &str| due(&c, &clock, &status, "Eva", at(t)).unwrap().into_iter().map(|n| n.kind).collect::<Vec<_>>();
         assert!(kinds("2025-11-07 12:40").is_empty());
         assert_eq!(kinds("2025-11-07 12:45"), ["feed_soon"]);
@@ -453,7 +449,7 @@ mod tests {
         assert_eq!(n.body, "Expected around 13:00 (last feed 10:00) · about 90 ml · then face right");
         // With 15 minutes' preparation: "soon" from 12:30, saying when to start.
         let mut prep = status.clone();
-        prep["next_feed_start"] = json!({"at": "2025-11-07 12:45", "feed_at": "2025-11-07 13:00", "prep": "15m"});
+        prep.prep_s = 15 * 60;
         assert!(due(&c, &clock, &prep, "Eva", at("2025-11-07 12:29")).unwrap().is_empty());
         let n = &due(&c, &clock, &prep, "Eva", at("2025-11-07 12:31")).unwrap()[0];
         assert_eq!(n.body, "Start around 12:45 (diaper first), feed ~13:00 (last feed 10:00) · about 90 ml · then face right");
@@ -493,11 +489,11 @@ mod tests {
         crate::entries::save(&c, 1, &done, at("2025-11-07 12:45")).unwrap();
         assert!(keys("2025-11-07 13:06").is_empty());
 
-        let vit = json!({"vitamins": {"to_give_today": ["K", "D"], "remind_at": "2025-11-07 18:00"}});
+        let vit = Status { vitamins: Some(vitamins(&clock, "2025-11-01", at("2025-11-07 18:00"), (true, false), (true, false))), ..Default::default() };
         assert!(due(&c, &clock, &vit, "Eva", at("2025-11-07 17:59")).unwrap().is_empty());
         let n = &due(&c, &clock, &vit, "Eva", at("2025-11-07 18:01")).unwrap()[0];
         assert_eq!((n.kind, n.key.as_str(), n.body.as_str()), ("vitamins", "2025-11-07", "Not given yet today: vitamin K and vitamin D"));
-        let none = json!({"vitamins": {"to_give_today": [], "remind_at": "2025-11-07 18:00"}});
+        let none = Status { vitamins: Some(vitamins(&clock, "2025-11-01", at("2025-11-07 18:00"), (true, true), (true, true))), ..Default::default() };
         assert!(due(&c, &clock, &none, "Eva", at("2025-11-07 18:01")).unwrap().is_empty());
     }
 
@@ -516,27 +512,28 @@ mod tests {
     fn badge_items() {
         let clock = Clock::new("Europe/Amsterdam").unwrap();
         let at = |s: &str| clock.parse(s, 0).unwrap();
-        let s = json!({
-            "needs_attention": [
-                {"needs_attention": {"by": ["user"], "why": "bath: with or without soap?"}},
-                {"needs_attention": {"by": ["agent"], "why": "split"}},
-            ],
-            "next_feed_estimate": {"at": "2025-11-07 13:00", "due_in": "10m"},
-            "feeding_guidance": {"warnings": []},
-            "vitamins": {"to_give_today": ["D"], "remind_at": "2025-11-07 18:00"},
-            "bath": {"due": {"due_in": "2d"}},
-        });
-        assert_eq!(badge(&clock, &s, at("2025-11-07 12:50")), vec!["🙋 bath: with or without soap?", "🍼 feed due soon"]);
-        assert_eq!(badge(&clock, &s, at("2025-11-07 12:30")).len(), 1, "feed not soon yet; agent-only entries don't count");
+        let attn = |by: i64, why: &str| crate::entries::Entry { attention_by: by, attention_why: Some(why.into()), ..entry(at("2025-11-07 09:00"), json!({})) };
+        let day = clock.date_start("2025-11-09").unwrap();
+        let s = Status {
+            attention: vec![attn(crate::entries::BY_USER, "bath: with or without soap?"), attn(crate::entries::BY_AGENT, "split")],
+            next_feed: Some(FeedEstimate { at: at("2025-11-07 13:00"), gap: 3 * 3600, n: 8 }),
+            vitamins: Some(vitamins(&clock, "2025-11-01", at("2025-11-07 18:00"), (true, true), (true, false))),
+            bath: Bath { last: Some(entry(at("2025-11-05 19:00"), json!({"bath": "with_soap"}))), last_any: None,
+                         due_day: day, due_at: day + 18 * 3600, day_end: day + 86400 },
+            ..Default::default()
+        };
+        assert_eq!(badge(&s, at("2025-11-07 12:50")), vec!["🙋 bath: with or without soap?", "🍼 feed due soon"]);
+        assert_eq!(badge(&s, at("2025-11-07 12:30")).len(), 1, "feed not soon yet; agent-only entries don't count");
         // A bath due today: on the badge from the evening, with the kind.
         let mut sb = s.clone();
-        sb["bath"] = json!({"due": {"on": "2025-11-07", "at": "2025-11-07 18:00", "today": true}, "next_kind": "without_soap"});
-        assert!(!badge(&clock, &sb, at("2025-11-07 17:59")).iter().any(|i| i.starts_with("🛁")), "not before the evening");
-        assert!(badge(&clock, &sb, at("2025-11-07 18:00")).contains(&"🛁 bath today (without soap)".to_string()));
+        let today = clock.date_start("2025-11-07").unwrap();
+        (sb.bath.due_day, sb.bath.due_at, sb.bath.day_end) = (today, today + 18 * 3600, today + 86400);
+        assert!(!badge(&sb, at("2025-11-07 17:59")).iter().any(|i| i.starts_with("🛁")), "not before the evening");
+        assert!(badge(&sb, at("2025-11-07 18:00")).contains(&"🛁 bath today (without soap)".to_string()));
         let mut s2 = s.clone();
-        s2["feeding_guidance"]["warnings"] = json!([{"text": "Almost 5h since the last feed"}]);
-        s2["bath"]["due"] = json!({"overdue_by": "3h"});
-        let b = badge(&clock, &s2, at("2025-11-07 18:30"));
-        assert_eq!(b, vec!["🙋 bath: with or without soap?", "⚠️ Almost 5h since the last feed", "💊 vitamin D not given yet", "🛁 bath overdue"]);
+        s2.guidance = Some(crate::feeding::Guidance { warnings: vec![crate::feeding::Warning { text: "Almost 5h since the last feed".into(), ..Default::default() }], ..Default::default() });
+        (s2.bath.due_day, s2.bath.due_at, s2.bath.day_end) = (today - 86400, today - 6 * 3600, today);
+        let b = badge(&s2, at("2025-11-07 18:30"));
+        assert_eq!(b, vec!["🙋 bath: with or without soap?", "⚠️ Almost 5h since the last feed", "💊 vitamin D not given yet", "🛁 bath overdue (without soap)"]);
     }
 }

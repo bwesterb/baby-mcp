@@ -362,7 +362,7 @@ fn call(app: &App, user: i64, name: &str, a: &Value) -> Result<Value, String> {
                 })())
             }).map_err(en::err)?
         }
-        "status" => app.db.with(|c| Ok(en::status(c, clock, &app.baby(), t))).map_err(en::err)?,
+        "status" => app.db.with(|c| Ok(crate::status::status_json(c, clock, &app.baby(), t))).map_err(en::err)?,
         "stats" => {
             let today = clock.day_start(t);
             let from = match a["from"].as_str() { Some(d) => clock.date_start(d)?, None => clock.day_start(today - 6 * 86400 + 3600) };

@@ -50,7 +50,7 @@ fn at_breast(e: &Entry) -> bool {
 /// The NVK's minimum number of feeds per 24 hours and longest pause for a
 /// healthy term baby ("Advies ten aanzien van wakker maken van pasgeborenen
 /// voor voeding", NVK 2016). It assumes adequate growth and feeding behaviour.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct Minimum {
     pub feeds: f64,
     pub max_pause: i64,
@@ -229,7 +229,7 @@ pub fn fit(days: &[PerKgDay]) -> Result<Fit, String> {
 }
 
 
-pub fn guidance(clock: &Clock, i: &Inputs) -> Value {
+pub fn guidance(clock: &Clock, i: &Inputs) -> Guidance {
     let dol = day_of_life(clock, i.birth, i.now);
     let kg = i.weight_g / 1000.0;
 
@@ -281,52 +281,147 @@ pub fn guidance(clock: &Clock, i: &Inputs) -> Value {
     let extra = (shortfall / feeds).clamp(0.0, per_feed * CATCH_UP_MAX);
     let next_amount = round5(per_feed + extra);
 
-    let mut out = json!({
-        "day_of_life": dol,
-        "weight_g": i.weight_g,
-        "target_ml_per_day": target.round(),
-        "target_basis": basis,
-        "feeds_per_day": feeds,
-        "feeds_per_day_basis": if per_day.is_empty() { "default".to_string() } else {
-            format!("median of the last {} full day(s): {:?}", per_day.len(), per_day.iter().map(|x| *x as i64).collect::<Vec<_>>())
-        },
-        "per_feed_ml": round5(per_feed),
-        "last_24h": {"bottle_ml": given.round(), "feeds": feeds_24h, "feeds_at_breast": breast_24h,
-                     "vs_target_ml": (-shortfall).round()},
-        "next_feed": {"amount_ml": next_amount, "usual_gap": fmt_dur(gap),
-                      "amount_basis": if extra > 0.0 {
-                          format!("{:.0} ml per feed + {:.0} ml towards the last 24 hours' shortfall (at most +20%)", per_feed, extra)
-                      } else { format!("{per_feed:.0} ml per feed") }},
-        "minimum": {"feeds_per_day": min.feeds, "max_pause": fmt_dur(min.max_pause), "rule": min.rule,
-                    "source": "NVK, 'Advies ten aanzien van wakker maken van pasgeborenen voor voeding' (2016), for healthy term babies that grow and drink well"},
-        "note": NOTE,
-    });
-    if let Some((lo, hi)) = range {
-        out["range_ml_per_day"] = json!([lo.round(), hi.round()]);
+    let (next_at, latest) = match eps.last() {
+        Some(&(_, last_end)) => (Some(last_end + gap), Some(latest(&min, &feed_times))),
+        None => (None, None),
+    };
+    Guidance {
+        day_of_life: dol,
+        weight_g: i.weight_g,
+        target,
+        range,
+        basis,
+        feeds,
+        per_day,
+        per_feed,
+        given,
+        feeds_24h,
+        breast_24h,
+        shortfall,
+        extra,
+        amount_ml: next_amount,
+        gap,
+        aim: i.aim_feeds,
+        next_at,
+        latest,
+        prep_s: i.prep_s,
+        warnings: warnings(clock, &min, i.aim_feeds, &feed_times, i.birth, i.now),
+        breast_side: breast_side(i.entries, i.now),
+        min,
+        growth_check: None,
     }
-    if let Some(aim) = i.aim_feeds {
-        out["aim_feeds_per_day"] = json!(aim);
+}
+
+/// Feeding guidance (see `guidance`); `to_json` is what `status` returns.
+#[derive(Debug, Clone, Default)]
+pub struct Guidance {
+    pub day_of_life: i64,
+    pub weight_g: f64,
+    pub target: f64,
+    pub range: Option<(f64, f64)>,
+    pub basis: String,
+    pub feeds: f64,
+    /// Feeds on each of the last full days (newest first), for the basis.
+    pub per_day: Vec<f64>,
+    pub per_feed: f64,
+    /// Bottle millilitres, feeds and feeds at the breast in the last 24 hours.
+    pub given: f64,
+    pub feeds_24h: usize,
+    pub breast_24h: usize,
+    pub shortfall: f64,
+    /// Towards the shortfall, per feed.
+    pub extra: f64,
+    /// The suggested amount for the next feed.
+    pub amount_ml: f64,
+    /// The usual gap between feeds (clamped).
+    pub gap: i64,
+    pub aim: Option<f64>,
+    pub min: Minimum,
+    /// The next feed by this rule, and the latest under the NVK minimum.
+    pub next_at: Option<i64>,
+    pub latest: Option<(i64, String)>,
+    pub prep_s: i64,
+    pub warnings: Vec<Warning>,
+    pub breast_side: Option<BreastSide>,
+    /// A weight change below P25 for the delivery mode.
+    pub growth_check: Option<String>,
+}
+
+/// An NVK warning, with a key so a notification fires once.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Warning {
+    pub kind: &'static str,
+    pub key: String,
+    pub text: String,
+}
+
+/// Which breast to start with, and why.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct BreastSide {
+    pub start: &'static str,
+    pub reason: String,
+    pub left_min_24h: f64,
+    pub right_min_24h: f64,
+}
+
+impl Guidance {
+    /// The latest time to start (with a preparation time).
+    pub fn latest_start(&self) -> Option<i64> {
+        self.latest.as_ref().filter(|_| self.prep_s > 0).map(|(t, _)| t - self.prep_s)
     }
-    if let Some(&(_, last_end)) = eps.last() {
-        out["next_feed"]["at"] = json!(clock.fmt(last_end + gap));
-        let (latest, why) = latest(&min, &feed_times);
-        out["next_feed"]["latest_at"] = json!(clock.fmt(latest));
-        out["next_feed"]["latest_reason"] = json!(why);
-        if i.prep_s > 0 {
-            out["next_feed"]["latest_start_at"] = json!(clock.fmt(latest - i.prep_s));
+
+    pub fn to_json(&self, clock: &Clock) -> Value {
+        let mut out = json!({
+            "day_of_life": self.day_of_life,
+            "weight_g": self.weight_g,
+            "target_ml_per_day": self.target.round(),
+            "target_basis": self.basis,
+            "feeds_per_day": self.feeds,
+            "feeds_per_day_basis": if self.per_day.is_empty() { "default".to_string() } else {
+                format!("median of the last {} full day(s): {:?}", self.per_day.len(), self.per_day.iter().map(|x| *x as i64).collect::<Vec<_>>())
+            },
+            "per_feed_ml": round5(self.per_feed),
+            "last_24h": {"bottle_ml": self.given.round(), "feeds": self.feeds_24h, "feeds_at_breast": self.breast_24h,
+                         "vs_target_ml": (-self.shortfall).round()},
+            "next_feed": {"amount_ml": self.amount_ml, "usual_gap": fmt_dur(self.gap),
+                          "amount_basis": if self.extra > 0.0 {
+                              format!("{:.0} ml per feed + {:.0} ml towards the last 24 hours' shortfall (at most +20%)", self.per_feed, self.extra)
+                          } else { format!("{:.0} ml per feed", self.per_feed) }},
+            "minimum": {"feeds_per_day": self.min.feeds, "max_pause": fmt_dur(self.min.max_pause), "rule": self.min.rule,
+                        "source": "NVK, 'Advies ten aanzien van wakker maken van pasgeborenen voor voeding' (2016), for healthy term babies that grow and drink well"},
+            "note": NOTE,
+        });
+        if let Some((lo, hi)) = self.range {
+            out["range_ml_per_day"] = json!([lo.round(), hi.round()]);
         }
+        if let Some(aim) = self.aim {
+            out["aim_feeds_per_day"] = json!(aim);
+        }
+        if let Some(at) = self.next_at {
+            out["next_feed"]["at"] = json!(clock.fmt(at));
+        }
+        if let Some((latest, why)) = &self.latest {
+            out["next_feed"]["latest_at"] = json!(clock.fmt(*latest));
+            out["next_feed"]["latest_reason"] = json!(why);
+        }
+        if let Some(t) = self.latest_start() {
+            out["next_feed"]["latest_start_at"] = json!(clock.fmt(t));
+        }
+        out["warnings"] = self.warnings.iter().map(|w| json!({"kind": w.kind, "key": w.key, "text": w.text})).collect();
+        if let Some(b) = &self.breast_side {
+            out["breast_side"] = json!({"start": b.start, "reason": b.reason, "left_min_24h": b.left_min_24h, "right_min_24h": b.right_min_24h});
+        }
+        if let Some(g) = &self.growth_check {
+            out["growth_check"] = json!(g);
+        }
+        out
     }
-    out["warnings"] = json!(warnings(clock, &min, i.aim_feeds, &feed_times, i.birth, i.now));
-    if let Some(b) = breast_side(i.entries, i.now) {
-        out["breast_side"] = b;
-    }
-    out
 }
 
 /// Which breast to start with: the side with fewer minutes over the last
 /// 24 hours if that is clearly less (≥ 10 min and ≥ 20% of the total),
 /// otherwise the other side than the one used most at the last breastfeed.
-pub fn breast_side(entries: &[Entry], now: i64) -> Option<Value> {
+pub fn breast_side(entries: &[Entry], now: i64) -> Option<BreastSide> {
     let mins = |e: &Entry| (e.num("breast_left_min").unwrap_or(0.0), e.num("breast_right_min").unwrap_or(0.0));
     let recent: Vec<&Entry> = entries.iter().filter(|e| e.at > now - 86400 && e.at <= now).filter(|e| {
         let (l, r) = mins(e);
@@ -342,7 +437,7 @@ pub fn breast_side(entries: &[Entry], now: i64) -> Option<Value> {
     } else {
         return None;
     };
-    Some(json!({"start": side, "reason": reason, "left_min_24h": l, "right_min_24h": r}))
+    Some(BreastSide { start: side, reason, left_min_24h: l, right_min_24h: r })
 }
 
 /// The latest time for the next feed under the NVK minimum: the longest pause
@@ -365,7 +460,7 @@ const WARN_BEFORE: i64 = 3600;
 /// Warnings when the NVK minimum gets close: almost the longest pause since
 /// the last feed, or (within the hour) fewer than the minimum number of feeds
 /// in the last 24 hours. Each has a key so a notification fires once.
-pub fn warnings(clock: &Clock, min: &Minimum, aim: Option<f64>, feeds: &[i64], birth: i64, now: i64) -> Vec<Value> {
+pub fn warnings(clock: &Clock, min: &Minimum, aim: Option<f64>, feeds: &[i64], birth: i64, now: i64) -> Vec<Warning> {
     let mut out = vec![];
     let hm = |t: i64| clock.zoned(t).strftime("%H:%M").to_string();
     let Some(&last) = feeds.last() else { return out };
@@ -377,7 +472,7 @@ pub fn warnings(clock: &Clock, min: &Minimum, aim: Option<f64>, feeds: &[i64], b
         } else {
             format!("{} since the last feed ({}): longer than the NVK maximum of {}", fmt_dur(now - last), hm(last), fmt_dur(min.max_pause))
         };
-        out.push(json!({"kind": "pause", "key": format!("pause:{last}"), "text": text}));
+        out.push(Warning { kind: "pause", key: format!("pause:{last}"), text });
     }
     // Rolling 24 hours, once she is a day old and someone fed in that time.
     if now - birth >= 86400 && now - last < 86400 {
@@ -395,33 +490,33 @@ pub fn warnings(clock: &Clock, min: &Minimum, aim: Option<f64>, feeds: &[i64], b
                 (format!("Only {in_24h} feeds in the last 24 h (NVK minimum {:.0}{goal})", min.feeds), // Once per last feed: a lasting shortfall is not news every hour.
                  format!("count:last:{last}"))
             };
-            out.push(json!({"kind": "count", "key": key, "text": text}));
+            out.push(Warning { kind: "count", key, text });
         }
     }
     out
 }
 
-/// Feeding guidance for the status, or null without birth and weight.
+/// Feeding guidance for the status, or None without birth and weight.
 /// `last_weight` is the last weighing: grams and when.
-pub fn for_status(c: &rusqlite::Connection, clock: &Clock, baby: &Baby, last_weight: Option<(f64, i64)>, now: i64) -> Result<Value, String> {
+pub fn for_status(c: &rusqlite::Connection, clock: &Clock, baby: &Baby, last_weight: Option<(f64, i64)>, now: i64) -> Result<Option<Guidance>, String> {
     let (Some(birth), Some(weight)) = (baby.birth, last_weight.map(|w| w.0).or(baby.birth_weight_g)) else {
-        return Ok(Value::Null);
+        return Ok(None);
     };
     let from = clock.day_start(now) - 4 * 86400;
     let entries = crate::entries::list(c, from, now + 1, false)?;
     let mut g = guidance(clock, &Inputs { now, birth, birth_weight_g: baby.birth_weight_g, aim_feeds: baby.aim_feeds_per_day, prep_s: baby.feed_prep_s, weight_g: weight, entries: &entries });
-    // Growth as a check: flag a weight change below P25 for the delivery mode.
-    // Read the curve at the age of the weighing, not today's.
+    // Growth as a check: flag a weight change below P25 for the delivery
+    // mode, read at the age of the weighing (not today's).
     if let Some((w, at)) = last_weight {
         if let Some((_, p, label)) = baby.change_percentile(w, at) {
             if p < 25.0 {
-                g["growth_check"] = json!(format!(
+                g.growth_check = Some(format!(
                     "Her weight change is at {label} for her delivery mode, below P25: worth discussing with the midwife or consultatiebureau."
                 ));
             }
         }
     }
-    Ok(g)
+    Ok(Some(g))
 }
 
 #[cfg(test)]
@@ -461,7 +556,7 @@ mod tests {
         // Feeds every 4 h (6 a day): with an aim of 7 the plan is 7 feeds, gap at most 24 h / 7.
         let es: Vec<Entry> = (0..12).map(|k| entry(at("2025-11-06 02:00") + k * 4 * 3600, json!({"bottle_formula_ml": 80}))).collect();
         let now = at("2025-11-07 23:30");
-        let g = guidance(&clock, &Inputs { now, birth, birth_weight_g: Some(3900.0), aim_feeds: Some(7.0), prep_s: 0, weight_g: 3720.0, entries: &es });
+        let g = guidance(&clock, &Inputs { now, birth, birth_weight_g: Some(3900.0), aim_feeds: Some(7.0), prep_s: 0, weight_g: 3720.0, entries: &es }).to_json(&clock);
         assert_eq!(g["feeds_per_day"], 7.0);
         assert_eq!(g["next_feed"]["usual_gap"], "3h26m");
         // Last feed 22:00 (k=11 → 2025-11-07 22:00); at 23:30 no pause warning yet.
@@ -473,16 +568,16 @@ mod tests {
         let fewer: Vec<i64> = feeds.iter().copied().filter(|t| *t != at("2025-11-07 02:00")).collect();
         let w = warnings(&clock, &min, Some(7.0), &fewer, birth, at("2025-11-07 23:30"));
         assert_eq!(w.len(), 1, "{w:?}");
-        assert_eq!(w[0]["text"], "Only 5 feeds in the last 24 h (NVK minimum 6, aim 7)");
+        assert_eq!(w[0].text, "Only 5 feeds in the last 24 h (NVK minimum 6, aim 7)");
         let later = warnings(&clock, &min, Some(7.0), &fewer, birth, at("2025-11-08 00:40"));
-        assert_eq!(later.iter().find(|x| x["kind"] == "count").unwrap()["key"], w[0]["key"]);
+        assert_eq!(later.iter().find(|x| x.kind == "count").unwrap().key, w[0].key);
         // At 01:30 the 02:00 feed of the previous day leaves the window within the hour.
         let w = warnings(&clock, &min, Some(7.0), &feeds[..6], birth, at("2025-11-07 01:30"));
-        assert_eq!(w[0]["text"], "Within the hour only 5 feeds in the last 24 h unless she feeds by 02:00 (NVK minimum 6, aim 7)");
+        assert_eq!(w[0].text, "Within the hour only 5 feeds in the last 24 h unless she feeds by 02:00 (NVK minimum 6, aim 7)");
         // Five hours after the last feed: almost the 6 h maximum.
         let w = warnings(&clock, &min, Some(7.0), &feeds, birth, at("2025-11-08 03:10"));
-        let pause = w.iter().find(|x| x["kind"] == "pause").unwrap();
-        assert_eq!(pause["text"], "Almost 5h10m since the last feed (22:00); the NVK maximum is 6h00m: feed by 04:00");
+        let pause = w.iter().find(|x| x.kind == "pause").unwrap();
+        assert_eq!(pause.text, "Almost 5h10m since the last feed (22:00); the NVK maximum is 6h00m: feed by 04:00");
         // Regular feeds every 3 h: no warnings.
         let regular: Vec<i64> = (0..8).map(|k| at("2025-11-07 00:30") + k * 3 * 3600).collect();
         assert!(warnings(&clock, &min, Some(7.0), &regular, birth, at("2025-11-07 23:59")).is_empty());
@@ -508,7 +603,7 @@ mod tests {
         let t = crate::entries::totals_from(&es, at("2025-11-08 00:00"));
         assert_eq!((t.feeds, t.formula_ml), (0, 70.0));
         let now = at("2025-11-08 01:30");
-        let g = guidance(&clock, &Inputs { now, birth, birth_weight_g: Some(3900.0), aim_feeds: None, prep_s: 0, weight_g: 3720.0, entries: &es });
+        let g = guidance(&clock, &Inputs { now, birth, birth_weight_g: Some(3900.0), aim_feeds: None, prep_s: 0, weight_g: 3720.0, entries: &es }).to_json(&clock);
         assert_eq!(g["last_24h"]["feeds"], 8);
         // The next feed after the last top-up (01:00) + the usual gap (3 h);
         // the NVK pause from the start of the feed (23:00 + 6 h).
@@ -539,10 +634,10 @@ mod tests {
         let e = |ago: i64, l: i64, r: i64| entry(now - ago, json!({"breast_left_min": l, "breast_right_min": r}));
         // Clear imbalance over 24 h: start with the side used less.
         let b = breast_side(&[e(20_000, 15, 5), e(10_000, 20, 5), e(3000, 6, 10)], now).unwrap();
-        assert_eq!((b["start"].as_str(), b["reason"].as_str()), (Some("right"), Some("24 h: L 41′ · R 20′")));
+        assert_eq!((b.start, b.reason.as_str()), ("right", "24 h: L 41′ · R 20′"));
         // Balanced: alternate after the last breastfeed (mostly right → start left).
         let b = breast_side(&[e(20_000, 10, 5), e(3000, 5, 10)], now).unwrap();
-        assert_eq!(b["start"], "left");
+        assert_eq!(b.start, "left");
         // Nothing at the breast in 24 h, or perfectly even last time and balanced: no advice.
         assert!(breast_side(&[e(90_000, 10, 0)], now).is_none());
         assert!(breast_side(&[e(3000, 5, 5)], now).is_none());
@@ -554,7 +649,7 @@ mod tests {
         let birth = clock.parse("2025-10-31 16:40", 0).unwrap();
         // Day 3, 3.6 kg: build-up 30 ml × 8 = 240 < 540 → build-up applies.
         let now = clock.parse("2025-11-02 12:00", 0).unwrap();
-        let g = guidance(&clock, &Inputs { now, birth, birth_weight_g: Some(3900.0), aim_feeds: None, prep_s: 0, weight_g: 3600.0, entries: &[] });
+        let g = guidance(&clock, &Inputs { now, birth, birth_weight_g: Some(3900.0), aim_feeds: None, prep_s: 0, weight_g: 3600.0, entries: &[] }).to_json(&clock);
         assert_eq!(g["day_of_life"], 3);
         assert_eq!(g["target_ml_per_day"], 240.0);
         assert!(g["range_ml_per_day"].is_null());
@@ -568,7 +663,7 @@ mod tests {
                 es.push(entry(day + k * 3 * 3600 + 3600, json!({"bottle_formula_ml": 60})));
             }
         }
-        let g = guidance(&clock, &Inputs { now, birth, birth_weight_g: Some(3900.0), aim_feeds: None, prep_s: 0, weight_g: 3680.0, entries: &es });
+        let g = guidance(&clock, &Inputs { now, birth, birth_weight_g: Some(3900.0), aim_feeds: None, prep_s: 0, weight_g: 3680.0, entries: &es }).to_json(&clock);
         assert_eq!(g["feeds_per_day"], 8.0);
         assert_eq!(g["target_ml_per_day"], 552.0);
         assert_eq!(g["range_ml_per_day"], json!([552.0, 662.0]));
@@ -594,7 +689,7 @@ mod tests {
                 es.push(entry(day + k * 6 * 3600, json!({"bottle_formula_ml": 100})));
             }
         }
-        let g = guidance(&clock, &Inputs { now, birth, birth_weight_g: Some(3900.0), aim_feeds: None, prep_s: 0, weight_g: 4000.0, entries: &es });
+        let g = guidance(&clock, &Inputs { now, birth, birth_weight_g: Some(3900.0), aim_feeds: None, prep_s: 0, weight_g: 4000.0, entries: &es }).to_json(&clock);
         assert_eq!(g["feeds_per_day"], 5.0);
         assert_eq!(g["minimum"]["max_pause"], "8h00m");
         // 600 ml/day / 5 = 120 per feed; shortfall 600 → capped at +20% → 144 → 145.
