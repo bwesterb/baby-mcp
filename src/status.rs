@@ -46,6 +46,8 @@ pub struct FeedEstimate {
     pub gap: i64,
     /// How many recent feeds the gap is from.
     pub n: usize,
+    /// The usual gap was longer than the plan allows (aim, NVK minimum).
+    pub capped: bool,
 }
 
 /// Fewer wet diapers in the last 24 hours than usual for her age.
@@ -162,7 +164,11 @@ impl Status {
             let (k, d) = rel(f.at);
             json!({
                 "at": clock.fmt(f.at),
-                "basis": format!("last feed + median gap ({}) of the last {} feeds (a top-up within {} counts with its feed)", fmt_dur(f.gap), f.n, fmt_dur(TOP_UP_WITHIN)),
+                "basis": if f.capped {
+                    format!("last feed + the longest gap the feeding plan allows ({}: the aim or the NVK minimum number of feeds; the median of the last {} feeds is longer; a top-up within {} counts with its feed)", fmt_dur(f.gap), f.n, fmt_dur(TOP_UP_WITHIN))
+                } else {
+                    format!("last feed + median gap ({}) of the last {} feeds (a top-up within {} counts with its feed)", fmt_dur(f.gap), f.n, fmt_dur(TOP_UP_WITHIN))
+                },
                 k: d,
             })
         });
@@ -274,10 +280,13 @@ fn since(e: &Option<Entry>, clock: &Clock, now: i64, extra: Option<Value>) -> Va
     }
 }
 
-/// The next feed from feed episodes: the end of the last one plus the usual gap.
-pub fn estimate_feed(eps: &[(i64, i64)]) -> Option<FeedEstimate> {
-    let (gap, &(_, last)) = (feed_gap(eps)?, eps.last()?);
-    Some(FeedEstimate { at: last + gap, gap, n: eps.len().min(9) })
+/// The next feed from feed episodes: the end of the last one plus the usual
+/// gap, at most `max_gap` (what the feeding plan allows). The one estimate
+/// of the next feed: tiles, notifications and the timeline use it.
+pub fn estimate_feed(eps: &[(i64, i64)], max_gap: Option<i64>) -> Option<FeedEstimate> {
+    let (usual, &(_, last)) = (feed_gap(eps)?, eps.last()?);
+    let gap = max_gap.map_or(usual, |m| usual.min(m));
+    Some(FeedEstimate { at: last + gap, gap, n: eps.len().min(9), capped: gap < usual })
 }
 
 /// Fewer wet diapers in the last 24 hours than usual for her age: at least as
@@ -375,7 +384,7 @@ pub fn status(c: &Connection, clock: &Clock, baby: &Baby, now: i64) -> Result<St
     Ok(Status {
         now,
         last_feed: last_where(c, FEED_SQL)?,
-        next_feed: estimate_feed(&feed_episodes(&recent)),
+        next_feed: estimate_feed(&feed_episodes(&recent), guidance.as_ref().map(|g| g.max_gap)),
         prep_s: baby.feed_prep_s,
         last_wet: last_where(c, "wet = 1")?,
         last_dirty: last_where(c, "dirty = 1")?,

@@ -505,7 +505,7 @@ fn tl_day(clock: &crate::time::Clock, tr: &Track, entries: &[en::Entry], s: Opti
     let prep = s.prep_s.max(0);
     let feed_label = |t: i64| if prep > 0 { format!("start (feed ~{})", hm(t + prep)) } else { "feed".to_string() };
     expect(0, "🍼", feed_at.map(|t| t - prep), feed_at.map(|t| feed_label(t - prep)).unwrap_or_default(), ".45");
-    let feed_gap = en::feed_gap(&en::feed_episodes(entries.iter().filter(|e| e.at > now - en::ESTIMATE_BACK && e.at <= now)));
+    let feed_gap = s.next_feed.map(|f| f.gap);
     for t in later(feed_at, feed_gap, prep) {
         expect(0, "🍼", Some(t), feed_label(t), ".25");
     }
@@ -2044,7 +2044,8 @@ mod tests {
                        e("2025-11-07 07:00", json!({"bottle_formula_ml": 60})),
                        e("2025-11-07 10:30", json!({"bottle_formula_ml": 80, "wet": true, "dirty": true})),
                        e("2025-11-07 12:00", json!({"vitamin_d": true, "vitamin_k": true}))];
-        let s = Status { next_feed: Some(crate::status::FeedEstimate { at: at("2025-11-07 13:30"), gap: 0, n: 0 }), ..Default::default() };
+        // The usual gap: 07:00 → 10:30.
+        let s = Status { next_feed: Some(crate::status::FeedEstimate { at: at("2025-11-07 13:30"), gap: 3 * 3600 + 1800, n: 2, capped: false }), ..Default::default() };
         let tr = Track { from: at("2025-11-05 00:00"), to: now + TL_FUTURE, z: TL_Z };
         let days = tl_days(&clock, &tr, now);
         assert_eq!(days, vec![(tr.from, at("2025-11-06 00:00")), (at("2025-11-06 00:00"), at("2025-11-07 00:00")), (at("2025-11-07 00:00"), tr.to)], "today runs on");
@@ -2064,7 +2065,7 @@ mod tests {
         assert!(past.contains("09:00 🍼 50 ml formula") && !past.contains("expected") && !past.contains(r#"class="now""#), "{past}");
         // With a preparation time the expected feed is the start.
         let mut s2 = s.clone();
-        s2.next_feed = Some(crate::status::FeedEstimate { at: at("2025-11-07 15:30"), gap: 0, n: 0 });
+        s2.next_feed = Some(crate::status::FeedEstimate { at: at("2025-11-07 15:30"), gap: 3 * 3600 + 1800, n: 2, capped: false });
         s2.prep_s = 15 * 60;
         let all = tl_render(&clock, &tr, &entries, &s2, now, now - TL_PAST, tr.to);
         assert!(all.contains("15:15 start (feed ~15:30) (expected)"), "{all}");

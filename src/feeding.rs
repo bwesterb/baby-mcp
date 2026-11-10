@@ -19,7 +19,6 @@ const RAMP_ML_PER_DAY_OF_LIFE: f64 = 10.0;
 const FEEDS_MAX: f64 = 10.0;
 const FEEDS_DEFAULT: f64 = 8.0;
 const CATCH_UP_MAX: f64 = 0.2; // at most +20% per feed to make up a shortfall
-const GAP_MIN: i64 = 2 * 3600;
 
 
 pub const NOTE: &str = "A guide from rules of thumb (first week about 10 ml × day of life per feed, then 150 ml/kg/day), not medical advice; the plan of the nurse, midwife or doctor always takes precedence. Only bottle millilitres are counted: what she drinks at the breast is not measured, so with breastfeeding the bottle total looks lower.";
@@ -269,22 +268,19 @@ pub fn guidance(clock: &Clock, i: &Inputs) -> Guidance {
     let breast_24h = last.iter().filter(|e| at_breast(e)).count();
     let shortfall = target - given;
 
-    // Next feed: the usual gap (median of recent gaps, from 2 h up to what the
-    // minimum number of feeds allows) and an amount of target / feeds, plus
-    // part of a shortfall (at most +20%). At the latest: the NVK's longest pause.
-    let gap_max = ((86400.0 / floor) as i64).min(min.max_pause);
+    // Next feed: an amount of target / feeds, plus part of a shortfall (at
+    // most +20%). The longest gap the plan allows (the aim or the NVK
+    // minimum number of feeds, and its longest pause) caps the estimate in
+    // `status`; at the latest: the NVK's longest pause.
+    let max_gap = ((86400.0 / floor) as i64).min(min.max_pause);
     // Feed times for the NVK limits: the starts (the cautious side); the next
     // feed after the end of the last one (its last top-up).
     let feed_times: Vec<i64> = eps.iter().map(|f| f.0).collect();
-    let gap = crate::entries::feed_gap(&eps).map(|g| g.clamp(GAP_MIN, gap_max)).unwrap_or((86400.0 / feeds) as i64);
     let per_feed = target / feeds;
     let extra = (shortfall / feeds).clamp(0.0, per_feed * CATCH_UP_MAX);
     let next_amount = round5(per_feed + extra);
 
-    let (next_at, latest) = match eps.last() {
-        Some(&(_, last_end)) => (Some(last_end + gap), Some(latest(&min, &feed_times))),
-        None => (None, None),
-    };
+    let latest = (!feed_times.is_empty()).then(|| latest(&min, &feed_times));
     Guidance {
         day_of_life: dol,
         weight_g: i.weight_g,
@@ -300,9 +296,8 @@ pub fn guidance(clock: &Clock, i: &Inputs) -> Guidance {
         shortfall,
         extra,
         amount_ml: next_amount,
-        gap,
+        max_gap,
         aim: i.aim_feeds,
-        next_at,
         latest,
         prep_s: i.prep_s,
         warnings: warnings(clock, &min, i.aim_feeds, &feed_times, i.birth, i.now),
@@ -333,12 +328,11 @@ pub struct Guidance {
     pub extra: f64,
     /// The suggested amount for the next feed.
     pub amount_ml: f64,
-    /// The usual gap between feeds (clamped).
-    pub gap: i64,
+    /// The longest gap between feeds the plan allows (aim, NVK minimum).
+    pub max_gap: i64,
     pub aim: Option<f64>,
     pub min: Minimum,
-    /// The next feed by this rule, and the latest under the NVK minimum.
-    pub next_at: Option<i64>,
+    /// The latest next feed under the NVK minimum, and why.
     pub latest: Option<(i64, String)>,
     pub prep_s: i64,
     pub warnings: Vec<Warning>,
@@ -383,7 +377,7 @@ impl Guidance {
             "per_feed_ml": round5(self.per_feed),
             "last_24h": {"bottle_ml": self.given.round(), "feeds": self.feeds_24h, "feeds_at_breast": self.breast_24h,
                          "vs_target_ml": (-self.shortfall).round()},
-            "next_feed": {"amount_ml": self.amount_ml, "usual_gap": fmt_dur(self.gap),
+            "next_feed": {"amount_ml": self.amount_ml, "max_gap": fmt_dur(self.max_gap),
                           "amount_basis": if self.extra > 0.0 {
                               format!("{:.0} ml per feed + {:.0} ml towards the last 24 hours' shortfall (at most +20%)", self.per_feed, self.extra)
                           } else { format!("{:.0} ml per feed", self.per_feed) }},
@@ -396,9 +390,6 @@ impl Guidance {
         }
         if let Some(aim) = self.aim {
             out["aim_feeds_per_day"] = json!(aim);
-        }
-        if let Some(at) = self.next_at {
-            out["next_feed"]["at"] = json!(clock.fmt(at));
         }
         if let Some((latest, why)) = &self.latest {
             out["next_feed"]["latest_at"] = json!(clock.fmt(*latest));
@@ -558,7 +549,7 @@ mod tests {
         let now = at("2025-11-07 23:30");
         let g = guidance(&clock, &Inputs { now, birth, birth_weight_g: Some(3900.0), aim_feeds: Some(7.0), prep_s: 0, weight_g: 3720.0, entries: &es }).to_json(&clock);
         assert_eq!(g["feeds_per_day"], 7.0);
-        assert_eq!(g["next_feed"]["usual_gap"], "3h26m");
+        assert_eq!(g["next_feed"]["max_gap"], "3h26m", "24 h / 7");
         // Last feed 22:00 (k=11 → 2025-11-07 22:00); at 23:30 no pause warning yet.
         let feeds: Vec<i64> = es.iter().map(|e| e.at).collect();
         let w = warnings(&clock, &min, Some(7.0), &feeds, birth, at("2025-11-07 23:30"));
@@ -607,7 +598,7 @@ mod tests {
         assert_eq!(g["last_24h"]["feeds"], 8);
         // The next feed after the last top-up (01:00) + the usual gap (3 h);
         // the NVK pause from the start of the feed (23:00 + 6 h).
-        assert_eq!(g["next_feed"]["at"], "2025-11-08 04:00");
+        assert_eq!(crate::status::estimate_feed(&eps, None).map(|f| clock.fmt(f.at)).as_deref(), Some("2025-11-08 04:00"));
         assert_eq!(g["next_feed"]["latest_at"], "2025-11-08 05:00");
     }
 
@@ -672,7 +663,8 @@ mod tests {
         assert_eq!(g["last_24h"]["bottle_ml"], 480.0);
         assert_eq!(g["last_24h"]["vs_target_ml"], -72.0);
         assert_eq!(g["next_feed"]["amount_ml"], 80.0);
-        assert_eq!(g["next_feed"]["usual_gap"], "3h00m");
+        let gap = crate::status::estimate_feed(&crate::entries::feed_episodes(&es), None).unwrap().gap;
+        assert_eq!(fmt_dur(gap), "3h00m");
     }
 
     #[test]
@@ -695,8 +687,10 @@ mod tests {
         // 600 ml/day / 5 = 120 per feed; shortfall 600 → capped at +20% → 144 → 145.
         assert_eq!(g["target_ml_per_day"], 600.0);
         assert_eq!(g["next_feed"]["amount_ml"], 145.0);
-        // Gaps of 6 h are clamped to 24 h / 5 feeds; at the latest 8 h after the last feed.
-        assert_eq!(g["next_feed"]["usual_gap"], "4h48m");
+        // Gaps of 6 h are capped at 24 h / 5 feeds; at the latest 8 h after the last feed.
+        assert_eq!(g["next_feed"]["max_gap"], "4h48m");
+        let est = crate::status::estimate_feed(&crate::entries::feed_episodes(&es), Some(4 * 3600 + 48 * 60)).unwrap();
+        assert_eq!((fmt_dur(est.gap), est.capped), ("4h48m".to_string(), true));
         // Only 3 feeds a day: the 5th most recent (4 Nov 06:00) turned 24 h old long ago,
         // so "at the latest" is already past.
         assert_eq!(g["next_feed"]["latest_at"], "2025-11-06 06:00");
