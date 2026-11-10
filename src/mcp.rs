@@ -270,105 +270,95 @@ fn call(app: &App, user: i64, name: &str, a: &Value) -> Result<Value, String> {
                 return Err("needs_attention_why is required with needs_attention_by: say what is missing".into());
             }
             let n = NewEntry { at, duration_s: duration_arg(a)?.flatten(), text: text.into(), fields, attention_by: by, attention_why: why };
-            app.db.with(|c| {
-                Ok((|| {
-                    let names = en::user_names(c)?;
-                    let probe = Entry {
-                        entry_id: 0, version: 0, at, duration_s: None, text: String::new(), fields: n.fields.clone(),
-                        attention_by: 0, attention_why: None, deleted: false, changed_at: 0, changed_by: 0, superseded_at: None,
-                    };
-                    let groups = probe.groups();
-                    if !a["confirm"].as_bool().unwrap_or(false) && !groups.is_empty() {
-                        let dups = en::nearby(c, at, DUPLICATE_WINDOW, &groups)?;
-                        if !dups.is_empty() {
-                            return Ok(json!({
-                                "logged": false,
-                                "warning": "possible duplicate: entries within 15 minutes with the same kind of event already exist. Ask the user; to log anyway, call log again with confirm=true.",
-                                "existing": dups.iter().map(|e| en::view(e, clock, &names)).collect::<Vec<_>>(),
-                            }));
-                        }
+            app.db.run(|c| {
+                let names = en::user_names(c)?;
+                let probe = Entry {
+                    entry_id: 0, version: 0, at, duration_s: None, text: String::new(), fields: n.fields.clone(),
+                    attention_by: 0, attention_why: None, deleted: false, changed_at: 0, changed_by: 0, superseded_at: None,
+                };
+                let groups = probe.groups();
+                if !a["confirm"].as_bool().unwrap_or(false) && !groups.is_empty() {
+                    let dups = en::nearby(c, at, DUPLICATE_WINDOW, &groups)?;
+                    if !dups.is_empty() {
+                        return Ok(json!({
+                            "logged": false,
+                            "warning": "possible duplicate: entries within 15 minutes with the same kind of event already exist. Ask the user; to log anyway, call log again with confirm=true.",
+                            "existing": dups.iter().map(|e| en::view(e, clock, &names)).collect::<Vec<_>>(),
+                        }));
                     }
-                    let e = en::insert(c, user, &n, t)?;
-                    Ok(json!({"logged": true, "entry": en::view(&e, clock, &names)}))
-                })())
-            }).map_err(en::err)?
+                }
+                let e = en::insert(c, user, &n, t)?;
+                Ok(json!({"logged": true, "entry": en::view(&e, clock, &names)}))
+            })
         }
         "update" => {
             let id = arg_i64(a, "entry_id")?;
             let fields = fields_arg(a)?;
-            app.db.with(|c| {
-                Ok((|| {
-                    let mut e = en::get(c, id)?;
-                    if let Some(at) = a["at"].as_str() {
-                        e.at = not_future(clock.parse_on(at, t, Some(e.at))?, t)?;
+            app.db.run(|c| {
+                let mut e = en::get(c, id)?;
+                if let Some(at) = a["at"].as_str() {
+                    e.at = not_future(clock.parse_on(at, t, Some(e.at))?, t)?;
+                }
+                if let Some(d) = duration_arg(a)? {
+                    e.duration_s = d;
+                }
+                if let Some(text) = a["text"].as_str() {
+                    e.text = Some(text.trim()).filter(|t| !t.is_empty()).ok_or("text cannot be empty")?.to_string();
+                }
+                e.fields.extend(fields);
+                if let Some(rm) = a["remove"].as_array() {
+                    for k in rm.iter().filter_map(Value::as_str) {
+                        e.fields.remove(k);
                     }
-                    if let Some(d) = duration_arg(a)? {
-                        e.duration_s = d;
-                    }
-                    if let Some(text) = a["text"].as_str() {
-                        e.text = Some(text.trim()).filter(|t| !t.is_empty()).ok_or("text cannot be empty")?.to_string();
-                    }
-                    e.fields.extend(fields);
-                    if let Some(rm) = a["remove"].as_array() {
-                        for k in rm.iter().filter_map(Value::as_str) {
-                            e.fields.remove(k);
-                        }
-                    }
-                    if let Some(by) = attention_arg(a)? {
-                        e.attention_by = by;
-                        e.attention_why = if by == 0 { None } else {
-                            Some(a["needs_attention_why"].as_str().map(str::to_string)
-                                .or(e.attention_why.clone()).ok_or("needs_attention_why is required")?)
-                        };
-                    } else if let Some(why) = a["needs_attention_why"].as_str() {
-                        e.attention_why = Some(why.into());
-                    }
-                    let e = en::save(c, user, &e, t)?;
-                    Ok(json!({"updated": true, "entry": en::view(&e, clock, &en::user_names(c)?)}))
-                })())
-            }).map_err(en::err)?
+                }
+                if let Some(by) = attention_arg(a)? {
+                    e.attention_by = by;
+                    e.attention_why = if by == 0 { None } else {
+                        Some(a["needs_attention_why"].as_str().map(str::to_string)
+                            .or(e.attention_why.clone()).ok_or("needs_attention_why is required")?)
+                    };
+                } else if let Some(why) = a["needs_attention_why"].as_str() {
+                    e.attention_why = Some(why.into());
+                }
+                let e = en::save(c, user, &e, t)?;
+                Ok(json!({"updated": true, "entry": en::view(&e, clock, &en::user_names(c)?)}))
+            })
         }
         "delete" | "undelete" => {
             let id = arg_i64(a, "entry_id")?;
-            app.db.with(|c| {
-                Ok((|| {
-                    let mut e = en::get(c, id)?;
-                    let want = name == "delete";
-                    if e.deleted != want {
-                        e.deleted = want;
-                        e = en::save(c, user, &e, t)?;
-                    }
-                    Ok(json!({name: true, "entry": en::view(&e, clock, &en::user_names(c)?)}))
-                })())
-            }).map_err(en::err)?
+            app.db.run(|c| {
+                let mut e = en::get(c, id)?;
+                let want = name == "delete";
+                if e.deleted != want {
+                    e.deleted = want;
+                    e = en::save(c, user, &e, t)?;
+                }
+                Ok(json!({name: true, "entry": en::view(&e, clock, &en::user_names(c)?)}))
+            })
         }
         "entries" => {
             let from = range_start(app, a["from"].as_str(), clock.day_start(t), t)?;
             let to = range_end(app, a["to"].as_str(), t + 1, t)?;
-            app.db.with(|c| {
-                Ok((|| {
-                    let names = en::user_names(c)?;
-                    let mut list = en::list(c, from, to, a["include_deleted"].as_bool().unwrap_or(false))?;
-                    let limit = a["limit"].as_u64().map_or(ENTRIES_DEFAULT, |l| (l as usize).clamp(1, ENTRIES_MAX));
-                    let next = list.get(limit).map(|e| e.at);
-                    list.truncate(limit);
-                    let mut out = json!({"from": clock.fmt(from), "to": clock.fmt(to), "truncated": next.is_some(),
-                                         "entries": list.iter().map(|e| en::view(e, clock, &names)).collect::<Vec<_>>()});
-                    if let Some(t) = next {
-                        out["next_from"] = json!(clock.fmt(t));
-                    }
-                    Ok(out)
-                })())
-            }).map_err(en::err)?
+            app.db.run(|c| {
+                let names = en::user_names(c)?;
+                let mut list = en::list(c, from, to, a["include_deleted"].as_bool().unwrap_or(false))?;
+                let limit = a["limit"].as_u64().map_or(ENTRIES_DEFAULT, |l| (l as usize).clamp(1, ENTRIES_MAX));
+                let next = list.get(limit).map(|e| e.at);
+                list.truncate(limit);
+                let mut out = json!({"from": clock.fmt(from), "to": clock.fmt(to), "truncated": next.is_some(),
+                                     "entries": list.iter().map(|e| en::view(e, clock, &names)).collect::<Vec<_>>()});
+                if let Some(t) = next {
+                    out["next_from"] = json!(clock.fmt(t));
+                }
+                Ok(out)
+            })
         }
         "history" => {
             let id = arg_i64(a, "entry_id")?;
-            app.db.with(|c| {
-                Ok((|| {
-                    let names = en::user_names(c)?;
-                    Ok(json!({"versions": en::history(c, id)?.iter().map(|e| en::view(e, clock, &names)).collect::<Vec<_>>()}))
-                })())
-            }).map_err(en::err)?
+            app.db.run(|c| {
+                let names = en::user_names(c)?;
+                Ok(json!({"versions": en::history(c, id)?.iter().map(|e| en::view(e, clock, &names)).collect::<Vec<_>>()}))
+            })
         }
         "attention" => {
             let mask = match a["by"].as_str().unwrap_or("any") {
@@ -376,14 +366,12 @@ fn call(app: &App, user: i64, name: &str, a: &Value) -> Result<Value, String> {
                 "agent" => BY_AGENT,
                 _ => BY_USER | BY_AGENT,
             };
-            app.db.with(|c| {
-                Ok((|| {
-                    let names = en::user_names(c)?;
-                    Ok(json!({"entries": en::attention(c, mask)?.iter().map(|e| en::view(e, clock, &names)).collect::<Vec<_>>()}))
-                })())
-            }).map_err(en::err)?
+            app.db.run(|c| {
+                let names = en::user_names(c)?;
+                Ok(json!({"entries": en::attention(c, mask)?.iter().map(|e| en::view(e, clock, &names)).collect::<Vec<_>>()}))
+            })
         }
-        "status" => app.db.with(|c| Ok(crate::status::status_json(c, clock, &app.baby(), t))).map_err(en::err)?,
+        "status" => app.db.run(|c| crate::status::status_json(c, clock, &app.baby(), t)),
         "stats" => {
             let today = clock.day_start(t);
             let from = match a["from"].as_str() { Some(d) => clock.date_start(d)?, None => clock.day_start(today - 6 * 86400 + 3600) };
@@ -391,7 +379,7 @@ fn call(app: &App, user: i64, name: &str, a: &Value) -> Result<Value, String> {
             if to - from > 400 * 86400 {
                 return Err("range too long; at most about a year".into());
             }
-            let days = app.db.with(|c| Ok(en::stats(c, clock, &app.baby(), from, to))).map_err(en::err)??;
+            let days = app.db.run(|c| en::stats(c, clock, &app.baby(), from, to))?;
             Ok(json!({"days": days}))
         }
         "fields" => Ok(json!({"fields": FIELDS.iter().map(|f| f.describe()).collect::<Vec<_>>(),

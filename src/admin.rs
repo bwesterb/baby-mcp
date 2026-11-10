@@ -129,7 +129,7 @@ pub fn run(cfg: &Config, cmd: Cmd) -> Result<(), String> {
             .map_err(en::err)?;
         }
         Cmd::Enroll { name } => {
-            let (id, _) = db.with(|c| Ok(en::user_by_name(c, &name))).map_err(en::err)??.ok_or(format!("no user {name:?}"))?;
+            let (id, _) = db.run(|c| en::user_by_name(c, &name))?.ok_or(format!("no user {name:?}"))?;
             println!("Enroll a passkey for {name} within 30 minutes, single use:\n\n  {}\n", enroll_link(cfg, &db, id)?);
         }
         Cmd::Passkeys => {
@@ -208,7 +208,7 @@ pub fn run(cfg: &Config, cmd: Cmd) -> Result<(), String> {
         Cmd::Status => {
             // The same overview the MCP tool gives, including growth and feeding guidance.
             let app = crate::app::App::new(cfg.clone())?;
-            let s = app.db.with(|c| Ok(crate::status::status_json(c, &app.clock, &app.baby(), now()))).map_err(en::err)??;
+            let s = app.db.run(|c| crate::status::status_json(c, &app.clock, &app.baby(), now()))?;
             println!("{}", serde_json::to_string_pretty(&s).unwrap());
         }
         Cmd::PushTest { name } => {
@@ -233,7 +233,7 @@ pub fn run(cfg: &Config, cmd: Cmd) -> Result<(), String> {
         }
         Cmd::Export => {
             let out = db
-                .with(|c| Ok((|| -> Result<Value, String> {
+                .run(|c| {
                     // The only backup: fail loudly rather than export less.
                     let names = en::user_names(c)?;
                     let all = en::list(c, i64::MIN, i64::MAX, true)?;
@@ -257,24 +257,20 @@ pub fn run(cfg: &Config, cmd: Cmd) -> Result<(), String> {
                             "text": r.get::<_, String>(3)?, "status": r.get::<_, String>(4)?, "note": r.get::<_, Option<String>>(5)?}))).map_err(en::err)?
                         .collect::<rusqlite::Result<_>>().map_err(en::err)?;
                     Ok(json!({"exported_at": now(), "users": names, "entries": entries, "suggestions": sugg}))
-                })()))
-                .map_err(en::err)??;
+                })?;
             println!("{}", serde_json::to_string_pretty(&out).unwrap());
         }
         Cmd::ImportHealthsoft { file, user, force } => {
             let raw = std::fs::read_to_string(&file).map_err(|e| format!("{}: {e}", file.display()))?;
             let medical: Value = serde_json::from_str(&raw).map_err(|e| format!("{}: {e}", file.display()))?;
             let n = db
-                .with(|c| {
-                    Ok((|| {
-                        let (uid, _) = en::user_by_name(c, &user)?.ok_or(format!("no user {user:?}"))?;
-                        let tx = c.unchecked_transaction().map_err(en::err)?;
-                        let n = crate::import::import(&tx, &clock, uid, &medical, force)?;
-                        tx.commit().map_err(en::err)?;
-                        Ok::<_, String>(n)
-                    })())
-                })
-                .map_err(en::err)??;
+                .run(|c| {
+                    let (uid, _) = en::user_by_name(c, &user)?.ok_or(format!("no user {user:?}"))?;
+                    let tx = c.unchecked_transaction().map_err(en::err)?;
+                    let n = crate::import::import(&tx, &clock, uid, &medical, force)?;
+                    tx.commit().map_err(en::err)?;
+                    Ok::<_, String>(n)
+                })?;
             println!("Imported {n} entries.");
         }
     }

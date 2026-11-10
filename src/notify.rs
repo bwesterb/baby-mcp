@@ -214,23 +214,20 @@ pub fn badge(status: &Status, now: i64) -> Vec<String> {
 pub fn current(app: &App, now: i64) -> Result<(Vec<String>, Vec<&'static str>), String> {
     let baby = app.baby();
     app.db
-        .with(|c| {
-            Ok((|| {
-                let status = crate::status::status(c, &app.clock, &baby, now)?;
-                let mut groups: Vec<&'static str> = vec![];
-                for n in due(c, &app.clock, &status, &baby.name, now)? {
-                    let g = group(n.kind);
-                    if !matches!(g, "changes" | "test") && !groups.contains(&g) {
-                        groups.push(g);
-                    }
+        .run(|c| {
+            let status = crate::status::status(c, &app.clock, &baby, now)?;
+            let mut groups: Vec<&'static str> = vec![];
+            for n in due(c, &app.clock, &status, &baby.name, now)? {
+                let g = group(n.kind);
+                if !matches!(g, "changes" | "test") && !groups.contains(&g) {
+                    groups.push(g);
                 }
-                if status.needs_user().next().is_some() && !groups.contains(&"attention") {
-                    groups.push("attention");
-                }
-                Ok::<_, String>((badge(&status, now), groups))
-            })())
+            }
+            if status.needs_user().next().is_some() && !groups.contains(&"attention") {
+                groups.push("attention");
+            }
+            Ok::<_, String>((badge(&status, now), groups))
         })
-        .map_err(|e| e.to_string())?
 }
 
 /// Kinds that are off until a user turns them on.

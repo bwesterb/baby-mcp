@@ -531,23 +531,20 @@ pub async fn timeline_day(State(app): State<Arc<App>>, headers: HeaderMap, Query
     let Some(start) = q.get("date").and_then(|d| clock.date_start(d).ok()) else {
         return (StatusCode::BAD_REQUEST, "bad date").into_response();
     };
-    let res = app.db.with(|c| {
-        Ok((|| {
-            let tr = track(c, clock, &app.baby(), t, z)?;
-            let Some((a, b)) = tl_days(clock, &tr, t).into_iter().find(|(a, _)| *a == start) else { return Ok(None) };
-            let today = a >= clock.day_start(t);
-            let s = if today { Some(crate::status::status(c, clock, &app.baby(), t)?) } else { None };
-            // By week, a week's first day summarises the whole week.
-            let until = if z == TL_WEEK { a + 8 * 86400 } else { b };
-            let entries = en::list(c, a - en::ESTIMATE_BACK, until.min(t + 1), false)?;
-            Ok::<_, String>(Some(tl_day(clock, &tr, &entries, s.as_ref(), t, a, b)))
-        })())
+    let res = app.db.run(|c| {
+        let tr = track(c, clock, &app.baby(), t, z)?;
+        let Some((a, b)) = tl_days(clock, &tr, t).into_iter().find(|(a, _)| *a == start) else { return Ok(None) };
+        let today = a >= clock.day_start(t);
+        let s = if today { Some(crate::status::status(c, clock, &app.baby(), t)?) } else { None };
+        // By week, a week's first day summarises the whole week.
+        let until = if z == TL_WEEK { a + 8 * 86400 } else { b };
+        let entries = en::list(c, a - en::ESTIMATE_BACK, until.min(t + 1), false)?;
+        Ok::<_, String>(Some(tl_day(clock, &tr, &entries, s.as_ref(), t, a, b)))
     });
     match res {
-        Ok(Ok(Some(svg))) => ([(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8"), (axum::http::header::CACHE_CONTROL, "no-store")], svg).into_response(),
-        Ok(Ok(None)) => (StatusCode::NOT_FOUND, "no such day").into_response(),
-        Ok(Err(e)) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, en::err(e)).into_response(),
+        Ok(Some(svg)) => ([(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8"), (axum::http::header::CACHE_CONTROL, "no-store")], svg).into_response(),
+        Ok(None) => (StatusCode::NOT_FOUND, "no such day").into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     }
 }
 
@@ -782,31 +779,28 @@ pub async fn status(State(app): State<Arc<App>>, headers: HeaderMap, Query(q): Q
     // A past day in view (`?day=`): its log below the timeline, the timeline on it.
     let day = q.get("day").and_then(|d| clock.date_start(d).ok()).filter(|d| *d < today_start);
     let z = zoom(&headers);
-    let res = app.db.with(|c| {
-        Ok((|| {
-            let s = crate::status::status(c, clock, &app.baby(), t)?;
-            let tr = track(c, clock, &app.baby(), t, z)?;
-            // The days around the opening view (the script loads the rest).
-            let span = match z {
-                TL_SUMMARY => 7 * 86400,
-                TL_WEEK => 49 * 86400,
-                _ => 0,
-            };
-            let (a, b) = match day {
-                Some(d) => (d - 86400 - span, d + 2 * 86400 + span),
-                None => (t - TL_PAST - span, tr.to),
-            };
-            let entries = en::list(c, a - en::ESTIMATE_BACK, t + 1, false)?;
-            let days = tl_render(clock, &tr, &entries, &s, t, a, b);
-            // At the week zoom: the week (of the day in view) instead.
-            let log = if z == TL_WEEK { weeklog(&app, c, &tr, day.unwrap_or(today_start), t)? } else { daylog(&app, c, day.unwrap_or(today_start), t, Some(&s))? };
-            Ok::<_, String>((s, tr, days, log))
-        })())
+    let res = app.db.run(|c| {
+        let s = crate::status::status(c, clock, &app.baby(), t)?;
+        let tr = track(c, clock, &app.baby(), t, z)?;
+        // The days around the opening view (the script loads the rest).
+        let span = match z {
+            TL_SUMMARY => 7 * 86400,
+            TL_WEEK => 49 * 86400,
+            _ => 0,
+        };
+        let (a, b) = match day {
+            Some(d) => (d - 86400 - span, d + 2 * 86400 + span),
+            None => (t - TL_PAST - span, tr.to),
+        };
+        let entries = en::list(c, a - en::ESTIMATE_BACK, t + 1, false)?;
+        let days = tl_render(clock, &tr, &entries, &s, t, a, b);
+        // At the week zoom: the week (of the day in view) instead.
+        let log = if z == TL_WEEK { weeklog(&app, c, &tr, day.unwrap_or(today_start), t)? } else { daylog(&app, c, day.unwrap_or(today_start), t, Some(&s))? };
+        Ok::<_, String>((s, tr, days, log))
     });
     let (s, tr, days, log) = match res {
-        Ok(Ok(x)) => x,
-        Ok(Err(e)) => return html::error_page(StatusCode::INTERNAL_SERVER_ERROR, &e),
-        Err(e) => return html::error_page(StatusCode::INTERNAL_SERVER_ERROR, &en::err(e)),
+        Ok(x) => x,
+        Err(e) => return html::error_page(StatusCode::INTERNAL_SERVER_ERROR, &e),
     };
 
     let baby = app.baby();
@@ -1007,20 +1001,17 @@ pub async fn log_part(State(app): State<Arc<App>>, headers: HeaderMap, Query(q):
         return (StatusCode::BAD_REQUEST, "bad date").into_response();
     };
     let z = q.get("z").and_then(|z| z.parse().ok()).filter(|z| *z < TL_ZOOM.len()).unwrap_or(TL_Z);
-    let res = app.db.with(|c| {
-        Ok((|| {
-            if z == TL_WEEK {
-                let tr = track(c, clock, &app.baby(), t, z)?;
-                return weeklog(&app, c, &tr, start, t);
-            }
-            let s = if start >= clock.day_start(t) { Some(crate::status::status(c, clock, &app.baby(), t)?) } else { None };
-            daylog(&app, c, start, t, s.as_ref())
-        })())
+    let res = app.db.run(|c| {
+        if z == TL_WEEK {
+            let tr = track(c, clock, &app.baby(), t, z)?;
+            return weeklog(&app, c, &tr, start, t);
+        }
+        let s = if start >= clock.day_start(t) { Some(crate::status::status(c, clock, &app.baby(), t)?) } else { None };
+        daylog(&app, c, start, t, s.as_ref())
     });
     match res {
-        Ok(Ok(h)) => ([(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8"), (axum::http::header::CACHE_CONTROL, "no-store")], h).into_response(),
-        Ok(Err(e)) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, en::err(e)).into_response(),
+        Ok(h) => ([(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8"), (axum::http::header::CACHE_CONTROL, "no-store")], h).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     }
 }
 
@@ -1542,10 +1533,9 @@ pub async fn add(State(app): State<Arc<App>>, headers: HeaderMap, Form(f): Form<
         attention_by: BY_AGENT,
         attention_why: Some("fields not extracted yet".to_string()),
     };
-    match app.db.with(|c| Ok(en::insert(c, user.id, &n, t))) {
-        Ok(Ok(_)) => Redirect::to("/").into_response(),
-        Ok(Err(e)) => html::error_page(StatusCode::BAD_REQUEST, &e),
-        Err(e) => html::error_page(StatusCode::INTERNAL_SERVER_ERROR, &en::err(e)),
+    match app.db.run(|c| en::insert(c, user.id, &n, t)) {
+        Ok(_) => Redirect::to("/").into_response(),
+        Err(e) => html::error_page(StatusCode::BAD_REQUEST, &e),
     }
 }
 
@@ -1808,11 +1798,10 @@ pub async fn entry_page(State(app): State<Arc<App>>, headers: HeaderMap, axum::e
         Err(r) => return r,
     };
     let clock = &app.clock;
-    let (versions, names) = match app.db.with(|c| Ok((en::history(c, id), en::user_names(c)))) {
-        Ok((Ok(v), Ok(n))) => (v, n),
+    let (versions, names) = match app.db.run(|c| Ok((en::history(c, id), en::user_names(c)?))) {
+        Ok((Ok(v), n)) => (v, n),
         Ok((Err(_), _)) => return html::error_page(StatusCode::NOT_FOUND, "No such entry."),
-        Ok((_, Err(e))) => return html::error_page(StatusCode::INTERNAL_SERVER_ERROR, &e),
-        Err(e) => return html::error_page(StatusCode::INTERNAL_SERVER_ERROR, &en::err(e)),
+        Err(e) => return html::error_page(StatusCode::INTERNAL_SERVER_ERROR, &e),
     };
     let cur = versions.last().unwrap();
     let day = clock.day(cur.at);
