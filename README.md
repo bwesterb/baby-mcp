@@ -38,7 +38,7 @@ parents log in with their own passkeys.
 - **Web app** (installable on the home screen): what's next, today's totals and
   log, charts, entry history, and a free-text form. A timeline of emojis runs
   from birth to the hours ahead: swipe back and the log below follows the day
-  in view; pinch to zoom out to a summary per day.
+  in view; pinch to zoom out to a summary per day, or per week of life.
 - **Push notifications** (Web Push) and an app-icon badge for feeds, entries
   that need a parent, vitamins and the feeding minimum.
 

@@ -222,19 +222,22 @@ const TL_H: f64 = 92.0;
 const TL_ON_H: f64 = 6.0;
 
 /// A zoom level (pinch): pixels per hour, and hours between hour labels and
-/// between hour lines. The widest level summarises each day instead.
+/// between hour lines. The two widest levels summarise each day, and each
+/// week (of life), instead.
 struct Zoom {
     pxh: f64,
     label: i8,
     line: i8,
 }
-const TL_ZOOM: [Zoom; 3] = [
+const TL_ZOOM: [Zoom; 4] = [
     Zoom { pxh: 38.0, label: 2, line: 1 },
     Zoom { pxh: 12.0, label: 6, line: 3 },
     Zoom { pxh: 3.0, label: 24, line: 24 },
+    Zoom { pxh: 0.5, label: 24, line: 24 },
 ];
 const TL_Z: usize = 0;
 const TL_SUMMARY: usize = 2;
+const TL_WEEK: usize = 3;
 /// The cookie keeping the zoom level (so the page opens at it).
 const TL_Z_COOKIE: &str = "tlz2";
 
@@ -331,10 +334,11 @@ fn tl_day(clock: &crate::time::Clock, tr: &Track, entries: &[en::Entry], s: Opti
     if today {
         svg += &format!(r#"<rect x="{:.1}" y="4" width="{:.1}" height="{:.1}" class="future"/>"#, x(now), x(to) - x(now), h - 22.0);
     }
-    // Night (00–08) and day as a band under the hour numbers.
+    // Night (00–08) and day as a band under the hour numbers (by week: the
+    // week's first day draws it plain, under its label).
     let night = |t: i64| clock.zoned(t).hour() < TL_NIGHT_UNTIL;
     let mut seg = from;
-    while seg < to {
+    while seg < to && tr.z != TL_WEEK {
         let n = night(seg);
         let mut end = seg - seg.rem_euclid(3600) + 3600;
         while end < to && night(end) == n {
@@ -350,6 +354,51 @@ fn tl_day(clock: &crate::time::Clock, tr: &Track, entries: &[en::Entry], s: Opti
             *svg += &format!(r#"<line x1="{0:.1}" x2="{0:.1}" y1="2" y2="{1:.1}" class="now"/>"#, x(now), h - 16.0);
         }
     };
+
+    if tr.z == TL_WEEK {
+        // Weeks of life, drawn by their first day over the whole week: a
+        // line at its start, "week N" in the band, and the averages per day
+        // over its complete days (today's isn't over yet).
+        now_line(&mut svg);
+        let idx = ((from - tr.from) as f64 / 86400.0).round() as i64;
+        if idx % 7 != 0 {
+            return svg + "</svg>";
+        }
+        let mut end = from;
+        for _ in 0..7 {
+            end = clock.next_day_start(end);
+        }
+        let label = format!("week {}", idx / 7 + 1);
+        let band_end = end.min(tr.to);
+        svg += &format!(r#"<rect x="0" y="{:.1}" width="{:.1}" height="17" class="day"/>"#, h - 17.0, x(band_end));
+        svg += &format!(r#"<line x1="0" x2="0" y1="6" y2="{:.1}" class="hour"/>"#, h - 18.0);
+        // This week: over what has passed of it.
+        let mid = x(from + (end.min(now) - from) / 2);
+        svg += &format!(r#"<text x="{mid:.1}" y="{}" text-anchor="middle" class="hd">{label}</text>"#, h - 4.0);
+        let today_start = clock.day_start(now);
+        let (mut n, mut feeds, mut ml, mut wet, mut dirty) = (0u32, 0.0, 0.0, 0.0, 0.0);
+        let mut d = from;
+        while d < end && clock.next_day_start(d) <= today_start {
+            let e = clock.next_day_start(d);
+            let t = en::totals_from(entries.iter().filter(|x| x.at < e), d);
+            (feeds, ml, wet, dirty) = (feeds + t.feeds as f64, ml + t.total_ml, wet + t.wet as f64, dirty + t.dirty as f64);
+            n += 1;
+            d = e;
+        }
+        if n == 0 {
+            return svg + "</svg>";
+        }
+        let k = n as f64;
+        let one = |v: f64| format!("{:.1}", v / k).trim_end_matches(".0").to_string();
+        let title = format!("{label}, per day over {n} day{}: {} feeds, {:.0} ml bottle, {} wet, {} dirty", if n == 1 { "" } else { "s" }, one(feeds), ml / k, one(wet), one(dirty));
+        for (lane, text) in [(0, format!("🍼{}", one(feeds))), (1, format!("💧{:.0} 💩{:.0}", wet / k, dirty / k)), (2, format!("{:.0} ml", ml / k))] {
+            // This week: kept left of "now" (about 6 px a character, emojis 2).
+            let half = text.chars().map(|ch| if ch.is_ascii() { 3.1 } else { 6.0 }).sum::<f64>();
+            let cx = if end > now { mid.min(x(now) - 4.0 - half) } else { mid };
+            svg += &format!(r#"<text x="{cx:.1}" y="{}" text-anchor="middle" class="sum w"><title>{}</title>{text}</text>"#, lanes[lane] - 3.0, esc(&title));
+        }
+        return svg + "</svg>";
+    }
 
     if tr.z == TL_SUMMARY {
         // The day: a line at midnight, the date in the band, and its totals.
@@ -504,7 +553,9 @@ pub async fn timeline_day(State(app): State<Arc<App>>, headers: HeaderMap, Query
             let Some((a, b)) = tl_days(clock, &tr, t).into_iter().find(|(a, _)| *a == start) else { return Ok(None) };
             let today = a >= clock.day_start(t);
             let s = if today { en::status(c, clock, &app.baby(), t)? } else { Value::Null };
-            let entries = en::list(c, a - en::ESTIMATE_BACK, b.min(t + 1), false)?;
+            // By week, a week's first day summarises the whole week.
+            let until = if z == TL_WEEK { a + 8 * 86400 } else { b };
+            let entries = en::list(c, a - en::ESTIMATE_BACK, until.min(t + 1), false)?;
             Ok::<_, String>(Some(tl_day(clock, &tr, &entries, today.then_some(&s), t, a, b)))
         })())
     });
@@ -757,7 +808,11 @@ pub async fn status(State(app): State<Arc<App>>, headers: HeaderMap, Query(q): Q
             let s = en::status(c, clock, &app.baby(), t)?;
             let tr = track(c, clock, &app.baby(), t, z)?;
             // The days around the opening view (the script loads the rest).
-            let span = if z == TL_SUMMARY { 7 * 86400 } else { 0 };
+            let span = match z {
+                TL_SUMMARY => 7 * 86400,
+                TL_WEEK => 49 * 86400,
+                _ => 0,
+            };
             let (a, b) = match day {
                 Some(d) => (d - 86400 - span, d + 2 * 86400 + span),
                 None => (t - TL_PAST - span, tr.to),
@@ -1955,6 +2010,12 @@ mod tests {
         let tr2 = Track { z: 1, ..tr };
         let out = tl_day(&clock, &tr2, &entries, Some(&s), now, days[2].0, days[2].1);
         assert!(out.contains(r#"class="emo s""#) && out.contains(r#"class="hd">12<"#) && !out.contains(r#"class="hd">10<"#), "{out}");
+        // By week: the first day of a week of life summarises it, per day.
+        let trw = Track { z: TL_WEEK, ..tr };
+        let wk = tl_day(&clock, &trw, &entries, None, now, days[0].0, days[0].1);
+        assert!(wk.contains(">week 1<") && wk.contains(">🍼0.5<") && wk.contains(">💧0 💩0<") && wk.contains(">25 ml<"), "two full days (5, 6 Nov), one feed of 50 ml: {wk}");
+        let wk2 = tl_day(&clock, &trw, &entries, None, now, days[1].0, days[1].1);
+        assert!(!wk2.contains("week") && !wk2.contains("class=\"sum\""), "not a week's first day: {wk2}");
         let tr3 = Track { z: TL_SUMMARY, ..tr };
         let sum = tl_day(&clock, &tr3, &entries, Some(&s), now, days[2].0, days[2].1);
         assert!(sum.contains(">🍼2<") && sum.contains(">💧1 💩1<") && sum.contains(">140 ml<") && sum.contains(">Fri 7<") && !sum.contains("expected"), "{sum}");
