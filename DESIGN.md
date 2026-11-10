@@ -199,7 +199,6 @@ Registry v1:
 | `breast_left_min` | integer | minutes at the left breast | 0–90 |
 | `breast_right_min` | integer | minutes at the right breast | 0–90 |
 | `latch` | choice | `with_aid` (e.g. nipple shield), `with_difficulty`, `without_difficulty`, `none` | |
-| `pump_ml` | number | ml pumped (milk supply) | 0–500 |
 | `wet` | boolean | wet diaper | |
 | `dirty` | boolean | dirty diaper | |
 | `stool_color` | choice | `meconium`, `green`, `brown`, `yellow`, `transitional`, `other` | |
@@ -210,8 +209,8 @@ Registry v1:
 | `bath` | choice | `with_soap`, `without_soap` (in the bath) or `sponge` (washcloth only); log shows 🛁🧼, 🛁, 🧽. Goal: two baths a week, alternating: a bath is due 3½ days after the last one (sponge washes don't count), of the other kind than the last; the status page has a 🛁 tile with the day and whether to use soap | |
 | `vitamin_k`, `vitamin_d` | bool | drops given. RIVM: K daily from day 8 until 12 weeks, D daily from day 8 until 4 years; a 💊 tile says what is still to give today (orange from 18:00), and the "Vitamins" notification fires at 18:00 if something wasn't given | |
 
-The baby and the mother are one subject: pumping is logged here because what
-matters is how much pumped milk the baby gets. A breastfeeding at the breast
+The log is about the baby: pumped milk counts when she is given it
+(`bottle_breastmilk_ml`), not when it is pumped. A breastfeeding at the breast
 is `breast_*_min` and/or `latch`; a bottle is `bottle_*_ml`; a feed can have
 both.
 
@@ -226,14 +225,14 @@ Tools:
 
 | tool | what |
 |---|---|
-| `log` | New entry: `text`, `at` (default now), optional `duration_min`, `fields`, `needs_attention_by/why`. Warns instead of logging when an entry within 15 minutes shares a field group (feed, pump, diaper, vomit, measurement), unless `confirm` is set. Returns the entry. |
+| `log` | New entry: `text`, `at` (default now), optional `duration_min`, `fields`, `needs_attention_by/why`. Warns instead of logging when an entry within 15 minutes shares a field group (feed, diaper, vomit, measurement), unless `confirm` is set. Returns the entry. |
 | `update` | Change an entry by id: any of `at`, `duration_min`, `text`, `fields` (merge; a key with `null` sets deliberately-none, `remove` lists keys to make unknown again), attention. |
 | `delete` / `undelete` | Set or clear `deleted`. |
 | `entries` | Entries in a time range (default: today), newest last. |
 | `history` | All versions of one entry. |
 | `attention` | Entries that need attention, by person and/or agent. |
 | `status` | Overview: time since the last feed, diaper, poop; estimates of the next feed, wet diaper and dirty diaper (last one + median recent gap; dirty diapers look back 3 days); today's and last 24 h totals; entries needing attention. |
-| `stats` | Per-day totals for a range: ml of each kind, breast minutes, feeds, diapers, pumped ml, temperature range, weight vs birth weight. |
+| `stats` | Per-day totals for a range: ml of each kind, breast minutes, feeds, diapers, temperature range, weight vs birth weight. |
 | `fields` | The field registry. |
 | `sql` | Read-only SQL for questions the other tools don't answer: a separate read-only connection, an SQLite authorizer that only allows reading `entry`, `entry_old`, `suggestion` and `user` (id and names) — never credentials or tokens — 500 rows, 5 seconds. |
 | `suggest` | Free-text suggestion for the developer: what the user wanted, what was missing, what the agent did instead. |

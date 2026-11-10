@@ -182,8 +182,11 @@ async fn oauth_and_mcp() {
     let (cid, access, refresh) = connect(&t).await;
 
     // MCP basics.
-    let init = mcp(&t, &access, "initialize", json!({"protocolVersion": "2024-06-19"})).await.json();
-    assert_eq!(init["result"]["protocolVersion"], "2024-06-19");
+    let init = mcp(&t, &access, "initialize", json!({"protocolVersion": "2025-06-18"})).await.json();
+    assert_eq!(init["result"]["protocolVersion"], "2025-06-18");
+    // A version it doesn't speak: its newest instead.
+    let other = mcp(&t, &access, "initialize", json!({"protocolVersion": "2024-06-19"})).await.json();
+    assert_eq!(other["result"]["protocolVersion"], "2025-11-25");
     assert!(init["result"]["instructions"].as_str().unwrap().contains("Baby"));
     let tools = mcp(&t, &access, "tools/list", json!({})).await.json();
     assert_eq!(tools["result"]["tools"].as_array().unwrap().len(), 12);
@@ -222,6 +225,11 @@ async fn oauth_and_mcp() {
     assert_eq!(v["today"]["wet"], 2);
     let (_, v) = tool(&t, &access, "stats", json!({})).await;
     assert_eq!(v["days"].as_array().unwrap().len(), 7);
+    // entries: capped, with where to continue.
+    let (_, v) = tool(&t, &access, "entries", json!({"limit": 1})).await;
+    assert_eq!((v["entries"].as_array().unwrap().len(), v["truncated"].as_bool()), (1, Some(true)), "{v}");
+    let (_, v2) = tool(&t, &access, "entries", json!({"from": v["next_from"]})).await;
+    assert!(v2["truncated"] == false && !v2["entries"].as_array().unwrap().is_empty(), "{v2}");
     let (_, v) = tool(&t, &access, "delete", json!({"entry_id": id})).await;
     assert_eq!(v["entry"]["deleted"], true);
     let (_, v) = tool(&t, &access, "status", json!({})).await;
@@ -526,7 +534,7 @@ async fn entry_history_page() {
     let id = t.app.db.with(|c| {
         let e = crate::entries::insert(c, 1, &crate::entries::NewEntry {
             at: now - 60, duration_s: None, text: "50 ml flesvoeding op 10 ml gekolfd".into(),
-            fields: serde_json::from_value(json!({"bottle_formula_ml": 50, "pump_ml": 10})).unwrap(),
+            fields: serde_json::from_value(json!({"bottle_formula_ml": 50, "vomit": true})).unwrap(),
             attention_by: crate::entries::BY_AGENT, attention_why: Some("split".into()),
         }, now - 60).unwrap();
         let mut e2 = e.clone();
@@ -542,7 +550,7 @@ async fn entry_history_page() {
     assert_eq!(r.status, StatusCode::OK);
     assert!(r.body.contains("History · 2 versions"), "{}", r.body);
     assert!(r.body.contains(r#"<span class="chg"><span class="chip del" title="bottle_formula_ml: 50 ml">🍼 50 ml formula</span> → <span class="chip add" title="bottle_formula_ml: 40 ml">🍼 40 ml formula</span></span>"#), "{}", r.body);
-    assert!(r.body.contains(r#"<span class="chip del" title="pump_ml: 10 ml">🥛 10 ml pumped</span>"#) && r.body.contains(r#"<span class="chip add" title="bottle_breastmilk_ml: 10 ml">🍼 10 ml breast milk</span>"#));
+    assert!(r.body.contains(r#"<span class="chip del" title="vomit: yes">🤢 spit-up</span>"#) && r.body.contains(r#"<span class="chip add" title="bottle_breastmilk_ml: 10 ml">🍼 10 ml breast milk</span>"#));
     assert!(r.body.contains(r#"<span class="chip add" title="bottle_formula_ml: 50 ml">"#), "v1 shows the fields it started with");
     assert!(r.body.contains("attention cleared (was: split)") && r.body.contains("🤖"));
     assert!(r.body.find(">v2<").unwrap() < r.body.find(">v1<").unwrap(), "newest first");

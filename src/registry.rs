@@ -16,7 +16,6 @@ pub enum Kind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Group {
     Feed,
-    Pump,
     Diaper,
     Vomit,
     Measure,
@@ -29,7 +28,6 @@ impl Group {
     pub fn name(self) -> &'static str {
         match self {
             Group::Feed => "feed",
-            Group::Pump => "pump",
             Group::Diaper => "diaper",
             Group::Vomit => "vomit",
             Group::Measure => "measurement",
@@ -95,13 +93,6 @@ pub static FIELDS: &[Field] = &[
         unit: "",
         group: Group::Feed,
         help: "put to the breast: with_aid (e.g. nipple shield), with_difficulty, without_difficulty, or none (not put to the breast)",
-    },
-    Field {
-        name: "pump_ml",
-        kind: Kind::Number { min: 0.0, max: 500.0 },
-        unit: "ml",
-        group: Group::Pump,
-        help: "milk pumped (supply)",
     },
     Field {
         name: "wet",

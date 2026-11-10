@@ -84,9 +84,6 @@ pub(crate) fn entry_summary(e: &en::Entry) -> String {
     if e.is("vomit") {
         what.push("🤢".into());
     }
-    if let Some(p) = e.num("pump_ml") {
-        what.push(format!("🥛 {p:.0} ml pumped"));
-    }
     if let Some(t) = e.num("temp_c") {
         what.push(format!("🌡️ {t:.1}"));
     }
@@ -685,9 +682,6 @@ fn totals_card(heading: &str, t: &en::Totals, weight: Option<(f64, Option<String
     s += &stat("🍼 Bottle", &format!("{:.0} ml", t.total_ml), &format!("{:.0} milk + {:.0} formula", t.breastmilk_ml, t.formula_ml));
     let split = format!("💧 {} wet · 💩 {} dirty{}", t.wet, t.dirty, if vomit.is_empty() { String::new() } else { format!(" · {vomit}") });
     s += &stat("Diapers", &t.diapers.to_string(), &split);
-    if t.pump_ml > 0.0 {
-        s += &stat("🥛 Pumped", &format!("{:.0} ml", t.pump_ml), "");
-    }
     if let Some((w, vs)) = weight {
         s += &stat("⚖️ Weight", &format!("{w:.0} g"), vs.as_deref().unwrap_or(""));
     }
@@ -1636,7 +1630,6 @@ fn field_chip(name: &str, v: &Value) -> (String, bool) {
         "breast_left_min" => ("🤱", "left"),
         "breast_right_min" => ("🤱", "right"),
         "latch" => ("🤱", "latch"),
-        "pump_ml" => ("🥛", "pumped"),
         "wet" => ("💧", "wet diaper"),
         "dirty" => ("💩", "dirty diaper"),
         "stool_color" => (v.as_str().map(stool_emoji).filter(|e| !e.is_empty()).unwrap_or("💩"), "stool"),

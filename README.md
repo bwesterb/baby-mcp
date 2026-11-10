@@ -58,7 +58,7 @@ parents log in with their own passkeys.
 | `suggest` | the agent records a wished-for feature for the maintainer |
 
 Fields: bottle breast milk and formula (ml), minutes at the left and right
-breast, latch, pumped ml, wet, dirty, stool colour, spit-up, temperature,
+breast, latch, wet, dirty, stool colour, spit-up, temperature,
 weight, sleeping side, bath (with or without soap, or sponge), vitamin K and D.
 
 ## Guidance and references

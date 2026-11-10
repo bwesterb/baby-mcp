@@ -95,10 +95,11 @@ fn tools(tz: &str) -> Value {
          "inputSchema": {"type": "object", "required": ["entry_id"], "properties": {"entry_id": id}},
          "annotations": {"destructiveHint": false, "idempotentHint": true, "openWorldHint": false}},
         {"name": "entries", "title": "List entries",
-         "description": "Entries in a time range, oldest first. Default: today (local).",
+         "description": "Entries in a time range, oldest first. Default: today (local). At most `limit` entries: with more, truncated is true and next_from is where to continue. For totals over many days use stats or sql instead.",
          "inputSchema": {"type": "object", "properties": {
             "from": {"type": "string", "description": "YYYY-MM-DD or a time; default start of today"},
             "to": {"type": "string", "description": "YYYY-MM-DD (exclusive day) or a time; default now"},
+            "limit": {"type": "integer", "minimum": 1, "maximum": ENTRIES_MAX, "description": "default 200"},
             "include_deleted": {"type": "boolean"}}},
          "annotations": {"readOnlyHint": true}},
         {"name": "history", "title": "Entry history", "description": "All versions of one entry, oldest first.",
@@ -113,7 +114,7 @@ fn tools(tz: &str) -> Value {
          "description": "The current situation: last feed, diapers, temperature and weight, with how long ago; next_feed_estimate (last feed + median recent gap; a top-up within 1h30 counts with its feed, also in feed counts; due_in or overdue_by; diapers aren't predicted: they're checked at feeds); next_feed_start (the feed moved up by the parents' preparation time, diaper first); wet_diaper_warning (fewer wet diapers in 24 h than usual for the age); feeding_guidance: daily target (first-week build-up, then 150 ml/kg), last 24 h against it, the next amount, minimum (NVK minimum feeds per 24 h and longest pause, with the rule), aim_feeds_per_day, next_feed.latest_at / latest_start_at (latest_reason: pause or count), breast_side (which breast to start with), warnings (close to the longest pause or to too few feeds); sleep_facing.next (side to put the baby down on after the next feed, assuming alternation after each feed since the last logged side; put_down_now: the side after the feed just given, while none is logged); bath (the day the next is due, due.on, reminded that evening at due.at, overdue after that day; with or without soap: two a week, alternating); vitamins.to_give_today (with the rule); WHO weight percentiles, weight change against newborns with the same delivery mode, birth weight regained; today's and last-24 h totals; entries needing attention.",
          "inputSchema": {"type": "object", "properties": {}}, "annotations": {"readOnlyHint": true}},
         {"name": "stats", "title": "Per-day statistics",
-         "description": "Per local day: feeds, ml of breast milk and formula, breast minutes, diapers, spit-ups, pumped ml, temperature range, weight vs birth weight and its WHO weight-for-age percentile.",
+         "description": "Per local day: feeds, ml of breast milk and formula, breast minutes, diapers, spit-ups, temperature range, weight vs birth weight and its WHO weight-for-age percentile.",
          "inputSchema": {"type": "object", "properties": {
             "from": {"type": "string", "description": "YYYY-MM-DD, default 7 days ago"},
             "to": {"type": "string", "description": "YYYY-MM-DD (inclusive), default today"}}},
@@ -164,7 +165,7 @@ fn one(app: &App, user: i64, req: &Value) -> Option<Value> {
     let id = id?; // notifications get no response
     let result = match method {
         "initialize" => json!({
-            "protocolVersion": req["params"]["protocolVersion"].as_str().unwrap_or("2025-06-18"),
+            "protocolVersion": protocol_version(req["params"]["protocolVersion"].as_str()),
             "capabilities": {"tools": {}},
             "serverInfo": {"name": "baby-mcp", "version": env!("CARGO_PKG_VERSION")},
             "instructions": format!("This log is for {}.\n\n{INSTRUCTIONS}", app.cfg.baby.name),
@@ -240,6 +241,19 @@ fn not_future(at: i64, now: i64) -> Result<i64, String> {
         return Err("that time is in the future; give the time it happened".into());
     }
     Ok(at)
+}
+
+/// How many entries `entries` returns by default, and at most: a wide range
+/// would otherwise put the whole log in the agent's context.
+const ENTRIES_DEFAULT: usize = 200;
+const ENTRIES_MAX: usize = 500;
+
+/// MCP versions this server speaks, newest first. A client asking for one
+/// gets it; otherwise the newest (the client then decides).
+const PROTOCOL_VERSIONS: [&str; 4] = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
+
+fn protocol_version(asked: Option<&str>) -> &'static str {
+    PROTOCOL_VERSIONS.iter().find(|v| Some(**v) == asked).copied().unwrap_or(PROTOCOL_VERSIONS[0])
 }
 
 fn call(app: &App, user: i64, name: &str, a: &Value) -> Result<Value, String> {
@@ -334,9 +348,16 @@ fn call(app: &App, user: i64, name: &str, a: &Value) -> Result<Value, String> {
             app.db.with(|c| {
                 Ok((|| {
                     let names = en::user_names(c)?;
-                    let list = en::list(c, from, to, a["include_deleted"].as_bool().unwrap_or(false))?;
-                    Ok(json!({"from": clock.fmt(from), "to": clock.fmt(to),
-                              "entries": list.iter().map(|e| en::view(e, clock, &names)).collect::<Vec<_>>()}))
+                    let mut list = en::list(c, from, to, a["include_deleted"].as_bool().unwrap_or(false))?;
+                    let limit = a["limit"].as_u64().map_or(ENTRIES_DEFAULT, |l| (l as usize).clamp(1, ENTRIES_MAX));
+                    let next = list.get(limit).map(|e| e.at);
+                    list.truncate(limit);
+                    let mut out = json!({"from": clock.fmt(from), "to": clock.fmt(to), "truncated": next.is_some(),
+                                         "entries": list.iter().map(|e| en::view(e, clock, &names)).collect::<Vec<_>>()});
+                    if let Some(t) = next {
+                        out["next_from"] = json!(clock.fmt(t));
+                    }
+                    Ok(out)
                 })())
             }).map_err(en::err)?
         }

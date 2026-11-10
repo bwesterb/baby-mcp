@@ -302,7 +302,6 @@ pub struct Totals {
     pub dirty_only: u32,
     pub wet_and_dirty: u32,
     pub vomit: u32,
-    pub pump_ml: f64,
 }
 
 /// Totals; feeds counted as episodes (a top-up counts with its feed). See
@@ -348,7 +347,6 @@ pub fn totals_from<'a>(entries: impl IntoIterator<Item = &'a Entry>, from: i64) 
         }
         t.diapers += (wet || dirty) as u32;
         t.vomit += e.is("vomit") as u32;
-        t.pump_ml += e.num("pump_ml").unwrap_or(0.0);
     }
     t.total_ml = t.breastmilk_ml + t.formula_ml;
     t
