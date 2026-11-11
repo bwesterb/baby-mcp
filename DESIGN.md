@@ -234,7 +234,7 @@ Tools:
 | `entries` | Entries in a time range (default: today), oldest first; at most `limit` (default 200, at most 500), with `truncated` and `next_from` to continue. |
 | `history` | All versions of one entry. |
 | `attention` | Entries that need attention, by person and/or agent. |
-| `status` | Overview: the last feed, diapers, temperature and weight, with how long ago; the next feed (`next_feed_estimate`: the end of the last feed + the median recent gap, at most the longest gap the feeding plan allows; `next_feed_start` moved up by the preparation time); the wet-diaper warning; feeding guidance; the sleep side; bath and vitamins; growth percentiles; today's and last 24 h totals; entries needing attention. Diapers aren't predicted (they're checked at feeds). |
+| `status` | Overview: the last feed, diapers, temperature and weight, with how long ago; the next feed (`next_feed_estimate`: the end of the last feed + the median recent gap, at least 2 hours and at most the longest gap the feeding plan allows; `next_feed_start` moved up by the preparation time); the wet-diaper warning; feeding guidance; the sleep side; bath and vitamins; growth percentiles; today's and last 24 h totals; entries needing attention. Diapers aren't predicted (they're checked at feeds). |
 | `stats` | Per-day totals for a range: ml of each kind, breast minutes, feeds, diapers, temperature range, weight vs birth weight. |
 | `fields` | The field registry. |
 | `sql` | Read-only SQL for questions the other tools don't answer: a separate read-only connection, an SQLite authorizer that only allows reading `entry`, `entry_old`, `suggestion`, `json_each`/`json_tree` and `user` (id and names) — never credentials or tokens — 500 rows, 5 seconds. |
@@ -402,7 +402,8 @@ last three full days, kept between the NVK minimum and 10. The suggested next am
 target divided by the feeds per day, plus part of a shortfall over the last
 24 hours (at most +20%), rounded to 5 ml. The time is `status`'s one
 next-feed estimate: the end of the last feed plus the median recent gap, at
-most 24 hours ÷ the planned number of feeds (and the NVK's longest pause),
+least 2 hours (snacks and cluster feeding shorten the median) and at most 24
+hours ÷ the planned number of feeds (and the NVK's longest pause),
 given as `next_feed.max_gap`; "at the latest" is the last feed plus the NVK's longest pause, or earlier,
 the moment the last 24 hours would hold fewer than the NVK minimum number of
 feeds (when the minimum-th most recent feed turns 24 h old).

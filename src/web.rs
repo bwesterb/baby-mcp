@@ -2037,7 +2037,7 @@ mod tests {
                        e("2025-11-07 10:30", json!({"bottle_formula_ml": 80, "wet": true, "dirty": true})),
                        e("2025-11-07 12:00", json!({"vitamin_d": true, "vitamin_k": true}))];
         // The usual gap: 07:00 → 10:30.
-        let s = Status { next_feed: Some(crate::status::FeedEstimate { at: at("2025-11-07 13:30"), gap: 3 * 3600 + 1800, n: 2, capped: false }), ..Default::default() };
+        let s = Status { next_feed: Some(crate::status::FeedEstimate { at: at("2025-11-07 13:30"), gap: 3 * 3600 + 1800, n: 2, usual: 3 * 3600 + 1800 }), ..Default::default() };
         let tr = Track { from: at("2025-11-05 00:00"), to: now + TL_FUTURE, z: TL_Z };
         let days = tl_days(&clock, &tr, now);
         assert_eq!(days, vec![(tr.from, at("2025-11-06 00:00")), (at("2025-11-06 00:00"), at("2025-11-07 00:00")), (at("2025-11-07 00:00"), tr.to)], "today runs on");
@@ -2057,7 +2057,7 @@ mod tests {
         assert!(past.contains("09:00 🍼 50 ml formula") && !past.contains("expected") && !past.contains(r#"class="now""#), "{past}");
         // With a preparation time the expected feed is the start.
         let mut s2 = s.clone();
-        s2.next_feed = Some(crate::status::FeedEstimate { at: at("2025-11-07 15:30"), gap: 3 * 3600 + 1800, n: 2, capped: false });
+        s2.next_feed = Some(crate::status::FeedEstimate { at: at("2025-11-07 15:30"), gap: 3 * 3600 + 1800, n: 2, usual: 3 * 3600 + 1800 });
         s2.prep_s = 15 * 60;
         let all = tl_render(&clock, &tr, &entries, &s2, now, now - TL_PAST, tr.to);
         assert!(all.contains("15:15 start (feed ~15:30) (expected)"), "{all}");

@@ -685,7 +685,7 @@ mod tests {
         // Gaps of 6 h are capped at 24 h / 5 feeds; at the latest 8 h after the last feed.
         assert_eq!(g["next_feed"]["max_gap"], "4h48m");
         let est = crate::status::estimate_feed(&crate::entries::feed_episodes(&es), Some(4 * 3600 + 48 * 60)).unwrap();
-        assert_eq!((fmt_dur(est.gap), est.capped), ("4h48m".to_string(), true));
+        assert_eq!((fmt_dur(est.gap), fmt_dur(est.usual)), ("4h48m".to_string(), "6h00m".to_string()));
         // Only 3 feeds a day: the 5th most recent (4 Nov 06:00) turned 24 h old long ago,
         // so "at the latest" is already past.
         assert_eq!(g["next_feed"]["latest_at"], "2025-11-06 06:00");

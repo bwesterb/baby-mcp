@@ -46,9 +46,13 @@ pub struct FeedEstimate {
     pub gap: i64,
     /// How many recent feeds the gap is from.
     pub n: usize,
-    /// The usual gap was longer than the plan allows (aim, NVK minimum).
-    pub capped: bool,
+    /// The median recent gap, before FEED_GAP_MIN and the plan's cap.
+    pub usual: i64,
 }
+
+/// The shortest gap the next-feed estimate assumes: snacks and cluster
+/// feeding make the median shorter than a feed rhythm.
+pub const FEED_GAP_MIN: i64 = 2 * 3600;
 
 /// Fewer wet diapers in the last 24 hours than usual for her age.
 #[derive(Debug, Clone, PartialEq)]
@@ -164,11 +168,15 @@ impl Status {
             let (k, d) = rel(f.at);
             json!({
                 "at": clock.fmt(f.at),
-                "basis": if f.capped {
-                    format!("last feed + the longest gap the feeding plan allows ({}: the aim or the NVK minimum number of feeds; the median of the last {} feeds is longer; a top-up within {} counts with its feed)", fmt_dur(f.gap), f.n, fmt_dur(TOP_UP_WITHIN))
-                } else {
-                    format!("last feed + median gap ({}) of the last {} feeds (a top-up within {} counts with its feed)", fmt_dur(f.gap), f.n, fmt_dur(TOP_UP_WITHIN))
-                },
+                "basis": format!(
+                    "last feed + {} (a top-up within {} counts with its feed)",
+                    match f.gap.cmp(&f.usual) {
+                        std::cmp::Ordering::Less => format!("the longest gap the feeding plan allows ({}: the aim or the NVK minimum number of feeds; the median of the last {} feeds is {})", fmt_dur(f.gap), f.n, fmt_dur(f.usual)),
+                        std::cmp::Ordering::Greater => format!("at least {} (the median of the last {} feeds is {}, shortened by small or frequent feeds)", fmt_dur(f.gap), f.n, fmt_dur(f.usual)),
+                        std::cmp::Ordering::Equal => format!("median gap ({}) of the last {} feeds", fmt_dur(f.gap), f.n),
+                    },
+                    fmt_dur(TOP_UP_WITHIN)
+                ),
                 k: d,
             })
         });
@@ -281,12 +289,14 @@ fn since(e: &Option<Entry>, clock: &Clock, now: i64, extra: Option<Value>) -> Va
 }
 
 /// The next feed from feed episodes: the end of the last one plus the usual
-/// gap, at most `max_gap` (what the feeding plan allows). The one estimate
-/// of the next feed: tiles, notifications and the timeline use it.
+/// gap, at least FEED_GAP_MIN and at most `max_gap` (what the feeding plan
+/// allows). The one estimate of the next feed: tiles, notifications and the
+/// timeline use it.
 pub fn estimate_feed(eps: &[(i64, i64)], max_gap: Option<i64>) -> Option<FeedEstimate> {
     let (usual, &(_, last)) = (feed_gap(eps)?, eps.last()?);
-    let gap = max_gap.map_or(usual, |m| usual.min(m));
-    Some(FeedEstimate { at: last + gap, gap, n: eps.len().min(9), capped: gap < usual })
+    let gap = usual.max(FEED_GAP_MIN);
+    let gap = max_gap.map_or(gap, |m| gap.min(m.max(FEED_GAP_MIN)));
+    Some(FeedEstimate { at: last + gap, gap, n: eps.len().min(9), usual })
 }
 
 /// Fewer wet diapers in the last 24 hours than usual for her age: at least as
@@ -454,6 +464,16 @@ mod tests {
     use serde_json::json;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// Frequent small feeds: the estimate still assumes 2 hours at least.
+    #[test]
+    fn estimate_at_least_two_hours() {
+        let eps: Vec<(i64, i64)> = (0..6).map(|k| (k * 5400, k * 5400)).collect();
+        let f = estimate_feed(&eps, Some(3 * 3600)).unwrap();
+        assert_eq!((f.usual, f.gap, f.at), (5400, FEED_GAP_MIN, 5 * 5400 + FEED_GAP_MIN));
+        // A plan allowing less than 2 hours still gets 2.
+        assert_eq!(estimate_feed(&eps, Some(3600)).unwrap().gap, FEED_GAP_MIN);
+    }
 
     /// A status reads the recent log once: a few statements, not one per part.
     #[test]

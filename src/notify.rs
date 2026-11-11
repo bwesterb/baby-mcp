@@ -427,7 +427,7 @@ mod tests {
         let at = |s: &str| clock.parse(s, 0).unwrap();
         let status = Status {
             last_feed: Some(entry(at("2025-11-07 10:00"), json!({"bottle_formula_ml": 60}))),
-            next_feed: Some(FeedEstimate { at: at("2025-11-07 13:00"), gap: 3 * 3600, n: 8, capped: false }),
+            next_feed: Some(FeedEstimate { at: at("2025-11-07 13:00"), gap: 3 * 3600, n: 8, usual: 3 * 3600 }),
             guidance: Some(crate::feeding::Guidance { amount_ml: 90.0, ..Default::default() }),
             sleep: Some(SleepFacing { next: "right".into(), ..Default::default() }),
             ..Default::default()
@@ -509,7 +509,7 @@ mod tests {
         let day = clock.date_start("2025-11-09").unwrap();
         let s = Status {
             attention: vec![attn(crate::entries::BY_USER, "bath: with or without soap?"), attn(crate::entries::BY_AGENT, "split")],
-            next_feed: Some(FeedEstimate { at: at("2025-11-07 13:00"), gap: 3 * 3600, n: 8, capped: false }),
+            next_feed: Some(FeedEstimate { at: at("2025-11-07 13:00"), gap: 3 * 3600, n: 8, usual: 3 * 3600 }),
             vitamins: Some(vitamins(&clock, "2025-11-01", at("2025-11-07 18:00"), (true, true), (true, false))),
             bath: Bath { last: Some(entry(at("2025-11-05 19:00"), json!({"bath": "with_soap"}))), last_any: None,
                          due_day: day, due_at: day + 18 * 3600, day_end: day + 86400 },
