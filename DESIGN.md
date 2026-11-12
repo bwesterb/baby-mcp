@@ -395,13 +395,28 @@ before (so cluster feeding counts as several feeds).
 
 `feeding.rs` gives a guide for how much and when, from rules of thumb (no
 official guideline; Dutch hospital and kraamzorg information): in the first
-week about 10 ml × day of life per feed (day 1 = the birth day, as the
-kraamzorg counts), then 150 ml per kg per day (range 150–180), the build-up
-applying until it reaches the per-kg level. Feeds per day: the median of the
-last three full days, kept between the NVK minimum and 10. The suggested next amount is the
-target divided by the feeds per day, plus part of a shortfall over the last
-24 hours (at most +20%), rounded to 5 ml. The time is `status`'s one
-next-feed estimate: the end of the last feed plus the median recent gap, at
+days 10 ml × day of life per feed up to 10 ml more (day 1 = the birth day, as
+the kraamzorg counts), for the planned number of feeds (the aim, else 8, at
+least the NVK minimum), then 150–180 ml per kg per day, the build-up applying
+until it reaches the per-kg level. The target is the middle of that band (as
+drawn on the bottle chart). Feeds per day: the median of the last three full
+days, kept between the NVK minimum and 10.
+
+The amount comes from a plan for the feeding day (07:00 to 07:00). The night
+(23:00–07:00) is left to her: nobody wakes her, she feeds when she wakes. Her
+expected night intake is the median of the last three nights. Each feed's
+millilitres are spread over a triangle 1.5 h either side, so a feed just
+before or after 23:00 or 07:00 counts partly for both; the same goes for
+what she had since 07:00. What remains of the target after the night and
+since 07:00 is split into feeds of at most what she usually manages (the
+75th percentile of her bottle-only feeds of the last 2 days, top-ups
+included). The amount is that share (at least a normal feed, the target ÷
+feeds per day, and at most the 75th percentile); `day_plan.feed_by` is when
+the first of those feeds is due for the last one to be at 23:00 with 2 hours
+between them, never later than the NVK's latest. When that is earlier than
+her rhythm's estimate (below), it is the time on the feed tile, in the
+notifications and on the timeline ("🎯 N feeds of ~X ml still to go before
+23:00"). The rhythm estimate is `status`'s next-feed estimate: the end of the last feed plus the median recent gap, at
 least 2 hours (snacks and cluster feeding shorten the median) and at most 24
 hours ÷ the planned number of feeds (and the NVK's longest pause),
 given as `next_feed.max_gap`; "at the latest" is the last feed plus the NVK's longest pause, or earlier,

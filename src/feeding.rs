@@ -18,10 +18,26 @@ pub const ML_PER_KG_HIGH: f64 = 180.0;
 const RAMP_ML_PER_DAY_OF_LIFE: f64 = 10.0;
 const FEEDS_MAX: f64 = 10.0;
 const FEEDS_DEFAULT: f64 = 8.0;
-const CATCH_UP_MAX: f64 = 0.2; // at most +20% per feed to make up a shortfall
+/// The feeding day starts at this hour; the night (left to her: she feeds
+/// when she wakes, nobody wakes her) from NIGHT_FROM_HOUR until then.
+pub const DAY_FROM_HOUR: i64 = 7;
+pub const NIGHT_FROM_HOUR: i64 = 23;
+/// The expected night intake: the median of this many recent nights.
+const NIGHTS_BACK: i64 = 3;
+/// For the day/night split, each feed's millilitres are spread over a
+/// triangle centred on it, this far either side: a feed just before or after
+/// 23:00 or 07:00 counts partly for both.
+const SPREAD: i64 = 90 * 60;
+/// The most she'll take in one feed: this percentile of her bottle-only
+/// feeds over this window.
+const PER_FEED_PERCENTILE: f64 = 75.0;
+const PER_FEED_BACK: i64 = 2 * 86400;
+/// A little over a whole number of feeds still to go doesn't make one more
+/// (a few ml would otherwise move "feed by" 2 hours earlier).
+const FEEDS_SLACK: f64 = 0.2;
 
 
-pub const NOTE: &str = "A guide from rules of thumb (first week about 10 ml × day of life per feed, then 150 ml/kg/day), not medical advice; the plan of the nurse, midwife or doctor always takes precedence. Only bottle millilitres are counted: what she drinks at the breast is not measured, so with breastfeeding the bottle total looks lower.";
+pub const NOTE: &str = "A guide from rules of thumb (first days 10 ml × day of life per feed up to 10 ml more, then 150–180 ml/kg/day; aiming for the middle), not medical advice; the plan of the nurse, midwife or doctor always takes precedence. Only bottle millilitres are counted: what she drinks at the breast is not measured, so with breastfeeding the bottle total looks lower.";
 
 fn median_f(mut v: Vec<f64>) -> Option<f64> {
     if v.is_empty() {
@@ -89,17 +105,20 @@ pub struct Inputs<'a> {
     pub entries: &'a [Entry],
 }
 
-/// The daily intake target (ml) for a day of life, weight and feeds per day:
-/// the first-week build-up until it reaches 150 ml/kg; then 150 ml/kg with
-/// the 150–180 ml/kg range.
-pub fn daily_target(day_of_life: i64, weight_g: f64, feeds: f64) -> (f64, Option<(f64, f64)>) {
+/// The daily target band (ml) for a day of life, weight and planned feeds:
+/// in the first days the build-up, 10 ml × day of life per feed up to 10 ml
+/// more (the range Dutch hospital leaflets give); capped by and then
+/// 150–180 ml/kg.
+pub fn band(day_of_life: i64, weight_g: f64, feeds: f64) -> (f64, f64) {
+    let per_feed = RAMP_ML_PER_DAY_OF_LIFE * day_of_life as f64;
     let kg = weight_g / 1000.0;
-    let ramp = RAMP_ML_PER_DAY_OF_LIFE * day_of_life as f64 * feeds;
-    if ramp < ML_PER_KG * kg {
-        (ramp, None)
-    } else {
-        (ML_PER_KG * kg, Some((ML_PER_KG * kg, ML_PER_KG_HIGH * kg)))
-    }
+    ((per_feed * feeds).min(ML_PER_KG * kg), ((per_feed + RAMP_ML_PER_DAY_OF_LIFE) * feeds).min(ML_PER_KG_HIGH * kg))
+}
+
+/// The planned number of feeds a day: the aim (else 8), at least the NVK
+/// minimum, at most 10.
+pub fn planned_feeds(aim: Option<f64>, min: &Minimum) -> f64 {
+    aim.unwrap_or(FEEDS_DEFAULT).max(min.feeds).min(FEEDS_MAX)
 }
 
 /// Day of life in calendar days, as the kraamzorg counts: the birth day is day 1.
@@ -155,10 +174,7 @@ pub fn target_band(clock: &Clock, birth: i64, birth_weight: f64, weighings: &[(i
     let weight = interpolated_weight(weighings, mid)
         .unwrap_or_else(|| weighings.iter().rfind(|w| w.0 <= end).map(|w| w.1).unwrap_or(birth_weight));
     let min = nvk_minimum((mid - birth).max(0) as f64 / 86400.0, Some(birth_weight), weight);
-    let feeds = aim.unwrap_or(FEEDS_DEFAULT).max(min.feeds).min(FEEDS_MAX);
-    let per_feed = RAMP_ML_PER_DAY_OF_LIFE * day_of_life(clock, birth, start) as f64;
-    let kg = weight / 1000.0;
-    Some(((per_feed * feeds).min(ML_PER_KG * kg), ((per_feed + RAMP_ML_PER_DAY_OF_LIFE) * feeds).min(ML_PER_KG_HIGH * kg)))
+    Some(band(day_of_life(clock, birth, start), weight, planned_feeds(aim, &min)))
 }
 
 /// One full local day since birth, per kg of the weight that day.
@@ -276,12 +292,16 @@ pub fn guidance(clock: &Clock, i: &Inputs) -> Guidance {
     let floor = min.feeds.max(i.aim_feeds.unwrap_or(0.0)).min(FEEDS_MAX);
     let feeds = median_f(per_day.clone()).map(|m| m.clamp(floor, FEEDS_MAX)).unwrap_or(FEEDS_DEFAULT.max(floor));
 
-    // Daily target: the first-week build-up until it reaches the per-kg level.
-    let (target, range) = daily_target(dol, i.weight_g, feeds);
-    let basis = if range.is_none() {
-        format!("first-week build-up: about {:.0} ml per feed on day {dol} × {feeds:.0} feeds", RAMP_ML_PER_DAY_OF_LIFE * dol as f64)
+    // Daily target: the middle of the band (as on the bottle chart).
+    let planned = planned_feeds(i.aim_feeds, &min);
+    let (lo, hi) = band(dol, i.weight_g, planned);
+    let target = (lo + hi) / 2.0;
+    let range = Some((lo, hi));
+    let basis = if lo < ML_PER_KG * kg - 0.5 {
+        format!("middle of the first-days build-up: {:.0}–{:.0} ml per feed on day {dol} × {planned:.0} planned feeds",
+                RAMP_ML_PER_DAY_OF_LIFE * dol as f64, RAMP_ML_PER_DAY_OF_LIFE * (dol + 1) as f64)
     } else {
-        format!("{ML_PER_KG:.0} ml/kg/day × {kg:.2} kg")
+        format!("middle of {ML_PER_KG:.0}–{ML_PER_KG_HIGH:.0} ml/kg/day × {kg:.2} kg")
     };
 
     // What was given in the last 24 hours.
@@ -291,19 +311,16 @@ pub fn guidance(clock: &Clock, i: &Inputs) -> Guidance {
     let breast_24h = last.iter().filter(|e| at_breast(e)).count();
     let shortfall = target - given;
 
-    // Next feed: an amount of target / feeds, plus part of a shortfall (at
-    // most +20%). The longest gap the plan allows (the aim or the NVK
-    // minimum number of feeds, and its longest pause) caps the estimate in
-    // `status`; at the latest: the NVK's longest pause.
+    // The longest gap the plan allows (the aim or the NVK minimum number of
+    // feeds, and its longest pause) caps the rhythm estimate in `status`; at
+    // the latest: the NVK's longest pause.
     let max_gap = ((86400.0 / floor) as i64).min(min.max_pause);
     // Feed times for the NVK limits: the starts (the cautious side); the next
     // feed after the end of the last one (its last top-up).
     let feed_times: Vec<i64> = eps.iter().map(|f| f.0).collect();
     let per_feed = target / feeds;
-    let extra = (shortfall / feeds).clamp(0.0, per_feed * CATCH_UP_MAX);
-    let next_amount = round5(per_feed + extra);
-
     let latest = (!feed_times.is_empty()).then(|| latest(&min, &feed_times));
+    let plan = day_plan(clock, i, target, per_feed, latest.as_ref().map(|l| l.0));
     Guidance {
         day_of_life: dol,
         weight_g: i.weight_g,
@@ -317,8 +334,8 @@ pub fn guidance(clock: &Clock, i: &Inputs) -> Guidance {
         feeds_24h,
         breast_24h,
         shortfall,
-        extra,
-        amount_ml: next_amount,
+        amount_ml: plan.amount,
+        plan,
         max_gap,
         aim: i.aim_feeds,
         latest,
@@ -347,10 +364,10 @@ pub struct Guidance {
     pub feeds_24h: usize,
     pub breast_24h: usize,
     pub shortfall: f64,
-    /// Towards the shortfall, per feed.
-    pub extra: f64,
-    /// The suggested amount for the next feed.
+    /// The suggested amount for the next feed (from `plan`).
     pub amount_ml: f64,
+    /// Reaching the day's total before the night.
+    pub plan: DayPlan,
     /// The longest gap between feeds the plan allows (aim, NVK minimum).
     pub max_gap: i64,
     pub aim: Option<f64>,
@@ -401,9 +418,10 @@ impl Guidance {
             "last_24h": {"bottle_ml": self.given.round(), "feeds": self.feeds_24h, "feeds_at_breast": self.breast_24h,
                          "vs_target_ml": (-self.shortfall).round()},
             "next_feed": {"amount_ml": self.amount_ml, "max_gap": fmt_dur(self.max_gap),
-                          "amount_basis": if self.extra > 0.0 {
-                              format!("{:.0} ml per feed + {:.0} ml towards the last 24 hours' shortfall (at most +20%)", self.per_feed, self.extra)
-                          } else { format!("{:.0} ml per feed", self.per_feed) }},
+                          "amount_basis": if self.plan.feeds_needed > 0 {
+                              format!("{:.0} ml still to go today in {} feed(s), at most {:.0} ml each", self.plan.remaining, self.plan.feeds_needed, self.plan.max_per_feed)
+                          } else { format!("a normal feed: {:.0} ml per feed, at most {:.0}", self.per_feed, self.plan.max_per_feed) }},
+            "day_plan": self.plan.to_json(clock, self.prep_s),
             "minimum": {"feeds_per_day": self.min.feeds, "max_pause": fmt_dur(self.min.max_pause), "rule": self.min.rule,
                         "source": "NVK, 'Advies ten aanzien van wakker maken van pasgeborenen voor voeding' (2016), for healthy term babies that grow and drink well"},
             "note": NOTE,
@@ -429,6 +447,166 @@ impl Guidance {
             out["growth_check"] = json!(g);
         }
         out
+    }
+}
+
+/// Reaching the day's total before the night. The feeding day runs from
+/// DAY_FROM_HOUR to DAY_FROM_HOUR; the night (NIGHT_FROM_HOUR on) is left to
+/// her. During the day: what is left of the target after what she usually
+/// drinks at night, in feeds of at most what she usually manages, the last
+/// one by the night and 2 hours apart: the next one is due by `feed_by`.
+#[derive(Debug, Clone, Default)]
+pub struct DayPlan {
+    pub day_start: i64,
+    pub night_start: i64,
+    /// Now is in the night: nothing to plan, she feeds when she wakes.
+    pub in_night: bool,
+    pub target: f64,
+    /// What she usually drinks at night, and from how many nights (0: none
+    /// logged yet, assumed in proportion to its hours).
+    pub night_expected: f64,
+    pub nights: usize,
+    /// Since the day's start (smoothed, as the nights).
+    pub given: f64,
+    /// Target − night − given; ≤ 0 when on track.
+    pub remaining: f64,
+    /// The most she'll take in one feed, and from how many feeds (0: none,
+    /// a normal feed is used).
+    pub max_per_feed: f64,
+    pub max_from: usize,
+    pub feeds_needed: u32,
+    /// When the next feed is due for the day's total (no later than the
+    /// NVK's latest); None at night or when on track.
+    pub feed_by: Option<i64>,
+    pub amount: f64,
+}
+
+/// Share of a feed at `t` (spread over a triangle of SPREAD either side)
+/// that falls before `x`.
+fn spread_cdf(t: i64, x: i64) -> f64 {
+    let u = (x - t) as f64 / SPREAD as f64;
+    match u {
+        u if u <= -1.0 => 0.0,
+        u if u <= 0.0 => (1.0 + u).powi(2) / 2.0,
+        u if u < 1.0 => 1.0 - (1.0 - u).powi(2) / 2.0,
+        _ => 1.0,
+    }
+}
+
+/// Bottle millilitres of `feeds` (time, ml) falling in [a, b), smoothed.
+fn smoothed_ml(feeds: &[(i64, f64)], a: i64, b: i64) -> f64 {
+    feeds.iter().map(|(t, ml)| ml * (spread_cdf(*t, b) - spread_cdf(*t, a))).sum()
+}
+
+/// The `p`th percentile (0–100) of `v`, linearly interpolated.
+fn percentile(mut v: Vec<f64>, p: f64) -> Option<f64> {
+    if v.is_empty() {
+        return None;
+    }
+    v.sort_by(f64::total_cmp);
+    let k = (v.len() - 1) as f64 * p / 100.0;
+    let (lo, hi) = (k.floor() as usize, k.ceil() as usize);
+    Some(v[lo] + (v[hi] - v[lo]) * (k - lo as f64))
+}
+
+/// The plan for the feeding day around `i.now`; `per_feed` is a normal feed
+/// (the target over the feeds per day), `latest` the NVK's latest next feed.
+pub fn day_plan(clock: &Clock, i: &Inputs, target: f64, per_feed: f64, latest: Option<i64>) -> DayPlan {
+    let now = i.now;
+    let morning = clock.at_hour(now, DAY_FROM_HOUR);
+    let day_start = if morning <= now { morning } else { clock.at_hour(clock.day_start(now) - 3600, DAY_FROM_HOUR) };
+    let night_start = clock.at_hour(day_start, NIGHT_FROM_HOUR);
+    let feeds: Vec<(i64, f64)> = i.entries.iter().filter(|e| e.at <= now).map(|e| (e.at, bottle_ml(e))).filter(|f| f.1 > 0.0).collect();
+    // The nights before: 23:00 to 07:00, after birth, all within the entries.
+    let first = i.entries.first().map_or(now, |e| e.at);
+    let mut nights = vec![];
+    let mut morning = day_start;
+    for _ in 0..NIGHTS_BACK {
+        let evening = clock.at_hour(clock.day_start(morning) - 3600, NIGHT_FROM_HOUR);
+        if evening - SPREAD < first.max(i.birth) {
+            break;
+        }
+        nights.push(smoothed_ml(&feeds, evening, morning));
+        morning = clock.at_hour(clock.day_start(morning) - 3600, DAY_FROM_HOUR);
+    }
+    let night_hours = (24 - NIGHT_FROM_HOUR + DAY_FROM_HOUR) as f64;
+    let night_expected = median_f(nights.clone()).unwrap_or(target * night_hours / 24.0);
+    let given = smoothed_ml(&feeds, day_start, i64::MAX);
+    let remaining = target - night_expected - given;
+    // What she usually manages in one feed: bottle-only feeds (at the breast
+    // the amount is unknown) of the last days, top-ups with their feed.
+    let recent: Vec<&Entry> = i.entries.iter().filter(|e| e.at > now - PER_FEED_BACK && e.at <= now).collect();
+    let mut sizes = vec![];
+    let mut feed: Option<(i64, i64, f64, bool)> = None; // start, last, ml, at the breast
+    for e in recent.iter().filter(|e| e.is_feed()) {
+        match feed.as_mut() {
+            Some(f) if crate::entries::is_top_up((f.0, f.1), e.at) => {
+                f.1 = e.at;
+                f.2 += bottle_ml(e);
+                f.3 |= at_breast(e);
+            }
+            _ => {
+                if let Some(f) = feed.filter(|f| !f.3 && f.2 > 0.0) {
+                    sizes.push(f.2);
+                }
+                feed = Some((e.at, e.at, bottle_ml(e), at_breast(e)));
+            }
+        }
+    }
+    if let Some(f) = feed.filter(|f| !f.3 && f.2 > 0.0) {
+        sizes.push(f.2);
+    }
+    let max_from = if sizes.len() >= 3 { sizes.len() } else { 0 };
+    let max_per_feed = if max_from > 0 { percentile(sizes, PER_FEED_PERCENTILE).unwrap_or(per_feed) } else { per_feed };
+    let in_night = now >= night_start;
+    let feeds_needed = if in_night || remaining <= 0.0 { 0 } else { (remaining / max_per_feed - FEEDS_SLACK).ceil().max(1.0) as u32 };
+    let feed_by = (feeds_needed > 0).then(|| {
+        let by = night_start - (feeds_needed as i64 - 1) * crate::status::FEED_GAP_MIN;
+        latest.map_or(by, |l| by.min(l))
+    });
+    let amount = if feeds_needed > 0 { (remaining / feeds_needed as f64).max(per_feed) } else { per_feed };
+    DayPlan {
+        day_start,
+        night_start,
+        in_night,
+        target,
+        night_expected,
+        nights: nights.len(),
+        given,
+        remaining,
+        max_per_feed,
+        max_from,
+        feeds_needed,
+        feed_by,
+        amount: round5(amount.min(max_per_feed)),
+    }
+}
+
+impl DayPlan {
+    pub fn to_json(&self, clock: &Clock, prep_s: i64) -> Value {
+        let mut v = json!({
+            "day": format!("{} to {}", clock.fmt(self.day_start), clock.fmt(clock.at_hour(clock.next_day_start(self.day_start), DAY_FROM_HOUR))),
+            "night_from": clock.fmt(self.night_start),
+            "target_ml": self.target.round(),
+            "night_expected_ml": self.night_expected.round(),
+            "night_basis": if self.nights > 0 { format!("median of the last {} night(s)", self.nights) } else { "no night logged yet: its share of the hours".to_string() },
+            "given_ml": self.given.round(),
+            "remaining_ml": self.remaining.max(0.0).round(),
+            "max_per_feed_ml": round5(self.max_per_feed),
+            "max_per_feed_basis": if self.max_from > 0 {
+                format!("75th percentile of {} bottle-only feeds in the last 2 days", self.max_from)
+            } else { "a normal feed (too few bottle-only feeds in the last 2 days)".to_string() },
+            "feeds_needed": self.feeds_needed,
+            "note": "feeds within 1.5 h of 07:00 or 23:00 count partly for the night and partly for the day",
+        });
+        if self.in_night {
+            v["in_night"] = json!(true);
+        }
+        if let Some(t) = self.feed_by {
+            v["feed_by"] = json!(clock.fmt(t));
+            v["feed_by_start"] = json!(clock.fmt(t - prep_s));
+        }
+        v
     }
 }
 
@@ -662,6 +840,46 @@ mod tests {
     }
 
     #[test]
+    fn day_plans() {
+        // Smoothing: a feed at 23:00 counts half for the night, one at 21:00 not.
+        let t = 1_000_000;
+        assert!((smoothed_ml(&[(t, 100.0)], t, t + 8 * 3600) - 50.0).abs() < 1e-9);
+        assert_eq!(smoothed_ml(&[(t - 2 * 3600, 100.0)], t, t + 8 * 3600), 0.0);
+        assert!((smoothed_ml(&[(t - 3600, 100.0)], t, t + 8 * 3600) - 100.0 / 18.0).abs() < 1e-6);
+        assert_eq!(percentile(vec![90.0, 100.0, 90.0, 110.0, 80.0], 75.0), Some(100.0));
+        // 20 days old, 4 kg, aim 7: target the middle of 600–720 = 660. Each
+        // night 180 ml (01:00 and 04:00); today 08:00 and 11:00, 100 each.
+        let clock = Clock::new("Europe/Amsterdam").unwrap();
+        let at = |s: &str| clock.parse(s, 0).unwrap();
+        let birth = at("2025-10-20 12:00");
+        let mut es = vec![];
+        for d in ["2025-11-06", "2025-11-07", "2025-11-08", "2025-11-09"] {
+            es.push(entry(at(&format!("{d} 01:00")), json!({"bottle_formula_ml": 90})));
+            es.push(entry(at(&format!("{d} 04:00")), json!({"bottle_formula_ml": 90})));
+        }
+        es.push(entry(at("2025-11-09 08:00"), json!({"bottle_formula_ml": 100})));
+        es.push(entry(at("2025-11-09 11:00"), json!({"bottle_formula_ml": 100})));
+        let i = |now: i64| Inputs { now, birth, birth_weight_g: Some(3500.0), aim_feeds: Some(7.0), prep_s: 0, weight_g: 4000.0, entries: &es };
+        let p = day_plan(&clock, &i(at("2025-11-09 14:00")), 660.0, 94.0, None);
+        assert_eq!((p.day_start, p.night_start), (at("2025-11-09 07:00"), at("2025-11-09 23:00")));
+        // The 08:00 feed is within 1.5 h of 07:00: ~6 ml of it counts for the
+        // night (that night's median stays 180), ~94 for today.
+        assert_eq!((p.nights, p.night_expected), (3, 180.0));
+        assert!((p.given - 194.4).abs() < 0.1, "{}", p.given);
+        // ~286 ml to go; she takes up to 97.5 (75th percentile of 90s and 100s):
+        // 3 feeds, the first by 23:00 − 2 × 2 h = 19:00, of ~95 ml.
+        assert!((p.remaining - 285.6).abs() < 0.1 && p.max_per_feed == 97.5 && p.feeds_needed == 3, "{p:?}");
+        assert_eq!((p.feed_by, p.amount), (Some(at("2025-11-09 19:00")), 95.0));
+        // Later the NVK's latest can come first; at night nothing is planned.
+        assert_eq!(day_plan(&clock, &i(at("2025-11-09 14:00")), 660.0, 94.0, Some(at("2025-11-09 17:00"))).feed_by, Some(at("2025-11-09 17:00")));
+        let night = day_plan(&clock, &i(at("2025-11-09 23:30")), 660.0, 94.0, None);
+        assert!(night.in_night && night.feed_by.is_none());
+        // On track (a big day so far): no "feed by", a normal feed.
+        let p = day_plan(&clock, &i(at("2025-11-09 14:00")), 300.0, 94.0, None);
+        assert_eq!((p.feeds_needed, p.feed_by, p.amount), (0, None, 95.0));
+    }
+
+    #[test]
     fn breast_sides() {
         let now = 1_000_000;
         let e = |ago: i64, l: i64, r: i64| entry(now - ago, json!({"breast_left_min": l, "breast_right_min": r}));
@@ -680,12 +898,13 @@ mod tests {
     fn first_week_build_up_then_per_kg() {
         let clock = Clock::new("Europe/Amsterdam").unwrap();
         let birth = clock.parse("2025-10-31 16:40", 0).unwrap();
-        // Day 3, 3.6 kg: build-up 30 ml × 8 = 240 < 540 → build-up applies.
+        // Day 3, 3.6 kg, 8 planned feeds: build-up 30–40 ml × 8 = 240–320 < 540
+        // → the build-up applies; the target is its middle.
         let now = clock.parse("2025-11-02 12:00", 0).unwrap();
         let g = guidance(&clock, &Inputs { now, birth, birth_weight_g: Some(3900.0), aim_feeds: None, prep_s: 0, weight_g: 3600.0, entries: &[] }).to_json(&clock);
         assert_eq!(g["day_of_life"], 3);
-        assert_eq!(g["target_ml_per_day"], 240.0);
-        assert!(g["range_ml_per_day"].is_null());
+        assert_eq!(g["target_ml_per_day"], 280.0);
+        assert_eq!(g["range_ml_per_day"], json!([240.0, 320.0]));
         // Day 8, 3.68 kg, 8 feeds/day: build-up 80 × 8 = 640 ≥ 552 → 150 ml/kg.
         let now = clock.parse("2025-11-07 12:00", 0).unwrap();
         let mut es = vec![];
@@ -698,19 +917,23 @@ mod tests {
         }
         let g = guidance(&clock, &Inputs { now, birth, birth_weight_g: Some(3900.0), aim_feeds: None, prep_s: 0, weight_g: 3680.0, entries: &es }).to_json(&clock);
         assert_eq!(g["feeds_per_day"], 8.0);
-        assert_eq!(g["target_ml_per_day"], 552.0);
+        assert_eq!(g["target_ml_per_day"], 607.0);
         assert_eq!(g["range_ml_per_day"], json!([552.0, 662.0]));
-        assert_eq!(g["per_feed_ml"], 70.0);
-        // Last 24 h: 8 feeds of 60 ml = 480, short 72 → +9 ml (cap 13.8) → 69+9=78 → 80.
+        assert_eq!(g["per_feed_ml"], 75.0);
         assert_eq!(g["last_24h"]["bottle_ml"], 480.0);
-        assert_eq!(g["last_24h"]["vs_target_ml"], -72.0);
-        assert_eq!(g["next_feed"]["amount_ml"], 80.0);
+        assert_eq!(g["last_24h"]["vs_target_ml"], -127.0);
+        // She takes 60 ml a feed: ~364 ml to go after the night's ~153 and 90
+        // since 07:00 is 6.07 feeds of at most 60: 6 (a little over a whole
+        // number doesn't make one more), the first by 23:00 − 5 × 2 h.
+        let p = &g["day_plan"];
+        assert_eq!((p["max_per_feed_ml"].as_f64(), p["feeds_needed"].as_u64(), p["feed_by"].as_str()), (Some(60.0), Some(6), Some("2025-11-07 13:00")), "{p}");
+        assert_eq!(g["next_feed"]["amount_ml"], 60.0);
         let gap = crate::status::estimate_feed(&crate::entries::feed_episodes(&es), None).unwrap().gap;
         assert_eq!(fmt_dur(gap), "3h00m");
     }
 
     #[test]
-    fn feeds_per_day_clamped_and_catch_up_capped() {
+    fn feeds_per_day_clamped_and_amount_capped() {
         let clock = Clock::new("Europe/Amsterdam").unwrap();
         let birth = clock.parse("2025-10-02 12:00", 0).unwrap();
         let now = clock.parse("2025-11-07 12:00", 0).unwrap();
@@ -726,9 +949,12 @@ mod tests {
         let g = guidance(&clock, &Inputs { now, birth, birth_weight_g: Some(3900.0), aim_feeds: None, prep_s: 0, weight_g: 4000.0, entries: &es }).to_json(&clock);
         assert_eq!(g["feeds_per_day"], 5.0);
         assert_eq!(g["minimum"]["max_pause"], "8h00m");
-        // 600 ml/day / 5 = 120 per feed; shortfall 600 → capped at +20% → 144 → 145.
-        assert_eq!(g["target_ml_per_day"], 600.0);
-        assert_eq!(g["next_feed"]["amount_ml"], 145.0);
+        // Middle of 150–180 ml/kg of 4 kg: 660; a normal feed 660 / 5 = 132,
+        // but she takes 100: the amount is 100.
+        assert_eq!(g["target_ml_per_day"], 660.0);
+        assert_eq!(g["next_feed"]["amount_ml"], 100.0);
+        // The NVK latest is past: the day plan's "feed by" is no later.
+        assert_eq!(g["day_plan"]["feed_by"], "2025-11-06 06:00");
         // Gaps of 6 h are capped at 24 h / 5 feeds; at the latest 8 h after the last feed.
         assert_eq!(g["next_feed"]["max_gap"], "4h48m");
         let est = crate::status::estimate_feed(&crate::entries::feed_episodes(&es), Some(4 * 3600 + 48 * 60)).unwrap();

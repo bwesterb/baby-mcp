@@ -148,9 +148,22 @@ pub struct SleepFacing {
 }
 
 impl Status {
-    /// When to start the next feed: the estimate less the preparation time.
+    /// The day plan's "feed by", when that is before her rhythm's estimate:
+    /// to reach the day's total she needs feeding earlier than she would ask.
+    pub fn feed_by(&self) -> Option<i64> {
+        let by = self.guidance.as_ref()?.plan.feed_by?;
+        self.next_feed.is_none_or(|f| by < f.at).then_some(by)
+    }
+
+    /// When the next feed is due: her rhythm's estimate, or earlier the day
+    /// plan's "feed by".
+    pub fn feed_due(&self) -> Option<i64> {
+        self.feed_by().or(self.next_feed.map(|f| f.at))
+    }
+
+    /// When to start the next feed: the due time less the preparation time.
     pub fn feed_start(&self) -> Option<i64> {
-        self.next_feed.map(|f| f.at - self.prep_s)
+        self.feed_due().map(|t| t - self.prep_s)
     }
 
     /// Entries needing a parent (🙋).
@@ -180,10 +193,14 @@ impl Status {
                 k: d,
             })
         });
-        let feed_start = self.next_feed.map(|f| {
-            let start = f.at - self.prep_s;
+        let feed_start = self.feed_due().map(|at| {
+            let start = at - self.prep_s;
             let (k, d) = rel(start);
-            json!({"at": clock.fmt(start), "prep": fmt_dur(self.prep_s), "feed_at": clock.fmt(f.at), k: d})
+            let mut v = json!({"at": clock.fmt(start), "prep": fmt_dur(self.prep_s), "feed_at": clock.fmt(at), k: d});
+            if self.feed_by().is_some() {
+                v["why"] = json!("before her rhythm's estimate, to reach the day's total (feeding_guidance.day_plan)");
+            }
+            v
         });
         let mut out = json!({
             "now": clock.fmt(now),
@@ -330,7 +347,10 @@ const WINDOW_DAYS: i64 = 4;
 pub fn status(c: &Connection, clock: &Clock, baby: &Baby, now: i64) -> Result<Status, String> {
     // One read of the recent log; the parts below slice it.
     let start = clock.day_start(now) - WINDOW_DAYS * 86400;
-    let window = list(c, start, i64::MAX, false)?;
+    // Up to now (and the 15 minutes ahead a time may be logged): a status
+    // for a moment in the past doesn't see what came after.
+    let until = now + 15 * 60;
+    let window = list(c, start, until + 1, false)?;
     let upto_now = &window[..window.partition_point(|e| e.at <= now)];
     let since = |from: i64| &upto_now[upto_now.partition_point(|e| e.at < from)..];
     // Totals over [from, to) (a feed just before `from` only tells whether
@@ -339,14 +359,14 @@ pub fn status(c: &Connection, clock: &Clock, baby: &Baby, now: i64) -> Result<St
     // The last matching entry: from the window, or else the database.
     let last = |pred: &dyn Fn(&Entry) -> bool, cond: &str| match window.iter().rev().find(|e| pred(e)) {
         Some(e) => Ok(Some(e.clone())),
-        None => last_where(c, cond),
+        None => last_where(c, &format!("{cond} AND at <= {until}")),
     };
     let has = |k: &'static str| move |e: &Entry| e.fields.get(k).is_some_and(|v| !v.is_null());
 
     let last_weight = last(&has("weight_g"), "weight_g IS NOT NULL")?;
     let regained = match (baby.birth_weight_g, baby.birth) {
         // Back at birth weight: the first weighing at or above it after birth.
-        (Some(bw), Some(b)) => Some(en::query(c, "deleted = 0 AND weight_g >= ?2 AND at > ?1 ORDER BY at LIMIT 1", rusqlite::params![b, bw])?.pop().map(|e| e.at)),
+        (Some(bw), Some(b)) => Some(en::query(c, "deleted = 0 AND weight_g >= ?2 AND at > ?1 AND at <= ?3 ORDER BY at LIMIT 1", rusqlite::params![b, bw, until])?.pop().map(|e| e.at)),
         _ => None,
     };
     let guidance = crate::feeding::for_status(clock, baby, last_weight.as_ref().and_then(|e| Some((e.num("weight_g")?, e.at))), upto_now, now);

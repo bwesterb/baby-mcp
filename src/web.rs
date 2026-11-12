@@ -493,7 +493,7 @@ fn tl_day(clock: &crate::time::Clock, tr: &Track, entries: &[en::Entry], s: Opti
         out
     };
     // The feed: when to start (diaper first), if there is a preparation time.
-    let feed_at = s.next_feed.map(|f| f.at);
+    let feed_at = s.feed_due();
     let prep = s.prep_s.max(0);
     let feed_label = |t: i64| if prep > 0 { format!("start (feed ~{})", hm(t + prep)) } else { "feed".to_string() };
     expect(0, "🍼", feed_at.map(|t| t - prep), feed_at.map(|t| feed_label(t - prep)).unwrap_or_default(), ".45");
@@ -829,12 +829,20 @@ pub async fn status(State(app): State<Arc<App>>, headers: HeaderMap, Query(q): Q
 
     let feed_what = s.last_feed.as_ref().map(|e| feed_summary(&e.fields)).unwrap_or_default();
     // With a preparation time, the tile shows when to start (diaper first).
-    let (feed_next, prep_line) = match s.next_feed {
-        Some(f) if s.prep_s > 0 => (s.feed_start(), format!(r#"<div class="side">🧷 diaper first; feed ~{}</div>"#, esc(&clock.fmt_time(f.at)))),
-        f => (f.map(|f| f.at), String::new()),
+    let (feed_next, prep_line) = match s.feed_due() {
+        Some(at) if s.prep_s > 0 => (s.feed_start(), format!(r#"<div class="side">🧷 diaper first; feed ~{}</div>"#, esc(&clock.fmt_time(at)))),
+        at => (at, String::new()),
+    };
+    // Earlier than she'd ask, for the day's total: say why, and her rhythm.
+    let plan_line = match (s.feed_by(), s.guidance.as_ref().map(|g| &g.plan), s.next_feed) {
+        (Some(_), Some(p), Some(f)) => format!(
+            r#"<div class="side">🎯 {} feed{} of ~{:.0} ml still to go before {} <span class="mut">(~{:.0} ml today; she'd ask ~{})</span></div>"#,
+            p.feeds_needed, if p.feeds_needed == 1 { "" } else { "s" }, p.amount, esc(&clock.fmt_time(p.night_start)), p.target - p.night_expected, esc(&clock.fmt_time(f.at))
+        ),
+        _ => String::new(),
     };
     let extra = format!(
-        "{prep_line}{}{}",
+        "{prep_line}{plan_line}{}{}",
         s.guidance.as_ref().map(|g| amount_line(clock, g)).unwrap_or_default(),
         s.sleep.as_ref().map(sleep_line).unwrap_or_default()
     );

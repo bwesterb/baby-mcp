@@ -53,10 +53,13 @@ pub struct Notice {
 /// What is due now, for everyone (before choices and deduplication).
 pub fn due(c: &Connection, clock: &Clock, status: &Status, name: &str, now: i64) -> Result<Vec<Notice>, String> {
     let mut out = vec![];
-    let at = status.next_feed.map(|f| f.at);
+    let at = status.feed_due();
     let last = status.last_feed.as_ref().map(|e| e.at);
     if let (Some(at), Some(last)) = (at, last) {
         let mut extra = vec![];
+        if status.feed_by().is_some() {
+            extra.push("earlier than she'd ask, for today's total".to_string());
+        }
         if let Some(g) = &status.guidance {
             extra.push(format!("about {:.0} ml", g.amount_ml));
         }

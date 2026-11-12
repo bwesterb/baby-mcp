@@ -57,7 +57,12 @@ pub enum Cmd {
         note: Option<String>,
     },
     /// Print the current status (as the `status` MCP tool returns it) as JSON.
-    Status,
+    Status {
+        /// As it was at this time (YYYY-MM-DD HH:MM), from what was logged by
+        /// then (entries as they are now, edits included).
+        #[arg(long)]
+        at: Option<String>,
+    },
     /// Send a test notification to all of a user's devices.
     PushTest { name: String },
     /// Write everything (entries with all versions, users, suggestions) as JSON to stdout.
@@ -204,10 +209,14 @@ pub fn run(cfg: &Config, cmd: Cmd) -> Result<(), String> {
         }
         Cmd::Done { id, note } => set_status(&db, id, "done", note)?,
         Cmd::Reject { id, note } => set_status(&db, id, "rejected", note)?,
-        Cmd::Status => {
+        Cmd::Status { at } => {
             // The same overview the MCP tool gives, including growth and feeding guidance.
             let app = crate::app::App::new(cfg.clone())?;
-            let s = app.db.run(|c| crate::status::status_json(c, &app.clock, &app.baby(), now()))?;
+            let t = match at {
+                Some(a) => app.clock.parse(&a, now())?,
+                None => now(),
+            };
+            let s = app.db.run(|c| crate::status::status_json(c, &app.clock, &app.baby(), t))?;
             println!("{}", serde_json::to_string_pretty(&s).unwrap());
         }
         Cmd::PushTest { name } => {
