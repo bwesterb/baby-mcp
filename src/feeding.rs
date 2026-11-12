@@ -232,7 +232,7 @@ pub fn guidance(clock: &Clock, i: &Inputs) -> Guidance {
     let dol = day_of_life(clock, i.birth, i.now);
     let kg = i.weight_g / 1000.0;
 
-    // Feeds as episodes: a top-up within 1h30 counts with its feed (up to 2 h).
+    // Feeds as episodes: a top-up within 1 h counts with its feed (up to 2 h).
     let eps = crate::entries::feed_episodes(i.entries.iter().filter(|e| e.at <= i.now));
     // Feeds per day: median over the last three full local days since birth.
     let today = clock.day_start(i.now);
@@ -569,31 +569,34 @@ mod tests {
         let clock = Clock::new("Europe/Amsterdam").unwrap();
         let birth = clock.parse("2025-10-31 16:40", 0).unwrap();
         let at = |s: &str| clock.parse(s, 0).unwrap();
-        // Every 3 h from 02:00 to 20:00, then 23:00 with top-ups at 00:30 and
-        // 01:00 (one feed), as last night.
+        // Every 3 h from 02:00 to 20:00, then 23:00 with top-ups at 23:50 and
+        // 00:40 (one feed: each within the hour, all within 2 hours).
         let mut es: Vec<Entry> = (0..7).map(|k| entry(at("2025-11-07 02:00") + k * 3 * 3600, json!({"bottle_formula_ml": 80}))).collect();
-        for (t, ml) in [("2025-11-07 23:00", 50), ("2025-11-08 00:30", 30), ("2025-11-08 01:00", 40)] {
+        for (t, ml) in [("2025-11-07 23:00", 50), ("2025-11-07 23:50", 30), ("2025-11-08 00:40", 40)] {
             es.push(entry(at(t), json!({"bottle_formula_ml": ml})));
         }
         let eps = crate::entries::feed_episodes(&es);
         assert_eq!(eps.len(), 8);
-        assert_eq!(*eps.last().unwrap(), (at("2025-11-07 23:00"), at("2025-11-08 01:00")));
-        // Cluster feeding every 80 minutes for 8 hours: not one feed, but one
-        // every time the feed so far would run past 2 hours (0:00, 2:40, 5:20, 8:00).
-        let cluster: Vec<Entry> = (0..7).map(|k| entry(at("2025-11-09 10:00") + k * 80 * 60, json!({"bottle_formula_ml": 40}))).collect();
-        assert_eq!(crate::entries::feed_episodes(&cluster).len(), 4);
-        assert_eq!(crate::entries::totals(&cluster).feeds, 4);
+        assert_eq!(*eps.last().unwrap(), (at("2025-11-07 23:00"), at("2025-11-08 00:40")));
+        // 70 minutes after a feed: a feed of its own.
+        let apart = [entry(at("2025-11-09 08:00"), json!({"bottle_formula_ml": 60})), entry(at("2025-11-09 09:10"), json!({"bottle_formula_ml": 20}))];
+        assert_eq!(crate::entries::feed_episodes(&apart).len(), 2);
+        // Cluster feeding every 50 minutes: not one feed, but one every time
+        // the feed so far would run past 2 hours (10:00, 12:30, 15:00).
+        let cluster: Vec<Entry> = (0..7).map(|k| entry(at("2025-11-09 10:00") + k * 50 * 60, json!({"bottle_formula_ml": 40}))).collect();
+        assert_eq!(crate::entries::feed_episodes(&cluster).len(), 3);
+        assert_eq!(crate::entries::totals(&cluster).feeds, 3);
         assert_eq!(crate::entries::totals(&es).feeds, 8, "top-ups aren't feeds of their own");
-        // The day from midnight: the top-ups at 00:30 and 01:00 belong to the
-        // 23:00 feed of the day before.
+        // The day from midnight: the top-up at 00:40 belongs to the 23:00 feed
+        // of the day before.
         let t = crate::entries::totals_from(&es, at("2025-11-08 00:00"));
-        assert_eq!((t.feeds, t.formula_ml), (0, 70.0));
+        assert_eq!((t.feeds, t.formula_ml), (0, 40.0));
         let now = at("2025-11-08 01:30");
         let g = guidance(&clock, &Inputs { now, birth, birth_weight_g: Some(3900.0), aim_feeds: None, prep_s: 0, weight_g: 3720.0, entries: &es }).to_json(&clock);
         assert_eq!(g["last_24h"]["feeds"], 8);
-        // The next feed after the last top-up (01:00) + the usual gap (3 h);
+        // The next feed after the last top-up (00:40) + the usual gap (3 h);
         // the NVK pause from the start of the feed (23:00 + 6 h).
-        assert_eq!(crate::status::estimate_feed(&eps, None).map(|f| clock.fmt(f.at)).as_deref(), Some("2025-11-08 04:00"));
+        assert_eq!(crate::status::estimate_feed(&eps, None).map(|f| clock.fmt(f.at)).as_deref(), Some("2025-11-08 03:40"));
         assert_eq!(g["next_feed"]["latest_at"], "2025-11-08 05:00");
     }
 

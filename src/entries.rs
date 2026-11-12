@@ -404,7 +404,7 @@ pub(crate) fn weight_vs_birth(w: f64, birth: Option<f64>) -> Option<String> {
 
 /// A feed entry at most this long after the previous one is a top-up: part of
 /// the same feed, as long as that feed started at most FEED_SPAN_MAX before.
-pub const TOP_UP_WITHIN: i64 = 90 * 60;
+pub const TOP_UP_WITHIN: i64 = 60 * 60;
 /// The longest one feed lasts, top-ups included: frequent feeds (cluster
 /// feeding) are separate feeds after this, not one ever longer feed.
 pub const FEED_SPAN_MAX: i64 = 2 * 3600;
