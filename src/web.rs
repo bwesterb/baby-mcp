@@ -1086,21 +1086,39 @@ fn bars(title: &str, days: &[DayStats], series: &[Series], unit: &str, projectio
         );
         v += step;
     }
+    // The band: one shape through the days' middles (from the first bar's
+    // left edge to the last one's right), broken where a day has none; a
+    // transparent rect per day carries its numbers.
+    let yv = |v: f64| h - v / max * (h - 10.0);
+    let mut runs: Vec<Vec<(f64, f64, f64)>> = vec![vec![]];
+    for (i, b) in band.iter().enumerate().take(days.len()) {
+        match b {
+            Some((lo, hi)) => runs.last_mut().unwrap().push((pad + (i as f64 + 0.5) * bw, *lo, *hi)),
+            None if !runs.last().unwrap().is_empty() => runs.push(vec![]),
+            None => {}
+        }
+    }
+    for run in runs.iter().filter(|r| !r.is_empty()) {
+        let (first, last) = (run[0], run[run.len() - 1]);
+        let mut top = vec![(first.0 - bw * 0.45, first.2)];
+        top.extend(run.iter().map(|p| (p.0, p.2)));
+        top.push((last.0 + bw * 0.45, last.2));
+        let mut bottom = vec![(last.0 + bw * 0.45, last.1)];
+        bottom.extend(run.iter().rev().map(|p| (p.0, p.1)));
+        bottom.push((first.0 - bw * 0.45, first.1));
+        let pts: Vec<String> = top.iter().chain(&bottom).map(|(x, v)| format!("{x:.1},{:.1}", yv(*v))).collect();
+        svg += &format!(r#"<polygon points="{}" class="band"/>"#, pts.join(" "));
+    }
     for (i, d) in days.iter().enumerate() {
-        let x = pad + i as f64 * bw + bw * 0.15;
         if let Some((lo, hi)) = band.get(i).copied().flatten() {
-            let (top, bottom) = (h - hi / max * (h - 10.0), h - lo / max * (h - 10.0));
-            let tip = if hi - lo < 0.5 { format!("{lo:.0}") } else { format!("{lo:.0}–{hi:.0}") };
             svg += &format!(
-                r#"<rect x="{:.1}" y="{:.1}" width="{:.1}" height="{:.1}" class="band{}"><title>{} target {tip} {unit}</title></rect>"#,
-                pad + i as f64 * bw + bw * 0.05,
-                top - if bottom - top < 2.0 { 1.0 } else { 0.0 },
-                bw * 0.9,
-                (bottom - top).max(2.0),
-                if bottom - top < 2.0 { " line" } else { "" },
-                d.date
+                r#"<rect x="{:.1}" y="{:.1}" width="{:.1}" height="{:.1}" fill="transparent"><title>{} target {lo:.0}–{hi:.0} {unit}</title></rect>"#,
+                pad + i as f64 * bw, yv(hi), bw, (yv(lo) - yv(hi)).max(2.0), d.date
             );
         }
+    }
+    for (i, d) in days.iter().enumerate() {
+        let x = pad + i as f64 * bw + bw * 0.15;
         let mut y = h;
         for (_, color, f) in series {
             let v = f(d);
@@ -1500,7 +1518,7 @@ pub async fn charts(
         ("breast milk", "#2f6f5e", |d| d.totals.breastmilk_ml),
         ("formula", "#c08a3e", |d| d.totals.formula_ml),
     ], "ml", project(|t| t.total_ml), &targets,
-       " · band: the daily target, 150–180 ml/kg (in the first days the build-up: 10 ml × day of life per feed; a line)");
+       " · band: the daily target, 150–180 ml/kg (in the first days the build-up, 10 ml × day of life per feed, up to 20% more)");
     body += &bars("Breast per day", &days, &[
         ("left", "#7b5ea7", |d| d.totals.breast_left_min as f64),
         ("right", "#d97a9c", |d| d.totals.breast_right_min as f64),
