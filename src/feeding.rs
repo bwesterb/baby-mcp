@@ -419,8 +419,8 @@ impl Guidance {
                          "vs_target_ml": (-self.shortfall).round()},
             "next_feed": {"amount_ml": self.amount_ml, "max_gap": fmt_dur(self.max_gap),
                           "amount_basis": if self.plan.feeds_needed > 0 {
-                              format!("{:.0} ml still to go today in {} feed(s), at most {:.0} ml each", self.plan.remaining, self.plan.feeds_needed, self.plan.max_per_feed)
-                          } else { format!("a normal feed: {:.0} ml per feed, at most {:.0}", self.per_feed, self.plan.max_per_feed) }},
+                              format!("{:.0} ml still to go today in {} feed(s), at most {:.0} ml each", self.plan.remaining, self.plan.feeds_needed, round5(self.plan.max_per_feed))
+                          } else { format!("a normal feed: {:.0} ml per feed, at most {:.0}", self.per_feed, round5(self.plan.max_per_feed)) }},
             "day_plan": self.plan.to_json(clock, self.prep_s),
             "minimum": {"feeds_per_day": self.min.feeds, "max_pause": fmt_dur(self.min.max_pause), "rule": self.min.rule,
                         "source": "NVK, 'Advies ten aanzien van wakker maken van pasgeborenen voor voeding' (2016), for healthy term babies that grow and drink well"},
