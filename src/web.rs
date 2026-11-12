@@ -1057,13 +1057,15 @@ fn grid_step(max: f64, n: f64) -> f64 {
 /// A series of bars: its name, colour, and value per day.
 type Series<'a> = (&'a str, &'a str, fn(&DayStats) -> f64);
 
-/// Bars per day, stacked by series; `note` goes under the legend.
-fn bars(title: &str, days: &[DayStats], series: &[Series], unit: &str, projection: Option<f64>, note: &str) -> String {
+/// Bars per day, stacked by series, with a band per day behind them (a
+/// target, `band[i]` for `days[i]`); `note` goes under the legend.
+fn bars(title: &str, days: &[DayStats], series: &[Series], unit: &str, projection: Option<f64>, band: &[Option<(f64, f64)>], note: &str) -> String {
     let (w, h, pad) = (640.0, 180.0, 40.0);
     let data_max = days
         .iter()
         .map(|d| series.iter().map(|(_, _, f)| f(d)).sum::<f64>())
         .chain(projection)
+        .chain(band.iter().flatten().map(|b| b.1))
         .fold(0.0, f64::max)
         .max(1.0);
     // Round grid lines; the top line is the scale.
@@ -1086,6 +1088,19 @@ fn bars(title: &str, days: &[DayStats], series: &[Series], unit: &str, projectio
     }
     for (i, d) in days.iter().enumerate() {
         let x = pad + i as f64 * bw + bw * 0.15;
+        if let Some((lo, hi)) = band.get(i).copied().flatten() {
+            let (top, bottom) = (h - hi / max * (h - 10.0), h - lo / max * (h - 10.0));
+            let tip = if hi - lo < 0.5 { format!("{lo:.0}") } else { format!("{lo:.0}–{hi:.0}") };
+            svg += &format!(
+                r#"<rect x="{:.1}" y="{:.1}" width="{:.1}" height="{:.1}" class="band{}"><title>{} target {tip} {unit}</title></rect>"#,
+                pad + i as f64 * bw + bw * 0.05,
+                top - if bottom - top < 2.0 { 1.0 } else { 0.0 },
+                bw * 0.9,
+                (bottom - top).max(2.0),
+                if bottom - top < 2.0 { " line" } else { "" },
+                d.date
+            );
+        }
         let mut y = h;
         for (_, color, f) in series {
             let v = f(d);
@@ -1128,7 +1143,7 @@ fn night_chart(days: &[DayStats]) -> String {
     if days.iter().all(|d| d.longest_night_gap_min.is_none()) {
         return String::new();
     }
-    bars("Longest night stretch", days, &[("between feeds", "#5b6fa8", |d| d.longest_night_gap_min.unwrap_or(0) as f64 / 60.0)], "h", None,
+    bars("Longest night stretch", days, &[("between feeds", "#5b6fa8", |d| d.longest_night_gap_min.unwrap_or(0) as f64 / 60.0)], "h", None, &[],
          " (overlapping 00:00–05:00, from the end of one feed to the start of the next; the bar of a day is the night before it)")
 }
 
@@ -1471,20 +1486,31 @@ pub async fn charts(
     body += &growth_chart(&baby, &weights, t);
     body += &per_kg_chart(&per_kg);
     body += &temp_chart(&app.clock, &temps, temp_from, t);
+    // The daily target per day, from the weight and day of life then.
+    let targets: Vec<Option<(f64, f64)>> = match (baby.birth, baby.birth_weight_g) {
+        (Some(b), Some(bw)) => {
+            let weighings = crate::feeding::weighings(b, bw, since_birth);
+            days.iter()
+                .map(|d| crate::feeding::target_band(&app.clock, b, bw, &weighings, app.clock.date_start(&d.date).ok()?, d.totals.feeds))
+                .collect()
+        }
+        _ => vec![],
+    };
     body += &bars("Bottle per day", &days, &[
         ("breast milk", "#2f6f5e", |d| d.totals.breastmilk_ml),
         ("formula", "#c08a3e", |d| d.totals.formula_ml),
-    ], "ml", project(|t| t.total_ml), "");
+    ], "ml", project(|t| t.total_ml), &targets,
+       " · band: the daily target, 150–180 ml/kg (in the first days the build-up: 10 ml × day of life per feed; a line)");
     body += &bars("Breast per day", &days, &[
         ("left", "#7b5ea7", |d| d.totals.breast_left_min as f64),
         ("right", "#d97a9c", |d| d.totals.breast_right_min as f64),
-    ], "min", project(|t| t.breast_min as f64), "");
+    ], "min", project(|t| t.breast_min as f64), &[], "");
     body += &bars("Diapers per day", &days, &[
         ("wet", "#4a7fb5", |d| d.totals.wet_only as f64),
         ("wet + dirty", "url(#wet-dirty)", |d| d.totals.wet_and_dirty as f64),
         ("dirty", "#a5531d", |d| d.totals.dirty_only as f64),
-    ], "", project(|t| t.diapers as f64), "");
-    body += &bars("Feeds per day", &days, &[("feeds", "#6b6b70", |d| d.totals.feeds as f64)], "", project(|t| t.feeds as f64), "");
+    ], "", project(|t| t.diapers as f64), &[], "");
+    body += &bars("Feeds per day", &days, &[("feeds", "#6b6b70", |d| d.totals.feeds as f64)], "", project(|t| t.feeds as f64), &[], "");
     body += &night_chart(&days);
     // Parents: look at the page as a viewer (say a grandparent) sees it.
     let mut view_as = String::new();
@@ -1896,9 +1922,9 @@ mod tests {
         let day = |d: &str, f: u32| DayStats { date: d.into(), totals: en::Totals { feeds: f, ..Default::default() },
             temp_min_c: None, temp_max_c: None, weight_g: None, weight_vs_birth: None, weight_percentile: None, longest_night_gap_min: None };
         let days = vec![day("2025-11-06", 8), day("2025-11-07", 3)];
-        let html = bars("Feeds", &days, &[("feeds", "#000", |d| d.totals.feeds as f64)], "", Some(7.0), "");
+        let html = bars("Feeds", &days, &[("feeds", "#000", |d| d.totals.feeds as f64)], "", Some(7.0), &[], "");
         assert!(html.contains("stroke-dasharray") && html.contains(">~7<") && html.contains("expected by midnight"));
-        let html = bars("Feeds", &days, &[("feeds", "#000", |d| d.totals.feeds as f64)], "", Some(2.0), "");
+        let html = bars("Feeds", &days, &[("feeds", "#000", |d| d.totals.feeds as f64)], "", Some(2.0), &[], "");
         assert!(!html.contains(">~2<"), "no projection below what is already there");
     }
 
@@ -2131,7 +2157,7 @@ mod preview {
                 ("wet", "#4a7fb5", |d| d.totals.wet_only as f64),
                 ("wet + dirty", "url(#wet-dirty)", |d| d.totals.wet_and_dirty as f64),
                 ("dirty", "#a5531d", |d| d.totals.dirty_only as f64),
-            ], "", Some(2.0 + 9.0 * 0.6), "");
+            ], "", Some(2.0 + 9.0 * 0.6), &[], "");
             let svg = &html[html.find("<svg").unwrap()..html.find("</svg>").unwrap() + 6];
             let svg = svg.replacen("<svg ", r#"<svg xmlns="http://www.w3.org/2000/svg" width="640" height="200" style="background:#fff;font:11px sans-serif" "#, 1).replace(r#" width="100%""#, "");
             std::fs::write(std::env::var("OUT").unwrap(), svg).unwrap();
