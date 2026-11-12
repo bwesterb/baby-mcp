@@ -138,13 +138,15 @@ pub fn weighings(birth: i64, birth_weight: f64, entries: &[Entry]) -> Vec<(i64, 
     w
 }
 
-/// The daily target band (ml) for the local day starting at `start` with
-/// `feeds` feeds: as `daily_target`, the first-week build-up (10 ml × day of
-/// life per feed, with the feeds kept between the NVK minimum and 10) up to
-/// 20% more (as 180 is to 150), until it reaches 150 ml/kg; then 150–180
-/// ml/kg. The weight is interpolated between `weighings` (the last one after
-/// it). None before birth.
-pub fn target_band(clock: &Clock, birth: i64, birth_weight: f64, weighings: &[(i64, f64)], start: i64, feeds: u32) -> Option<(f64, f64)> {
+/// The daily target band (ml) for the local day starting at `start`: in
+/// the first days the build-up, 10 ml × day of life per feed up to 10 ml
+/// more (the range Dutch hospital leaflets give), for the planned number of
+/// feeds (the aim, else 8, at least the NVK minimum); capped by and then
+/// 150–180 ml/kg. A fixed number of feeds keeps the band even: the advice is
+/// per feed, not about how often she happened to drink. The weight is
+/// interpolated between `weighings` (the last one after it). None before
+/// birth.
+pub fn target_band(clock: &Clock, birth: i64, birth_weight: f64, weighings: &[(i64, f64)], start: i64, aim: Option<f64>) -> Option<(f64, f64)> {
     let end = clock.next_day_start(start);
     if end <= birth {
         return None;
@@ -153,11 +155,10 @@ pub fn target_band(clock: &Clock, birth: i64, birth_weight: f64, weighings: &[(i
     let weight = interpolated_weight(weighings, mid)
         .unwrap_or_else(|| weighings.iter().rfind(|w| w.0 <= end).map(|w| w.1).unwrap_or(birth_weight));
     let min = nvk_minimum((mid - birth).max(0) as f64 / 86400.0, Some(birth_weight), weight);
-    let feeds = (feeds as f64).clamp(min.feeds, FEEDS_MAX);
-    let ramp = RAMP_ML_PER_DAY_OF_LIFE * day_of_life(clock, birth, start) as f64 * feeds;
+    let feeds = aim.unwrap_or(FEEDS_DEFAULT).max(min.feeds).min(FEEDS_MAX);
+    let per_feed = RAMP_ML_PER_DAY_OF_LIFE * day_of_life(clock, birth, start) as f64;
     let kg = weight / 1000.0;
-    let room = ML_PER_KG_HIGH / ML_PER_KG;
-    Some((ramp.min(ML_PER_KG * kg), (ramp * room).min(ML_PER_KG_HIGH * kg)))
+    Some(((per_feed * feeds).min(ML_PER_KG * kg), ((per_feed + RAMP_ML_PER_DAY_OF_LIFE) * feeds).min(ML_PER_KG_HIGH * kg)))
 }
 
 /// One full local day since birth, per kg of the weight that day.
@@ -645,17 +646,19 @@ mod tests {
         let birth = clock.parse("2025-10-31 16:40", 0).unwrap();
         let day = |d: &str| clock.date_start(d).unwrap();
         let w = [(birth, 3900.0), (clock.parse("2025-11-10 10:00", 0).unwrap(), 4000.0)];
-        // Day 3 with 8 feeds: the build-up, 30 ml × 8 = 240 ml, up to 20% more.
-        assert_eq!(target_band(&clock, birth, 3900.0, &w, day("2025-11-02"), 8), Some((240.0, 288.0)));
-        // Day 8 with 8 feeds: 640 ml is past 150 ml/kg of the interpolated
-        // ~3970 g: 150–180 ml/kg from then on.
-        let (lo, hi) = target_band(&clock, birth, 3900.0, &w, day("2025-11-07"), 8).unwrap();
-        assert!((lo - 595.5).abs() < 1.0 && (hi - 714.6).abs() < 1.0, "{lo} {hi}");
+        let band = |d: &str| target_band(&clock, birth, 3900.0, &w, day(d), Some(7.0)).unwrap();
+        // Day 1 and 3 with the aim of 7 feeds: 10–20 and 30–40 ml per feed.
+        assert_eq!(band("2025-10-31"), (70.0, 140.0));
+        assert_eq!(band("2025-11-02"), (210.0, 280.0));
+        // Even steps of 70 ml a day, until capped by 150–180 ml/kg (~3970 g on day 9).
+        assert_eq!(band("2025-11-07").0 - band("2025-11-06").0, 70.0);
+        let (lo, hi) = band("2025-11-08");
+        assert!((lo - 597.0).abs() < 2.0 && hi == 700.0, "{lo} {hi}");
         // Later, after the last weighing: 150–180 ml/kg of 4 kg.
-        assert_eq!(target_band(&clock, birth, 3900.0, &w, day("2025-11-20"), 8), Some((600.0, 720.0)));
-        // Fewer feeds than the NVK minimum count as the minimum; before birth, none.
-        assert_eq!(target_band(&clock, birth, 3900.0, &w, day("2025-11-02"), 2), Some((180.0, 216.0)));
-        assert_eq!(target_band(&clock, birth, 3900.0, &w, day("2025-10-29"), 8), None);
+        assert_eq!(band("2025-11-20"), (600.0, 720.0));
+        // Without an aim: 8 feeds; before birth, none.
+        assert_eq!(target_band(&clock, birth, 3900.0, &w, day("2025-11-02"), None), Some((240.0, 320.0)));
+        assert_eq!(target_band(&clock, birth, 3900.0, &w, day("2025-10-29"), Some(7.0)), None);
     }
 
     #[test]

@@ -1509,7 +1509,7 @@ pub async fn charts(
         (Some(b), Some(bw)) => {
             let weighings = crate::feeding::weighings(b, bw, since_birth);
             days.iter()
-                .map(|d| crate::feeding::target_band(&app.clock, b, bw, &weighings, app.clock.date_start(&d.date).ok()?, d.totals.feeds))
+                .map(|d| crate::feeding::target_band(&app.clock, b, bw, &weighings, app.clock.date_start(&d.date).ok()?, baby.aim_feeds_per_day))
                 .collect()
         }
         _ => vec![],
@@ -1518,7 +1518,7 @@ pub async fn charts(
         ("breast milk", "#2f6f5e", |d| d.totals.breastmilk_ml),
         ("formula", "#c08a3e", |d| d.totals.formula_ml),
     ], "ml", project(|t| t.total_ml), &targets,
-       " · band: the daily target, 150–180 ml/kg (in the first days the build-up, 10 ml × day of life per feed, up to 20% more)");
+       " · band: the daily target, 150–180 ml/kg; in the first days the build-up, 10–20 ml per feed on day 1, 20–30 on day 2 and so on, for the planned number of feeds");
     body += &bars("Breast per day", &days, &[
         ("left", "#7b5ea7", |d| d.totals.breast_left_min as f64),
         ("right", "#d97a9c", |d| d.totals.breast_right_min as f64),
