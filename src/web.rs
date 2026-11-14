@@ -988,7 +988,8 @@ fn daylog(app: &App, c: &rusqlite::Connection, start: i64, now: i64, s: Option<&
     let link = |d: i64, text: &str| day_link(clock, d, today, text);
     if start >= today {
         // The last weighing, whichever day it was.
-        let weight = s.and_then(|s| weight_line(s.last_weight.as_ref()?, &app.baby(), s.regained.flatten().is_some()));
+        // "Birth weight regained" only on the day it happened, not every day after.
+        let weight = s.and_then(|s| weight_line(s.last_weight.as_ref()?, &app.baby(), s.regained.flatten().is_some_and(|t| t >= today)));
         let mut out = totals_card("<h2>Today so far</h2>", &totals, weight);
         let rest: Vec<en::Entry> = entries.iter().filter(|e| e.attention_by == 0).cloned().collect();
         out += &log_card("<h2>Today's log</h2>", &rest, &loggers, clock, if entries.is_empty() { "Nothing logged yet today." } else { "Only entries that need attention so far." });
