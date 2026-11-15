@@ -56,3 +56,5 @@ footer{position:relative}footer .viewas{position:absolute;right:2px;top:50%;tran
 .tl text.sum.w{font-size:11px}
 table.week a{color:var(--acc);text-decoration:none}
 svg .band{fill:currentColor;opacity:.12}
+.tl-hint{position:absolute;top:8px;left:50%;z-index:3;transform:translateX(-50%);padding:4px 12px 6px;border-radius:999px;background:var(--card);border:1px solid var(--bd);box-shadow:0 2px 8px rgba(0,0,0,.12);font-size:13px;white-space:nowrap;pointer-events:none;opacity:0;transition:opacity .15s}.tl-hint.on{opacity:1}.tl-hint i{display:block;height:3px;margin-top:3px;border-radius:2px;background:var(--acc);transform:scaleX(0);transform-origin:left}.tl-hint.go{background:var(--acc);color:var(--card);border-color:var(--acc);font-weight:600}.tl-hint.go i{background:var(--card)}
+@media (prefers-reduced-motion:no-preference){.tl-hint.go{animation:tl-pop .18s ease-out}@keyframes tl-pop{from{transform:translateX(-50%) scale(.92)}to{transform:translateX(-50%) scale(1)}}}

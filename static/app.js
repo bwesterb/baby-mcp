@@ -448,11 +448,41 @@ if ($('push')) {
   // Zoom: while pinching, the strip is stretched; on letting go, the
   // nearest level is loaded, keeping the time under the fingers in place.
   const clamp = (s) => Math.min(PXH[0] * 1.5 / PXH[z], Math.max(PXH[PXH.length - 1] * 0.6 / PXH[z], s));
+  // While pinching, a hint over the strip: the level now and the next one,
+  // filling up towards the point where letting go switches; past it, the
+  // level it will switch to.
+  const NAMES = ['Hours', 'Whole day', 'Days', 'Weeks'];
+  const hint = document.createElement('div');
+  hint.className = 'tl-hint';
+  hint.setAttribute('aria-hidden', 'true');
+  const hintText = document.createElement('span');
+  const hintBar = document.createElement('i');
+  hint.append(hintText, hintBar);
+  tl.parentElement.append(hint);
+  function hinted(s) {
+    const nz = level(s);
+    const dir = s >= 1 ? -1 : 1; // pinching out: closer (a lower level)
+    const next = z + dir;
+    hint.classList.add('on');
+    hint.classList.toggle('go', nz !== z);
+    if (nz !== z) {
+      hintText.textContent = NAMES[nz] ?? '';
+      hintBar.style.transform = 'scaleX(1)';
+    } else if (next < 0 || next >= PXH.length) {
+      hintText.textContent = `${NAMES[z]} · no ${dir < 0 ? 'closer' : 'wider'}`;
+      hintBar.style.transform = 'scaleX(0)';
+    } else {
+      const f = Math.min(1, Math.max(0, Math.log(s) / Math.log(dir < 0 ? 1.25 : 0.8)));
+      hintText.textContent = `${NAMES[z]} → ${NAMES[next]}`;
+      hintBar.style.transform = `scaleX(${f})`;
+    }
+  }
   function preview(p) {
     svg.style.transformOrigin = `${p.ax}px 0`;
     svg.style.transform = `scaleX(${p.s})`;
+    hinted(p.s);
   }
-  const unstretch = () => { svg.style.transform = ''; };
+  const unstretch = () => { svg.style.transform = ''; hint.classList.remove('on', 'go'); };
   function level(s) {
     const want = PXH[z] * s;
     let best = z;
@@ -463,6 +493,7 @@ if ($('push')) {
   }
   function commit(p) {
     const nz = level(p.s);
+    hint.classList.remove('on', 'go');
     if (nz === z) { unstretch(); return; }
     zoomTo(nz, p);
   }
