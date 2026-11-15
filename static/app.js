@@ -367,23 +367,27 @@ if ($('push')) {
   }
 
   // A tap on another day in the timeline goes there too (a swipe gives no
-  // click); a second tap soon after on the same spot zooms in one level on
-  // that day or week.
-  let lastTap = null;
+  // click); a second tap on the same day or week soon after zooms in one
+  // level on it. While a double tap is possible the strip waits for it, so
+  // nothing moves between the taps: a quick tap on another day goes there.
+  const DOUBLE = 300;
+  let pending = null; // {key, timer}
   tl.addEventListener('click', (e) => {
     const key = unit(dayAt(tAt(tl.scrollLeft + e.clientX - tl.getBoundingClientRect().left)).date);
-    // The second tap of a double tap: on the first one's day or week (the
-    // first tap set the strip gliding there, so another may be under it now).
-    const first = lastTap && e.timeStamp - lastTap.t < 350 && Math.abs(e.clientX - lastTap.x) < 30 ? lastTap.key : null;
-    lastTap = first ? null : {t: e.timeStamp, x: e.clientX, key};
-    if (first && z > 0) {
-      const s = span(first);
+    if (pending && pending.key === key) {
+      clearTimeout(pending.timer);
+      pending = null;
+      const s = span(key);
       if (!s) return;
       touched = true;
       zoomTo(z - 1, {sx: AT * W(), t: s.now ? NOW : (s.start + s.end) / 2});
       return;
     }
-    if (key !== shown || z !== shownZ) goTo(key, true);
+    if (pending) clearTimeout(pending.timer);
+    pending = null;
+    const go = () => { if (key !== shown || z !== shownZ) goTo(key, true); };
+    if (z === 0) { go(); return; }
+    pending = {key, timer: setTimeout(() => { pending = null; go(); }, DOUBLE)};
   });
 
   // Where to open.
