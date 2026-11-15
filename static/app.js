@@ -586,17 +586,36 @@ if ($('push')) {
   const left0 = () => tl.getBoundingClientRect().left;
   let pinch = null;
   const fingers = (e) => Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
+  // A touch's events keep going to the element it started on; a switch
+  // during the pinch replaces the days, and on iOS events to a removed
+  // element no longer reach the strip. So the pinch also listens on the
+  // elements the fingers started on (handled there only once removed).
+  const move = (e) => {
+    if (e.currentTarget !== tl && tl.contains(e.target)) return; // the strip has it
+    if (!pinch || e.touches.length !== 2) return;
+    e.preventDefault();
+    stretch(pinch, fingers(e) / pinch.d);
+  };
+  const end = (e) => {
+    if (e && e.currentTarget !== tl && tl.contains(e.target)) return;
+    if (!pinch) return;
+    const p = pinch;
+    pinch = null;
+    for (const t of p.targets) for (const [ev, f] of [['touchmove', move], ['touchend', end], ['touchcancel', end]]) t.removeEventListener(ev, f);
+    commit(p);
+  };
   tl.addEventListener('touchstart', (e) => {
     if (e.touches.length !== 2) return;
     pinch = start((e.touches[0].clientX + e.touches[1].clientX) / 2 - left0());
     pinch.d = fingers(e);
+    pinch.targets = [...new Set([...e.touches].map((t) => t.target))].filter((t) => t !== tl);
+    for (const t of pinch.targets) {
+      t.addEventListener('touchmove', move, {passive: false});
+      t.addEventListener('touchend', end);
+      t.addEventListener('touchcancel', end);
+    }
   }, {passive: true});
-  tl.addEventListener('touchmove', (e) => {
-    if (!pinch || e.touches.length !== 2) return;
-    e.preventDefault();
-    stretch(pinch, fingers(e) / pinch.d);
-  }, {passive: false});
-  const end = () => { if (pinch) { const p = pinch; pinch = null; commit(p); } };
+  tl.addEventListener('touchmove', move, {passive: false});
   tl.addEventListener('touchend', end);
   tl.addEventListener('touchcancel', end);
   // Safari: no page zoom on the strip; on a Mac, its trackpad pinch.
