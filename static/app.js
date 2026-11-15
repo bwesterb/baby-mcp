@@ -459,20 +459,29 @@ if ($('push')) {
   const hintBar = document.createElement('i');
   hint.append(hintText, hintBar);
   tl.parentElement.append(hint);
-  function hinted(s) {
-    const nz = level(s);
-    const dir = s >= 1 ? -1 : 1; // pinching out: closer (a lower level)
+  // Pinching switches levels as it goes, this far (in log terms) towards
+  // the next level; only in the direction the fingers move, so it doesn't
+  // flick back and forth at the boundary (moving back undoes it).
+  const LIVE = 0.3;
+  const liveAt = (from, to) => (PXH[to] / PXH[from]) ** LIVE;
+  function hinted(p) {
+    const s = p.s;
+    // Where the fingers are heading (-1: closer, a lower level).
+    const dir = p.dir || (s >= 1 ? -1 : 1);
     const next = z + dir;
+    // Letting go before the switch still switches past 1.25 / 0.8.
+    const nz = p.switched ? z : level(s);
     hint.classList.add('on');
     hint.classList.toggle('go', nz !== z);
     if (nz !== z) {
       hintText.textContent = NAMES[nz] ?? '';
-      hintBar.style.transform = 'scaleX(1)';
+      hintBar.style.transform = `scaleX(${Math.min(1, Math.log(s) / Math.log(liveAt(z, nz)))})`;
     } else if (next < 0 || next >= PXH.length) {
       hintText.textContent = `${NAMES[z]} · no ${dir < 0 ? 'closer' : 'wider'}`;
       hintBar.style.transform = 'scaleX(0)';
     } else {
-      const f = Math.min(1, Math.max(0, Math.log(s) / Math.log(dir < 0 ? 1.25 : 0.8)));
+      // From where this level started (1, or the stretch after a switch).
+      const f = Math.min(1, Math.max(0, Math.log(s / p.s0) / Math.log(liveAt(z, next) / p.s0)));
       hintText.textContent = `${NAMES[z]} → ${NAMES[next]}`;
       hintBar.style.transform = `scaleX(${f})`;
     }
@@ -480,7 +489,43 @@ if ($('push')) {
   function preview(p) {
     svg.style.transformOrigin = `${p.ax}px 0`;
     svg.style.transform = `scaleX(${p.s})`;
-    hinted(p.s);
+    if (!p.busy) hinted(p);
+  }
+  // A pinch step: `raw` is the gesture's own scale (fingers, Safari's
+  // scale, the wheel's sum); `k` turns it into the stretch of the level
+  // shown, and changes with each switch.
+  function stretch(p, raw) {
+    const moving = raw > p.raw ? -1 : raw < p.raw ? 1 : 0; // -1: closer
+    // Turning round: the hint's bar, and the jitter margin, count from here.
+    if (moving && moving !== p.dir) { p.dir = moving; p.s0 = p.s; p.at = p.raw; }
+    p.raw = raw;
+    p.s = clamp(raw * p.k);
+    preview(p);
+    if (p.busy) return;
+    // Past the switch point, moving that way, a little (3%) past the last
+    // switch or turn (finger jitter doesn't flick levels).
+    let nz = z;
+    if (moving < 0 && z > 0 && p.s >= liveAt(z, z - 1) && raw > p.at * 1.03) nz = z - 1;
+    if (moving > 0 && z < PXH.length - 1 && p.s <= liveAt(z, z + 1) && raw < p.at * 0.97) nz = z + 1;
+    if (nz !== z) switchLive(p, nz);
+  }
+  async function switchLive(p, nz) {
+    p.busy = true;
+    const from = z;
+    touched = true;
+    const done = await zoomTo(nz, {sx: p.sx, t: p.t}, true);
+    p.busy = false;
+    if (!done) return;
+    p.k *= PXH[from] / PXH[nz];
+    p.at = p.raw;
+    p.switched = true;
+    p.ax = tl.scrollLeft + p.sx;
+    p.s = clamp(p.raw * p.k);
+    p.s0 = p.s;
+    preview(p);
+    hint.classList.remove('pop');
+    void hint.offsetWidth; // restart the animation
+    hint.classList.add('pop');
   }
   const unstretch = () => { svg.style.transform = ''; hint.classList.remove('on', 'go'); };
   function level(s) {
@@ -491,13 +536,16 @@ if ($('push')) {
     if (best === z && s < 0.8 && z < PXH.length - 1) best = z + 1;
     return best;
   }
+  // Letting go: after a switch during the pinch, settle on that level;
+  // a short pinch (no switch yet) still switches past 1.25 / 0.8.
   function commit(p) {
-    const nz = level(p.s);
-    hint.classList.remove('on', 'go');
-    if (nz === z) { unstretch(); return; }
+    const nz = p.switched ? z : level(p.s);
+    hint.classList.remove('on', 'go', 'pop');
+    if (nz === z || p.busy) { unstretch(); return; }
     zoomTo(nz, p);
   }
-  async function zoomTo(nz, p) {
+  // With `keep` the strip stays stretched (a pinch goes on); true when done.
+  async function zoomTo(nz, p, keep = false) {
     const g = ++gen;
     z = nz;
     measure();
@@ -506,11 +554,11 @@ if ($('push')) {
     const [a, b] = [tAt(left - w), tAt(left + 2 * w)];
     const need = days.filter((day) => day.end > a && day.start < b);
     const els = await Promise.all(need.map((day) => fetchDay(day, z).catch(() => null)));
-    if (g !== gen) return;
+    if (g !== gen) return false;
     loaded.clear();
     for (const el of [...svg.querySelectorAll(':scope > svg')]) el.remove();
     frame();
-    unstretch();
+    if (!keep) unstretch();
     els.forEach((el, i) => { if (el) { loaded.set(need[i].date, el); place(el); } });
     mark(shown);
     tl.scrollLeft = left;
@@ -518,6 +566,7 @@ if ($('push')) {
     save();
     buttons();
     show(inView()).then(setUrl);
+    return true;
   }
   // Buttons, for those without pinch (shown with a mouse or trackpad).
   const zb = document.querySelectorAll('.tl-zoom button');
@@ -533,7 +582,7 @@ if ($('push')) {
     });
   }
   buttons();
-  const start = (sx) => ({sx, ax: tl.scrollLeft + sx, t: tAt(tl.scrollLeft + sx), s: 1});
+  const start = (sx) => ({sx, ax: tl.scrollLeft + sx, t: tAt(tl.scrollLeft + sx), s: 1, s0: 1, raw: 1, k: 1, at: 1, dir: 0, busy: false, switched: false});
   const left0 = () => tl.getBoundingClientRect().left;
   let pinch = null;
   const fingers = (e) => Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
@@ -545,8 +594,7 @@ if ($('push')) {
   tl.addEventListener('touchmove', (e) => {
     if (!pinch || e.touches.length !== 2) return;
     e.preventDefault();
-    pinch.s = clamp(fingers(e) / pinch.d);
-    preview(pinch);
+    stretch(pinch, fingers(e) / pinch.d);
   }, {passive: false});
   const end = () => { if (pinch) { const p = pinch; pinch = null; commit(p); } };
   tl.addEventListener('touchend', end);
@@ -555,7 +603,7 @@ if ($('push')) {
   const touch = 'ontouchstart' in window;
   let gest = null;
   tl.addEventListener('gesturestart', (e) => { e.preventDefault(); if (!touch) gest = start(e.clientX - left0()); });
-  tl.addEventListener('gesturechange', (e) => { e.preventDefault(); if (gest) { gest.s = clamp(e.scale); preview(gest); } });
+  tl.addEventListener('gesturechange', (e) => { e.preventDefault(); if (gest) stretch(gest, e.scale); });
   tl.addEventListener('gestureend', (e) => { e.preventDefault(); if (gest) { const p = gest; gest = null; commit(p); } });
   // Other browsers: a trackpad pinch is a wheel with ctrl.
   let wheel = null, wt;
@@ -563,8 +611,7 @@ if ($('push')) {
     if (!e.ctrlKey) return;
     e.preventDefault();
     if (!wheel) wheel = start(e.clientX - left0());
-    wheel.s = clamp(wheel.s * Math.exp(-e.deltaY / 100));
-    preview(wheel);
+    stretch(wheel, wheel.raw * Math.exp(-e.deltaY / 100));
     clearTimeout(wt);
     wt = setTimeout(() => { const p = wheel; wheel = null; commit(p); }, 250);
   }, {passive: false});
