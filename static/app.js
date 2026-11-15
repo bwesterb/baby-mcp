@@ -373,6 +373,16 @@ if ($('push')) {
   let touched = false;
   for (const ev of ['touchstart', 'pointerdown', 'wheel']) tl.addEventListener(ev, () => { touched = true; gliding = false; }, {passive: true});
   addEventListener('pagehide', () => { if (touched) save(); });
+  // Scrolling has stopped (a glide included): keep the place and address.
+  function settled() {
+    gliding = false;
+    if (!touched) return;
+    save();
+    setUrl();
+  }
+  // scrollend where there is one; else a quiet 250 ms (older Safari).
+  const hasScrollend = 'onscrollend' in tl;
+  if (hasScrollend) tl.addEventListener('scrollend', settled);
   let busy = false, idle;
   tl.addEventListener('scroll', () => {
     if (!busy) {
@@ -383,13 +393,10 @@ if ($('push')) {
         if (touched && !gliding) show(inView());
       });
     }
-    clearTimeout(idle);
-    idle = setTimeout(() => {
-      gliding = false;
-      if (!touched) return;
-      save();
-      setUrl();
-    }, 250);
+    if (!hasScrollend) {
+      clearTimeout(idle);
+      idle = setTimeout(settled, 250);
+    }
   }, {passive: true});
   fill();
   addEventListener('resize', () => {
