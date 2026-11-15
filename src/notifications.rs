@@ -28,15 +28,24 @@ fn parent(app: &App, headers: &HeaderMap) -> Option<User> {
     session_user(app, headers).filter(|u| !u.viewer)
 }
 
-
 /// A short name for a device from its User-Agent.
 fn device_label(headers: &HeaderMap) -> String {
-    let ua = headers.get(header::USER_AGENT).and_then(|v| v.to_str().ok()).unwrap_or("");
-    let os = [("iPhone", "iPhone"), ("iPad", "iPad"), ("Android", "Android"), ("Macintosh", "Mac"), ("Windows", "Windows"), ("Linux", "Linux")]
-        .iter()
-        .find(|(k, _)| ua.contains(k))
-        .map(|(_, v)| *v)
-        .unwrap_or("Device");
+    let ua = headers
+        .get(header::USER_AGENT)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    let os = [
+        ("iPhone", "iPhone"),
+        ("iPad", "iPad"),
+        ("Android", "Android"),
+        ("Macintosh", "Mac"),
+        ("Windows", "Windows"),
+        ("Linux", "Linux"),
+    ]
+    .iter()
+    .find(|(k, _)| ua.contains(k))
+    .map(|(_, v)| *v)
+    .unwrap_or("Device");
     let browser = if ua.contains("Firefox/") {
         " · Firefox"
     } else if ua.contains("Edg/") {
@@ -82,12 +91,25 @@ pub async fn page(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
         ("📝 Entries", &["attention", "changes"]),
         ("💊 Care", &["vitamins"]),
     ];
-    let listed: Vec<&str> = SECTIONS.iter().flat_map(|(_, ks)| ks.iter().copied()).collect();
-    let rest: Vec<&str> = KINDS.iter().map(|k| k.0).filter(|k| !listed.contains(k)).collect();
-    for (heading, kinds) in SECTIONS.iter().map(|(h, ks)| (*h, ks.to_vec())).chain((!rest.is_empty()).then(|| ("Other", rest.clone()))) {
+    let listed: Vec<&str> = SECTIONS
+        .iter()
+        .flat_map(|(_, ks)| ks.iter().copied())
+        .collect();
+    let rest: Vec<&str> = KINDS
+        .iter()
+        .map(|k| k.0)
+        .filter(|k| !listed.contains(k))
+        .collect();
+    for (heading, kinds) in SECTIONS
+        .iter()
+        .map(|(h, ks)| (*h, ks.to_vec()))
+        .chain((!rest.is_empty()).then(|| ("Other", rest.clone())))
+    {
         body += &format!(r#"<h3 class="section">{}</h3>"#, esc(heading));
         for kind in kinds {
-            let Some(i) = KINDS.iter().position(|k| k.0 == kind) else { continue };
+            let Some(i) = KINDS.iter().position(|k| k.0 == kind) else {
+                continue;
+            };
             let (_, label, when) = KINDS[i];
             body += &format!(
                 r#"<p><label class="check"><input type="checkbox" data-kind="{kind}"{}><span><b>{}</b> <span class="mut">— {}</span></span></label></p>"#,
@@ -118,7 +140,14 @@ pub async fn page(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
         body += "</table>";
     }
     body += "</div>";
-    html::render(Page { title: "Notifications · baby-mcp", body, nav: Some(&user.display_name), live: None, viewer: false, footer_extra: String::new() })
+    html::render(Page {
+        title: "Notifications · baby-mcp",
+        body,
+        nav: Some(&user.display_name),
+        live: None,
+        viewer: false,
+        footer_extra: String::new(),
+    })
 }
 
 #[derive(Deserialize)]
@@ -128,11 +157,25 @@ pub struct PrefBody {
 }
 
 /// One choice, saved as soon as its checkbox changes.
-pub async fn save_pref(State(app): State<Arc<App>>, headers: HeaderMap, Json(b): Json<PrefBody>) -> Response {
+pub async fn save_pref(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Json(b): Json<PrefBody>,
+) -> Response {
     if !same_origin(&app, &headers) {
-        return crate::auth::json_err(StatusCode::FORBIDDEN, "forbidden", "cross-site request refused");
+        return crate::auth::json_err(
+            StatusCode::FORBIDDEN,
+            "forbidden",
+            "cross-site request refused",
+        );
     }
-    let Some(user) = parent(&app, &headers) else { return crate::auth::json_err(StatusCode::UNAUTHORIZED, "unauthorized", "log in first (as a parent)") };
+    let Some(user) = parent(&app, &headers) else {
+        return crate::auth::json_err(
+            StatusCode::UNAUTHORIZED,
+            "unauthorized",
+            "log in first (as a parent)",
+        );
+    };
     if !KINDS.iter().any(|(k, _, _)| *k == b.kind) {
         return crate::auth::json_err(StatusCode::BAD_REQUEST, "bad_request", "unknown kind");
     }
@@ -145,7 +188,11 @@ pub async fn save_pref(State(app): State<Arc<App>>, headers: HeaderMap, Json(b):
     });
     match r {
         Ok(_) => Json(json!({ "ok": true })).into_response(),
-        Err(e) => crate::auth::json_err(StatusCode::INTERNAL_SERVER_ERROR, "server_error", &e.to_string()),
+        Err(e) => crate::auth::json_err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "server_error",
+            &e.to_string(),
+        ),
     }
 }
 
@@ -154,7 +201,11 @@ pub struct RemoveForm {
     id: i64,
 }
 
-pub async fn remove(State(app): State<Arc<App>>, headers: HeaderMap, Form(f): Form<RemoveForm>) -> Response {
+pub async fn remove(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Form(f): Form<RemoveForm>,
+) -> Response {
     if !same_origin(&app, &headers) {
         return html::error_page(StatusCode::FORBIDDEN, "Cross-site request refused.");
     }
@@ -162,7 +213,12 @@ pub async fn remove(State(app): State<Arc<App>>, headers: HeaderMap, Form(f): Fo
         Ok(u) => u,
         Err(r) => return r,
     };
-    let _ = app.db.with(|c| c.execute("DELETE FROM push_subscription WHERE id = ?1 AND user_id = ?2", params![f.id, user.id]));
+    let _ = app.db.with(|c| {
+        c.execute(
+            "DELETE FROM push_subscription WHERE id = ?1 AND user_id = ?2",
+            params![f.id, user.id],
+        )
+    });
     Redirect::to("/notifications").into_response()
 }
 
@@ -178,14 +234,42 @@ pub struct SubscribeKeys {
     auth: String,
 }
 
-pub async fn subscribe(State(app): State<Arc<App>>, headers: HeaderMap, Json(b): Json<SubscribeBody>) -> Response {
+pub async fn subscribe(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Json(b): Json<SubscribeBody>,
+) -> Response {
     if !same_origin(&app, &headers) {
-        return crate::auth::json_err(StatusCode::FORBIDDEN, "forbidden", "cross-site request refused");
+        return crate::auth::json_err(
+            StatusCode::FORBIDDEN,
+            "forbidden",
+            "cross-site request refused",
+        );
     }
-    let Some(user) = parent(&app, &headers) else { return crate::auth::json_err(StatusCode::UNAUTHORIZED, "unauthorized", "log in first (as a parent)") };
-    let Some(keys) = b.keys else { return crate::auth::json_err(StatusCode::BAD_REQUEST, "bad_request", "subscription without keys") };
-    if !b.endpoint.starts_with("https://") || b.endpoint.len() > 2048 || keys.p256dh.len() > 200 || keys.auth.len() > 100 {
-        return crate::auth::json_err(StatusCode::BAD_REQUEST, "bad_request", "invalid subscription");
+    let Some(user) = parent(&app, &headers) else {
+        return crate::auth::json_err(
+            StatusCode::UNAUTHORIZED,
+            "unauthorized",
+            "log in first (as a parent)",
+        );
+    };
+    let Some(keys) = b.keys else {
+        return crate::auth::json_err(
+            StatusCode::BAD_REQUEST,
+            "bad_request",
+            "subscription without keys",
+        );
+    };
+    if !b.endpoint.starts_with("https://")
+        || b.endpoint.len() > 2048
+        || keys.p256dh.len() > 200
+        || keys.auth.len() > 100
+    {
+        return crate::auth::json_err(
+            StatusCode::BAD_REQUEST,
+            "bad_request",
+            "invalid subscription",
+        );
     }
     let label = device_label(&headers);
     let r = app.db.with(|c| {
@@ -197,7 +281,11 @@ pub async fn subscribe(State(app): State<Arc<App>>, headers: HeaderMap, Json(b):
     });
     match r {
         Ok(_) => Json(json!({ "ok": true })).into_response(),
-        Err(e) => crate::auth::json_err(StatusCode::INTERNAL_SERVER_ERROR, "server_error", &e.to_string()),
+        Err(e) => crate::auth::json_err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "server_error",
+            &e.to_string(),
+        ),
     }
 }
 
@@ -206,20 +294,49 @@ pub struct UnsubscribeBody {
     endpoint: String,
 }
 
-pub async fn unsubscribe(State(app): State<Arc<App>>, headers: HeaderMap, Json(b): Json<UnsubscribeBody>) -> Response {
+pub async fn unsubscribe(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Json(b): Json<UnsubscribeBody>,
+) -> Response {
     if !same_origin(&app, &headers) {
-        return crate::auth::json_err(StatusCode::FORBIDDEN, "forbidden", "cross-site request refused");
+        return crate::auth::json_err(
+            StatusCode::FORBIDDEN,
+            "forbidden",
+            "cross-site request refused",
+        );
     }
-    let Some(user) = parent(&app, &headers) else { return crate::auth::json_err(StatusCode::UNAUTHORIZED, "unauthorized", "log in first (as a parent)") };
-    let _ = app.db.with(|c| c.execute("DELETE FROM push_subscription WHERE endpoint = ?1 AND user_id = ?2", params![b.endpoint, user.id]));
+    let Some(user) = parent(&app, &headers) else {
+        return crate::auth::json_err(
+            StatusCode::UNAUTHORIZED,
+            "unauthorized",
+            "log in first (as a parent)",
+        );
+    };
+    let _ = app.db.with(|c| {
+        c.execute(
+            "DELETE FROM push_subscription WHERE endpoint = ?1 AND user_id = ?2",
+            params![b.endpoint, user.id],
+        )
+    });
     Json(json!({ "ok": true })).into_response()
 }
 
 pub async fn test(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
     if !same_origin(&app, &headers) {
-        return crate::auth::json_err(StatusCode::FORBIDDEN, "forbidden", "cross-site request refused");
+        return crate::auth::json_err(
+            StatusCode::FORBIDDEN,
+            "forbidden",
+            "cross-site request refused",
+        );
     }
-    let Some(user) = parent(&app, &headers) else { return crate::auth::json_err(StatusCode::UNAUTHORIZED, "unauthorized", "log in first (as a parent)") };
+    let Some(user) = parent(&app, &headers) else {
+        return crate::auth::json_err(
+            StatusCode::UNAUTHORIZED,
+            "unauthorized",
+            "log in first (as a parent)",
+        );
+    };
     let n = Notice {
         kind: "test",
         key: String::new(),
@@ -264,7 +381,11 @@ pub async fn badge(State(app): State<Arc<App>>, headers: HeaderMap) -> Response 
         return crate::auth::json_err(StatusCode::UNAUTHORIZED, "unauthorized", "log in first");
     }
     match notify::current(&app, now()) {
-        Ok((items, groups)) => ([(header::CACHE_CONTROL, "no-store")], Json(json!({ "count": items.len(), "items": items, "groups": groups }))).into_response(),
+        Ok((items, groups)) => (
+            [(header::CACHE_CONTROL, "no-store")],
+            Json(json!({ "count": items.len(), "items": items, "groups": groups })),
+        )
+            .into_response(),
         Err(e) => crate::auth::json_err(StatusCode::INTERNAL_SERVER_ERROR, "server_error", &e),
     }
 }
@@ -310,6 +431,16 @@ self.addEventListener('notificationclick', (e) => {
 "#;
 
 pub async fn service_worker(State(app): State<Arc<App>>) -> Response {
-    let js = format!("const NAME = {};\n{SW_JS}", serde_json::to_string(&app.cfg.baby.name).unwrap());
-    ([(header::CONTENT_TYPE, "text/javascript; charset=utf-8"), (header::CACHE_CONTROL, "no-cache")], js).into_response()
+    let js = format!(
+        "const NAME = {};\n{SW_JS}",
+        serde_json::to_string(&app.cfg.baby.name).unwrap()
+    );
+    (
+        [
+            (header::CONTENT_TYPE, "text/javascript; charset=utf-8"),
+            (header::CACHE_CONTROL, "no-cache"),
+        ],
+        js,
+    )
+        .into_response()
 }

@@ -52,7 +52,11 @@ fn from_row(r: &Row, superseded: bool) -> rusqlite::Result<Entry> {
     })
 }
 
-pub(crate) fn query(c: &Connection, sql_where: &str, p: impl rusqlite::Params) -> Result<Vec<Entry>, String> {
+pub(crate) fn query(
+    c: &Connection,
+    sql_where: &str,
+    p: impl rusqlite::Params,
+) -> Result<Vec<Entry>, String> {
     let sql = format!("SELECT {COLS} FROM entry WHERE {sql_where}");
     let mut st = c.prepare(&sql).map_err(err)?;
     let rows = st.query_map(p, |r| from_row(r, false)).map_err(err)?;
@@ -74,9 +78,14 @@ impl Entry {
         self.fields.get(name).and_then(Value::as_str)
     }
     pub fn is_feed(&self) -> bool {
-        ["bottle_breastmilk_ml", "bottle_formula_ml", "breast_left_min", "breast_right_min"]
-            .iter()
-            .any(|f| self.num(f).unwrap_or(0.0) > 0.0)
+        [
+            "bottle_breastmilk_ml",
+            "bottle_formula_ml",
+            "breast_left_min",
+            "breast_right_min",
+        ]
+        .iter()
+        .any(|f| self.num(f).unwrap_or(0.0) > 0.0)
             || self.str("latch").is_some_and(|l| l != "none")
     }
     pub fn groups(&self) -> Vec<Group> {
@@ -153,20 +162,29 @@ pub fn save(c: &Connection, user: i64, e: &Entry, now: i64) -> Result<Entry, Str
         )
         .map_err(err)?;
     if n != 1 {
-        return Err(format!("entry {} changed meanwhile; read it again", e.entry_id));
+        return Err(format!(
+            "entry {} changed meanwhile; read it again",
+            e.entry_id
+        ));
     }
     get(c, e.entry_id)
 }
 
 pub fn list(c: &Connection, from: i64, to: i64, deleted: bool) -> Result<Vec<Entry>, String> {
     let w = if deleted { "" } else { "deleted = 0 AND " };
-    query(c, &format!("{w}at >= ?1 AND at < ?2 ORDER BY at, entry_id"), [from, to])
+    query(
+        c,
+        &format!("{w}at >= ?1 AND at < ?2 ORDER BY at, entry_id"),
+        [from, to],
+    )
 }
 
 pub fn history(c: &Connection, id: i64) -> Result<Vec<Entry>, String> {
     let cur = get(c, id)?;
     let mut st = c
-        .prepare(&format!("SELECT {COLS}, superseded_at FROM entry_old WHERE entry_id = ?1 ORDER BY version"))
+        .prepare(&format!(
+            "SELECT {COLS}, superseded_at FROM entry_old WHERE entry_id = ?1 ORDER BY version"
+        ))
         .map_err(err)?;
     let mut out = st
         .query_map([id], |r| from_row(r, true))
@@ -178,43 +196,62 @@ pub fn history(c: &Connection, id: i64) -> Result<Vec<Entry>, String> {
 }
 
 pub fn attention(c: &Connection, mask: i64) -> Result<Vec<Entry>, String> {
-    query(c, "deleted = 0 AND (needs_attention_by & ?1) != 0 ORDER BY at", [mask])
+    query(
+        c,
+        "deleted = 0 AND (needs_attention_by & ?1) != 0 ORDER BY at",
+        [mask],
+    )
 }
 
 /// Non-deleted entries within `window` seconds of `at` sharing a group.
-pub fn nearby(c: &Connection, at: i64, window: i64, groups: &[Group]) -> Result<Vec<Entry>, String> {
+pub fn nearby(
+    c: &Connection,
+    at: i64,
+    window: i64,
+    groups: &[Group],
+) -> Result<Vec<Entry>, String> {
     Ok(list(c, at - window, at + window + 1, false)?
         .into_iter()
         .filter(|e| e.groups().iter().any(|g| groups.contains(g)))
         .collect())
 }
 
-
 pub fn last_where(c: &Connection, cond: &str) -> Result<Option<Entry>, String> {
-    Ok(query(c, &format!("deleted = 0 AND {cond} ORDER BY at DESC, entry_id DESC LIMIT 1"), [])?.pop())
+    Ok(query(
+        c,
+        &format!("deleted = 0 AND {cond} ORDER BY at DESC, entry_id DESC LIMIT 1"),
+        [],
+    )?
+    .pop())
 }
 
 // ------------------------------------------------------------- users
 
 pub fn user_names(c: &Connection) -> Result<HashMap<i64, String>, String> {
-    let mut st = c.prepare("SELECT id, display_name FROM user").map_err(err)?;
+    let mut st = c
+        .prepare("SELECT id, display_name FROM user")
+        .map_err(err)?;
     let rows = st
         .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
         .map_err(err)?;
-    rows.collect::<rusqlite::Result<HashMap<_, _>>>().map_err(err)
+    rows.collect::<rusqlite::Result<HashMap<_, _>>>()
+        .map_err(err)
 }
 
 /// Who first logged each entry (display names), by entry id: the author of
 /// version 1, which for edited entries is in `entry_old`.
 pub fn loggers(c: &Connection, entries: &[Entry]) -> Result<HashMap<i64, String>, String> {
     let names = user_names(c)?;
-    let mut st = c.prepare("SELECT changed_by FROM entry_old WHERE entry_id = ?1 AND version = 1").map_err(err)?;
+    let mut st = c
+        .prepare("SELECT changed_by FROM entry_old WHERE entry_id = ?1 AND version = 1")
+        .map_err(err)?;
     let mut out = HashMap::new();
     for e in entries {
         let by = if e.version == 1 {
             e.changed_by
         } else {
-            st.query_row([e.entry_id], |r| r.get(0)).unwrap_or(e.changed_by)
+            st.query_row([e.entry_id], |r| r.get(0))
+                .unwrap_or(e.changed_by)
         };
         if let Some(n) = names.get(&by) {
             out.insert(e.entry_id, n.clone());
@@ -224,9 +261,11 @@ pub fn loggers(c: &Connection, entries: &[Entry]) -> Result<HashMap<i64, String>
 }
 
 pub fn user_by_name(c: &Connection, name: &str) -> Result<Option<(i64, String)>, String> {
-    c.query_row("SELECT id, display_name FROM user WHERE name = ?1", [name], |r| {
-        Ok((r.get(0)?, r.get(1)?))
-    })
+    c.query_row(
+        "SELECT id, display_name FROM user WHERE name = ?1",
+        [name],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )
     .optional()
     .map_err(err)
 }
@@ -259,7 +298,8 @@ pub fn view(e: &Entry, clock: &Clock, names: &HashMap<i64, String>) -> Value {
         v["until"] = json!(clock.fmt_time(e.at + d));
     }
     if e.attention_by != 0 {
-        v["needs_attention"] = json!({"by": attention_names(e.attention_by), "why": e.attention_why});
+        v["needs_attention"] =
+            json!({"by": attention_names(e.attention_by), "why": e.attention_why});
     }
     if e.deleted {
         v["deleted"] = json!(true);
@@ -311,7 +351,11 @@ pub fn totals_from<'a>(entries: impl IntoIterator<Item = &'a Entry>, from: i64) 
         }
         let new_feed = e.is_feed() && !feed.is_some_and(|f| is_top_up(f, e.at));
         if e.is_feed() {
-            feed = Some(if new_feed { (e.at, e.at) } else { (feed.map_or(e.at, |f| f.0), e.at) });
+            feed = Some(if new_feed {
+                (e.at, e.at)
+            } else {
+                (feed.map_or(e.at, |f| f.0), e.at)
+            });
         }
         if e.at < from {
             continue;
@@ -321,7 +365,10 @@ pub fn totals_from<'a>(entries: impl IntoIterator<Item = &'a Entry>, from: i64) 
         }
         t.breastmilk_ml += e.num("bottle_breastmilk_ml").unwrap_or(0.0);
         t.formula_ml += e.num("bottle_formula_ml").unwrap_or(0.0);
-        let (l, r) = (e.num("breast_left_min").unwrap_or(0.0) as i64, e.num("breast_right_min").unwrap_or(0.0) as i64);
+        let (l, r) = (
+            e.num("breast_left_min").unwrap_or(0.0) as i64,
+            e.num("breast_right_min").unwrap_or(0.0) as i64,
+        );
         t.breast_left_min += l;
         t.breast_right_min += r;
         t.breast_min += l + r;
@@ -368,7 +415,12 @@ impl Baby {
     /// Percentage weight change since birth at time `t`, and its percentile
     /// among newborns with the same delivery mode (first month only).
     pub fn change_percentile(&self, grams: f64, t: i64) -> Option<(f64, f64, String)> {
-        let (birth, bw, d, table) = (self.birth?, self.birth_weight_g?, self.delivery?, self.change.as_ref()?);
+        let (birth, bw, d, table) = (
+            self.birth?,
+            self.birth_weight_g?,
+            self.delivery?,
+            self.change.as_ref()?,
+        );
         if t < birth || bw <= 0.0 {
             return None;
         }
@@ -390,8 +442,10 @@ impl Baby {
 
     pub(crate) fn percentile_json(&self, grams: f64, t: i64) -> Value {
         match self.weight_percentile(grams, t) {
-            Some((p, z)) => json!({"percentile": (p * 10.0).round() / 10.0, "label": crate::growth::label(p),
-                                   "z": (z * 100.0).round() / 100.0}),
+            Some((p, z)) => {
+                json!({"percentile": (p * 10.0).round() / 10.0, "label": crate::growth::label(p),
+                                   "z": (z * 100.0).round() / 100.0})
+            }
             None => Value::Null,
         }
     }
@@ -433,7 +487,14 @@ pub fn feed_episodes<'a>(es: impl IntoIterator<Item = &'a Entry>) -> Vec<(i64, i
 /// The usual gap between feeds: the median of up to 8 recent gaps from the end
 /// of one feed (its last top-up) to the start of the next.
 pub fn feed_gap(eps: &[(i64, i64)]) -> Option<i64> {
-    median(eps.windows(2).map(|w| w[1].0 - w[0].1).filter(|g| *g >= ESTIMATE_MIN_GAP).rev().take(8).collect())
+    median(
+        eps.windows(2)
+            .map(|w| w[1].0 - w[0].1)
+            .filter(|g| *g >= ESTIMATE_MIN_GAP)
+            .rev()
+            .take(8)
+            .collect(),
+    )
 }
 
 /// Gaps shorter than this don't count for the feed estimate.
@@ -448,7 +509,11 @@ fn median(mut v: Vec<i64>) -> Option<i64> {
     }
     v.sort();
     let n = v.len();
-    Some(if n % 2 == 1 { v[n / 2] } else { (v[n / 2 - 1] + v[n / 2]) / 2 })
+    Some(if n % 2 == 1 {
+        v[n / 2]
+    } else {
+        (v[n / 2 - 1] + v[n / 2]) / 2
+    })
 }
 
 /// Vitamins (RIVM): K daily from day 8 until 12 weeks, D daily from day 8
@@ -461,7 +526,11 @@ pub const VITAMIN_REMIND_HOUR: i64 = 18;
 
 /// The start of the local day `span` after the local day of `t`.
 pub(crate) fn day_plus(clock: &Clock, t: i64, span: jiff::Span) -> i64 {
-    let d = clock.zoned(t).date().checked_add(span).expect("date in range");
+    let d = clock
+        .zoned(t)
+        .date()
+        .checked_add(span)
+        .expect("date in range");
     clock.date_start(&d.to_string()).expect("valid date")
 }
 
@@ -505,12 +574,28 @@ pub const NIGHT_LOOKBACK: i64 = 24 * 3600;
 pub fn night_stretch(clock: &Clock, eps: &[(i64, i64)], day: i64) -> Option<i64> {
     let until = clock.zoned(day).date().at(NIGHT_UNTIL_HOUR, 0, 0, 0);
     let until = clock.civil(until).ok()?;
-    eps.windows(2).map(|w| (w[0].1, w[1].0)).filter(|(a, b)| *a < until && *b > day).map(|(a, b)| b - a).max()
+    eps.windows(2)
+        .map(|w| (w[0].1, w[1].0))
+        .filter(|(a, b)| *a < until && *b > day)
+        .map(|(a, b)| b - a)
+        .max()
 }
 
 /// Per-day statistics for the local days from `from` (a day start) up to `to`.
-pub fn stats(c: &Connection, clock: &Clock, baby: &Baby, from: i64, to: i64) -> Result<Vec<DayStats>, String> {
-    Ok(stats_of(clock, baby, &list(c, from - NIGHT_LOOKBACK, to, false)?, from, to))
+pub fn stats(
+    c: &Connection,
+    clock: &Clock,
+    baby: &Baby,
+    from: i64,
+    to: i64,
+) -> Result<Vec<DayStats>, String> {
+    Ok(stats_of(
+        clock,
+        baby,
+        &list(c, from - NIGHT_LOOKBACK, to, false)?,
+        from,
+        to,
+    ))
 }
 
 /// `stats` from entries already read: at least from NIGHT_LOOKBACK before
@@ -526,13 +611,18 @@ pub fn stats_of(clock: &Clock, baby: &Baby, all: &[Entry], from: i64, to: i64) -
         let weight = day.iter().filter_map(|e| e.num("weight_g")).next_back();
         out.push(DayStats {
             date: clock.day(start),
-            totals: totals_from(all.iter().filter(|e| e.at >= start - FEED_LOOKBACK && e.at < end), start),
+            totals: totals_from(
+                all.iter()
+                    .filter(|e| e.at >= start - FEED_LOOKBACK && e.at < end),
+                start,
+            ),
             temp_min_c: temps.iter().copied().reduce(f64::min),
             temp_max_c: temps.iter().copied().reduce(f64::max),
             weight_g: weight,
             weight_vs_birth: weight.and_then(|w| weight_vs_birth(w, baby.birth_weight_g)),
             weight_percentile: day
-                .iter().rfind(|e| e.num("weight_g").is_some())
+                .iter()
+                .rfind(|e| e.num("weight_g").is_some())
                 .and_then(|e| baby.weight_percentile(e.num("weight_g")?, e.at))
                 .map(|(p, _)| crate::growth::label(p)),
             longest_night_gap_min: night_stretch(clock, &eps, start).map(|s| (s + 30) / 60),
@@ -552,7 +642,10 @@ pub mod tests {
         let db = Db::open(&dir.path().join("t.sqlite")).unwrap();
         let uid = db
             .with(|c| {
-                c.execute("INSERT INTO user (name, display_name, created_at) VALUES ('t', 'Tester', 0)", [])?;
+                c.execute(
+                    "INSERT INTO user (name, display_name, created_at) VALUES ('t', 'Tester', 0)",
+                    [],
+                )?;
                 Ok(c.last_insert_rowid())
             })
             .unwrap();
@@ -600,23 +693,61 @@ pub mod tests {
     fn wet_diapers() {
         let clock = Clock::new("Europe/Amsterdam").unwrap();
         let birth = clock.parse("2025-10-31 16:40", 0).unwrap();
-        let baby = Baby { name: "B".into(), birth: Some(birth), birth_weight_g: None, sex: None, growth: None, delivery: None, change: None,
-                          aim_feeds_per_day: None, feed_prep_s: 0 };
+        let baby = Baby {
+            name: "B".into(),
+            birth: Some(birth),
+            birth_weight_g: None,
+            sex: None,
+            growth: None,
+            delivery: None,
+            change: None,
+            aim_feeds_per_day: None,
+            feed_prep_s: 0,
+        };
         let at = |s: &str| clock.parse(s, 0).unwrap();
         let e = |t: &str, wet: bool| crate::status::entry(at(t), json!({"wet": wet}));
         // Day 3 (2 Nov): at least 3; two wet diapers → warning.
-        let day = [e("2025-11-02 02:00", true), e("2025-11-02 08:00", true), e("2025-11-02 11:00", false)];
+        let day = [
+            e("2025-11-02 02:00", true),
+            e("2025-11-02 08:00", true),
+            e("2025-11-02 11:00", false),
+        ];
         let w = crate::status::wet_warning(&clock, &baby, &day, at("2025-11-02 12:00")).unwrap();
-        assert_eq!(w.text, "Only 2 wet diapers in the last 24 h (usually at least 3 on day 3)");
+        assert_eq!(
+            w.text,
+            "Only 2 wet diapers in the last 24 h (usually at least 3 on day 3)"
+        );
         // Day 8: at least 6.
-        let day: Vec<Entry> = (0..5).map(|k| e(&format!("2025-11-07 {:02}:00", 1 + k * 4), true)).collect();
-        assert_eq!(crate::status::wet_warning(&clock, &baby, &day, at("2025-11-07 22:00")).unwrap().minimum, 6);
-        let day: Vec<Entry> = (0..6).map(|k| e(&format!("2025-11-07 {:02}:00", 1 + k * 3), true)).collect();
-        assert!(crate::status::wet_warning(&clock, &baby, &day, at("2025-11-07 22:00")).is_none(), "six is enough");
+        let day: Vec<Entry> = (0..5)
+            .map(|k| e(&format!("2025-11-07 {:02}:00", 1 + k * 4), true))
+            .collect();
+        assert_eq!(
+            crate::status::wet_warning(&clock, &baby, &day, at("2025-11-07 22:00"))
+                .unwrap()
+                .minimum,
+            6
+        );
+        let day: Vec<Entry> = (0..6)
+            .map(|k| e(&format!("2025-11-07 {:02}:00", 1 + k * 3), true))
+            .collect();
+        assert!(
+            crate::status::wet_warning(&clock, &baby, &day, at("2025-11-07 22:00")).is_none(),
+            "six is enough"
+        );
         // Nobody logging for 6 hours: no warning.
-        assert!(crate::status::wet_warning(&clock, &baby, &day[..1], at("2025-11-07 22:00")).is_none());
+        assert!(
+            crate::status::wet_warning(&clock, &baby, &day[..1], at("2025-11-07 22:00")).is_none()
+        );
         // First day: nothing yet.
-        assert!(crate::status::wet_warning(&clock, &baby, &[e("2025-10-31 20:00", false)], at("2025-10-31 22:00")).is_none());
+        assert!(
+            crate::status::wet_warning(
+                &clock,
+                &baby,
+                &[e("2025-10-31 20:00", false)],
+                at("2025-10-31 22:00")
+            )
+            .is_none()
+        );
     }
 
     #[test]
@@ -626,15 +757,46 @@ pub mod tests {
         let e = |t: &str| crate::status::entry(at(t), json!({"bottle_formula_ml": 60}));
         // 22:00 → 03:30 (top-up 04:00) → 07:00: the longest stretch overlapping
         // the night is 5h30, from the end of the 22:00 feed.
-        let es = [e("2025-11-06 19:00"), e("2025-11-06 22:00"), e("2025-11-07 03:30"), e("2025-11-07 04:00"), e("2025-11-07 07:00"), e("2025-11-07 10:00")];
+        let es = [
+            e("2025-11-06 19:00"),
+            e("2025-11-06 22:00"),
+            e("2025-11-07 03:30"),
+            e("2025-11-07 04:00"),
+            e("2025-11-07 07:00"),
+            e("2025-11-07 10:00"),
+        ];
         let eps = feed_episodes(&es);
-        assert_eq!(night_stretch(&clock, &eps, clock.date_start("2025-11-07").unwrap()), Some(5 * 3600 + 1800));
+        assert_eq!(
+            night_stretch(&clock, &eps, clock.date_start("2025-11-07").unwrap()),
+            Some(5 * 3600 + 1800)
+        );
         // The night before: no feed before it in the log.
-        assert_eq!(night_stretch(&clock, &eps, clock.date_start("2025-11-06").unwrap()), None);
+        assert_eq!(
+            night_stretch(&clock, &eps, clock.date_start("2025-11-06").unwrap()),
+            None
+        );
         // Still sleeping (no feed after 22:00 yet): not known.
-        assert_eq!(night_stretch(&clock, &eps[..2], clock.date_start("2025-11-07").unwrap()), None);
-        let d = stats_of(&clock, &Baby { name: "B".into(), birth: None, birth_weight_g: None, sex: None, growth: None, delivery: None, change: None,
-                                         aim_feeds_per_day: None, feed_prep_s: 0 }, &es, at("2025-11-07 00:00"), at("2025-11-07 12:00"));
+        assert_eq!(
+            night_stretch(&clock, &eps[..2], clock.date_start("2025-11-07").unwrap()),
+            None
+        );
+        let d = stats_of(
+            &clock,
+            &Baby {
+                name: "B".into(),
+                birth: None,
+                birth_weight_g: None,
+                sex: None,
+                growth: None,
+                delivery: None,
+                change: None,
+                aim_feeds_per_day: None,
+                feed_prep_s: 0,
+            },
+            &es,
+            at("2025-11-07 00:00"),
+            at("2025-11-07 12:00"),
+        );
         assert_eq!(d[0].longest_night_gap_min, Some(330));
     }
 

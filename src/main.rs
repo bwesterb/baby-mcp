@@ -83,15 +83,38 @@ pub fn router(app: Arc<app::App>) -> Router {
         .route("/auth/login/finish", post(auth::login_finish))
         .route("/auth/enroll/begin", post(auth::enroll_begin))
         .route("/auth/enroll/finish", post(auth::enroll_finish))
-        .route("/.well-known/oauth-protected-resource", get(auth::protected_resource))
-        .route("/.well-known/oauth-protected-resource/mcp", get(auth::protected_resource))
-        .route("/.well-known/oauth-authorization-server", get(auth::authorization_server))
-        .route("/oauth/register", post(auth::register).options(auth::preflight))
+        .route(
+            "/.well-known/oauth-protected-resource",
+            get(auth::protected_resource),
+        )
+        .route(
+            "/.well-known/oauth-protected-resource/mcp",
+            get(auth::protected_resource),
+        )
+        .route(
+            "/.well-known/oauth-authorization-server",
+            get(auth::authorization_server),
+        )
+        .route(
+            "/oauth/register",
+            post(auth::register).options(auth::preflight),
+        )
         .route("/oauth/token", post(auth::token).options(auth::preflight))
-        .route("/oauth/authorize", get(auth::authorize).post(auth::authorize_decide))
-        .route("/mcp", post(mcp::handle).get(mcp::not_allowed).delete(mcp::not_allowed))
+        .route(
+            "/oauth/authorize",
+            get(auth::authorize).post(auth::authorize_decide),
+        )
+        .route(
+            "/mcp",
+            post(mcp::handle)
+                .get(mcp::not_allowed)
+                .delete(mcp::not_allowed),
+        )
         .fallback(web::not_found)
-        .layer(axum::middleware::from_fn_with_state(app.clone(), auth::keep_session))
+        .layer(axum::middleware::from_fn_with_state(
+            app.clone(),
+            auth::keep_session,
+        ))
         .with_state(app)
 }
 
@@ -120,9 +143,17 @@ fn serve(cfg: config::Config) -> Result<(), String> {
     let app = Arc::new(app::App::new(cfg)?);
     let rt = tokio::runtime::Runtime::new().map_err(|e| e.to_string())?;
     rt.block_on(async move {
-        let listener = tokio::net::TcpListener::bind(&listen).await.map_err(|e| format!("{listen}: {e}"))?;
-        eprintln!("baby-mcp {}: {} on {listen}", crate::html::VERSION, app.cfg.origin());
+        let listener = tokio::net::TcpListener::bind(&listen)
+            .await
+            .map_err(|e| format!("{listen}: {e}"))?;
+        eprintln!(
+            "baby-mcp {}: {} on {listen}",
+            crate::html::VERSION,
+            app.cfg.origin()
+        );
         tokio::spawn(notify::run(app.clone()));
-        axum::serve(listener, router(app)).await.map_err(|e| e.to_string())
+        axum::serve(listener, router(app))
+            .await
+            .map_err(|e| e.to_string())
     })
 }

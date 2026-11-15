@@ -71,7 +71,10 @@ impl Config {
     fn check(&self) -> Result<(), String> {
         let o = self.origin.trim_end_matches('/');
         if !o.starts_with("https://") || o["https://".len()..].contains('/') {
-            return Err(format!("origin must be like https://host, not {:?}", self.origin));
+            return Err(format!(
+                "origin must be like https://host, not {:?}",
+                self.origin
+            ));
         }
         Ok(())
     }
@@ -86,11 +89,15 @@ impl Config {
     }
 
     pub fn growth_table_path(&self) -> PathBuf {
-        self.growth_table.clone().unwrap_or_else(|| self.state.join("who-weight-for-age.tsv"))
+        self.growth_table
+            .clone()
+            .unwrap_or_else(|| self.state.join("who-weight-for-age.tsv"))
     }
 
     pub fn weight_change_table_path(&self) -> PathBuf {
-        self.weight_change_table.clone().unwrap_or_else(|| self.state.join("newborn-weight-change.tsv"))
+        self.weight_change_table
+            .clone()
+            .unwrap_or_else(|| self.state.join("newborn-weight-change.tsv"))
     }
 
     pub fn db_path(&self) -> PathBuf {

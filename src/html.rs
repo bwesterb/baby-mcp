@@ -41,9 +41,21 @@ const REPO: &str = "https://github.com/bwesterb/baby-mcp";
 /// The footer: the version, linked to its commit on GitHub (or the repository),
 /// and `extra` on the same line at the right.
 fn footer(extra: &str) -> String {
-    let commit = VERSION.trim_end_matches("-dirty").rsplit("-g").next().unwrap_or(VERSION);
-    let href = if commit.starts_with('v') { REPO.to_string() } else { format!("{REPO}/commit/{commit}") };
-    format!(r#"<footer><a href="{}" title="baby-mcp on GitHub">{}</a>{extra}</footer>"#, esc(&href), esc(VERSION))
+    let commit = VERSION
+        .trim_end_matches("-dirty")
+        .rsplit("-g")
+        .next()
+        .unwrap_or(VERSION);
+    let href = if commit.starts_with('v') {
+        REPO.to_string()
+    } else {
+        format!("{REPO}/commit/{commit}")
+    };
+    format!(
+        r#"<footer><a href="{}" title="baby-mcp on GitHub">{}</a>{extra}</footer>"#,
+        esc(&href),
+        esc(VERSION)
+    )
 }
 
 pub struct Page<'a> {
@@ -72,7 +84,10 @@ pub fn render(p: Page) -> Response {
         ),
         None => r#"<div class="brand logo"><img src="/icon-192.png" width="72" height="72" alt=""></div>"#.to_string(),
     };
-    let live = p.live.map(|(s, v)| format!(r#" data-live="{s}" data-version="{v}""#)).unwrap_or_default();
+    let live = p
+        .live
+        .map(|(s, v)| format!(r#" data-live="{s}" data-version="{v}""#))
+        .unwrap_or_default();
     let html = format!(
         r#"<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">{head}<title>{title}</title><link rel="stylesheet" href="/app.css?v={v}"><script src="/app.js?v={v}" defer></script></head><body{live}><main>{nav}{body}{footer}</main></body></html>"#,
         title = esc(p.title),
@@ -82,7 +97,10 @@ pub fn render(p: Page) -> Response {
         body = p.body
     );
     let mut h = HeaderMap::new();
-    h.insert(header::CONTENT_TYPE, HeaderValue::from_static("text/html; charset=utf-8"));
+    h.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("text/html; charset=utf-8"),
+    );
     h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     h.insert("x-frame-options", HeaderValue::from_static("DENY"));
     // Not no-referrer: then browsers send `Origin: null` on form posts, which the
@@ -100,7 +118,10 @@ pub fn render(p: Page) -> Response {
 pub fn error_page(status: StatusCode, msg: &str) -> Response {
     let mut r = render(Page {
         title: "baby-mcp",
-        body: format!(r#"<div class="card"><h1>Cannot continue</h1><p>{}</p></div>"#, esc(msg)),
+        body: format!(
+            r#"<div class="card"><h1>Cannot continue</h1><p>{}</p></div>"#,
+            esc(msg)
+        ),
         nav: None,
         live: None,
         viewer: false,
@@ -122,7 +143,14 @@ fn version() -> &'static str {
 
 fn asset(content_type: &'static str, body: &'static str) -> Response {
     // Versioned URLs: a change gives a new URL, so cache for a year.
-    ([(header::CONTENT_TYPE, content_type), (header::CACHE_CONTROL, "public, max-age=31536000, immutable")], body).into_response()
+    (
+        [
+            (header::CONTENT_TYPE, content_type),
+            (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
+        ],
+        body,
+    )
+        .into_response()
 }
 
 pub async fn css() -> Response {

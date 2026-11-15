@@ -81,14 +81,20 @@ pub enum Cmd {
 /// Refuse to run as root: SQLite would create files the service cannot open.
 fn not_root() -> Result<(), String> {
     if let Ok(s) = std::fs::read_to_string("/proc/self/status")
-        && s.lines().any(|l| l.starts_with("Uid:") && l.split_whitespace().nth(2) == Some("0")) {
-            return Err("run admin commands as the service user, e.g. `sudo -u baby-mcp baby-mcp ...`".into());
-        }
+        && s.lines()
+            .any(|l| l.starts_with("Uid:") && l.split_whitespace().nth(2) == Some("0"))
+    {
+        return Err(
+            "run admin commands as the service user, e.g. `sudo -u baby-mcp baby-mcp ...`".into(),
+        );
+    }
     Ok(())
 }
 
 fn enroll_link(cfg: &Config, db: &Db, user_id: i64) -> Result<String, String> {
-    let tok = db.with(|c| auth::new_enroll_token(c, user_id)).map_err(en::err)?;
+    let tok = db
+        .with(|c| auth::new_enroll_token(c, user_id))
+        .map_err(en::err)?;
     Ok(format!("{}/enroll?token={tok}", cfg.origin()))
 }
 
@@ -97,7 +103,11 @@ pub fn run(cfg: &Config, cmd: Cmd) -> Result<(), String> {
     let db = Db::open(&cfg.db_path())?;
     let clock = Clock::new(&cfg.tz)?;
     match cmd {
-        Cmd::User(UserCmd::Add { name, display_name, viewer }) => {
+        Cmd::User(UserCmd::Add {
+            name,
+            display_name,
+            viewer,
+        }) => {
             let role = if viewer { "viewer" } else { "parent" };
             let id = db
                 .with(|c| {
@@ -108,13 +118,23 @@ pub fn run(cfg: &Config, cmd: Cmd) -> Result<(), String> {
                     Ok(c.last_insert_rowid())
                 })
                 .map_err(|e| format!("adding user {name:?}: {e}"))?;
-            println!("Created {role} {name} (id {id}). Enroll a passkey within 30 minutes, single use:\n\n  {}\n", enroll_link(cfg, &db, id)?);
+            println!(
+                "Created {role} {name} (id {id}). Enroll a passkey within 30 minutes, single use:\n\n  {}\n",
+                enroll_link(cfg, &db, id)?
+            );
         }
         Cmd::User(UserCmd::Role { name, role }) => {
             if !matches!(role.as_str(), "parent" | "viewer") {
                 return Err(format!("role must be parent or viewer, not {role:?}"));
             }
-            let n = db.with(|c| c.execute("UPDATE user SET role = ?1 WHERE name = ?2", params![role, name])).map_err(en::err)?;
+            let n = db
+                .with(|c| {
+                    c.execute(
+                        "UPDATE user SET role = ?1 WHERE name = ?2",
+                        params![role, name],
+                    )
+                })
+                .map_err(en::err)?;
             if n == 0 {
                 return Err(format!("no user {name:?}"));
             }
@@ -133,8 +153,13 @@ pub fn run(cfg: &Config, cmd: Cmd) -> Result<(), String> {
             .map_err(en::err)?;
         }
         Cmd::Enroll { name } => {
-            let (id, _) = db.run(|c| en::user_by_name(c, &name))?.ok_or(format!("no user {name:?}"))?;
-            println!("Enroll a passkey for {name} within 30 minutes, single use:\n\n  {}\n", enroll_link(cfg, &db, id)?);
+            let (id, _) = db
+                .run(|c| en::user_by_name(c, &name))?
+                .ok_or(format!("no user {name:?}"))?;
+            println!(
+                "Enroll a passkey for {name} within 30 minutes, single use:\n\n  {}\n",
+                enroll_link(cfg, &db, id)?
+            );
         }
         Cmd::Passkeys => {
             db.with(|c| {
@@ -162,7 +187,11 @@ pub fn run(cfg: &Config, cmd: Cmd) -> Result<(), String> {
         Cmd::RemovePasskey { id } => {
             let user: Option<i64> = db
                 .with(|c| {
-                    let u = c.query_row("SELECT user_id FROM passkey WHERE id = ?1", [id], |r| r.get(0)).optional()?;
+                    let u = c
+                        .query_row("SELECT user_id FROM passkey WHERE id = ?1", [id], |r| {
+                            r.get(0)
+                        })
+                        .optional()?;
                     if let Some(u) = u {
                         c.execute("DELETE FROM passkey WHERE id = ?1", [id])?;
                         c.execute("DELETE FROM refresh_token WHERE user_id = ?1", [u])?;
@@ -172,7 +201,9 @@ pub fn run(cfg: &Config, cmd: Cmd) -> Result<(), String> {
                 })
                 .map_err(en::err)?;
             match user {
-                Some(u) => println!("Removed passkey {id}; user {u} is logged out everywhere (access tokens expire within an hour)."),
+                Some(u) => println!(
+                    "Removed passkey {id}; user {u} is logged out everywhere (access tokens expire within an hour)."
+                ),
                 None => return Err(format!("no passkey {id}")),
             }
         }
@@ -216,12 +247,17 @@ pub fn run(cfg: &Config, cmd: Cmd) -> Result<(), String> {
                 Some(a) => app.clock.parse(&a, now())?,
                 None => now(),
             };
-            let s = app.db.run(|c| crate::status::status_json(c, &app.clock, &app.baby(), t))?;
+            let s = app
+                .db
+                .run(|c| crate::status::status_json(c, &app.clock, &app.baby(), t))?;
             println!("{}", serde_json::to_string_pretty(&s).unwrap());
         }
         Cmd::PushTest { name } => {
             let app = crate::app::App::new(cfg.clone())?;
-            let (id, _) = app.db.run(|c| en::user_by_name(c, &name))?.ok_or_else(|| format!("no user {name:?}"))?;
+            let (id, _) = app
+                .db
+                .run(|c| en::user_by_name(c, &name))?
+                .ok_or_else(|| format!("no user {name:?}"))?;
             let n = crate::notify::Notice {
                 kind: "test",
                 key: String::new(),
@@ -232,7 +268,13 @@ pub fn run(cfg: &Config, cmd: Cmd) -> Result<(), String> {
                 by: None,
             };
             let rt = tokio::runtime::Runtime::new().map_err(|e| e.to_string())?;
-            let sent = rt.block_on(crate::notify::deliver(&app, &app.push_client, id, &n, "test"))?;
+            let sent = rt.block_on(crate::notify::deliver(
+                &app,
+                &app.push_client,
+                id,
+                &n,
+                "test",
+            ))?;
             println!("accepted by {sent} device(s); failures are listed on /notifications");
         }
         Cmd::Export => {
@@ -265,16 +307,17 @@ pub fn run(cfg: &Config, cmd: Cmd) -> Result<(), String> {
             println!("{}", serde_json::to_string_pretty(&out).unwrap());
         }
         Cmd::ImportHealthsoft { file, user, force } => {
-            let raw = std::fs::read_to_string(&file).map_err(|e| format!("{}: {e}", file.display()))?;
-            let medical: Value = serde_json::from_str(&raw).map_err(|e| format!("{}: {e}", file.display()))?;
-            let n = db
-                .run(|c| {
-                    let (uid, _) = en::user_by_name(c, &user)?.ok_or(format!("no user {user:?}"))?;
-                    let tx = c.unchecked_transaction().map_err(en::err)?;
-                    let n = crate::import::import(&tx, &clock, uid, &medical, force)?;
-                    tx.commit().map_err(en::err)?;
-                    Ok::<_, String>(n)
-                })?;
+            let raw =
+                std::fs::read_to_string(&file).map_err(|e| format!("{}: {e}", file.display()))?;
+            let medical: Value =
+                serde_json::from_str(&raw).map_err(|e| format!("{}: {e}", file.display()))?;
+            let n = db.run(|c| {
+                let (uid, _) = en::user_by_name(c, &user)?.ok_or(format!("no user {user:?}"))?;
+                let tx = c.unchecked_transaction().map_err(en::err)?;
+                let n = crate::import::import(&tx, &clock, uid, &medical, force)?;
+                tx.commit().map_err(en::err)?;
+                Ok::<_, String>(n)
+            })?;
             println!("Imported {n} entries.");
         }
     }
@@ -283,7 +326,12 @@ pub fn run(cfg: &Config, cmd: Cmd) -> Result<(), String> {
 
 fn set_status(db: &Db, id: i64, status: &str, note: Option<String>) -> Result<(), String> {
     let n = db
-        .with(|c| c.execute("UPDATE suggestion SET status = ?1, note = coalesce(?2, note) WHERE id = ?3", params![status, note, id]))
+        .with(|c| {
+            c.execute(
+                "UPDATE suggestion SET status = ?1, note = coalesce(?2, note) WHERE id = ?3",
+                params![status, note, id],
+            )
+        })
         .map_err(en::err)?;
     if n == 0 {
         return Err(format!("no suggestion #{id}"));

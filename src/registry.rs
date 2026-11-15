@@ -49,7 +49,14 @@ pub struct Field {
 pub const LATCH: &[&str] = &["with_aid", "with_difficulty", "without_difficulty", "none"];
 pub const SIDES: &[&str] = &["left", "right"];
 pub const BATH: &[&str] = &["with_soap", "without_soap", "sponge"];
-pub const STOOL: &[&str] = &["meconium", "green", "brown", "yellow", "transitional", "other"];
+pub const STOOL: &[&str] = &[
+    "meconium",
+    "green",
+    "brown",
+    "yellow",
+    "transitional",
+    "other",
+];
 
 pub static FIELDS: &[Field] = &[
     Field {
@@ -61,14 +68,20 @@ pub static FIELDS: &[Field] = &[
     },
     Field {
         name: "bottle_breastmilk_ml",
-        kind: Kind::Number { min: 0.0, max: 300.0 },
+        kind: Kind::Number {
+            min: 0.0,
+            max: 300.0,
+        },
         unit: "ml",
         group: Group::Feed,
         help: "expressed (pumped) breast milk given by bottle, cup, finger or syringe",
     },
     Field {
         name: "bottle_formula_ml",
-        kind: Kind::Number { min: 0.0, max: 300.0 },
+        kind: Kind::Number {
+            min: 0.0,
+            max: 300.0,
+        },
         unit: "ml",
         group: Group::Feed,
         help: "formula given by bottle; a mixed bottle fills both bottle fields",
@@ -124,14 +137,20 @@ pub static FIELDS: &[Field] = &[
     },
     Field {
         name: "temp_c",
-        kind: Kind::Number { min: 34.0, max: 42.0 },
+        kind: Kind::Number {
+            min: 34.0,
+            max: 42.0,
+        },
         unit: "°C",
         group: Group::Measure,
         help: "body temperature",
     },
     Field {
         name: "weight_g",
-        kind: Kind::Number { min: 1000.0, max: 15000.0 },
+        kind: Kind::Number {
+            min: 1000.0,
+            max: 15000.0,
+        },
         unit: "g",
         group: Group::Measure,
         help: "weight",
@@ -165,7 +184,10 @@ pub fn get(name: &str) -> Option<&'static Field> {
 
 /// The groups the given fields belong to, each once, in group order.
 pub fn groups(fields: &serde_json::Map<String, Value>) -> Vec<Group> {
-    let mut g: Vec<Group> = fields.keys().filter_map(|k| get(k).map(|f| f.group)).collect();
+    let mut g: Vec<Group> = fields
+        .keys()
+        .filter_map(|k| get(k).map(|f| f.group))
+        .collect();
     g.sort_by_key(|g| *g as u8);
     g.dedup();
     g
@@ -197,7 +219,10 @@ impl Field {
                 Some(x) if x.fract() == 0.0 && (min as f64..=max as f64).contains(&x) => {
                     Ok(json!(x as i64))
                 }
-                Some(x) => bad(format!("{x} is not a whole number in {min}–{max} {}", self.unit)),
+                Some(x) => bad(format!(
+                    "{x} is not a whole number in {min}–{max} {}",
+                    self.unit
+                )),
                 None => bad(format!("expected a whole number, got {v}")),
             },
             Kind::Bool => match v.as_bool() {
@@ -232,7 +257,9 @@ impl Field {
 }
 
 /// Validates an object of fields (merging is the caller's business).
-pub fn validate_fields(obj: &serde_json::Map<String, Value>) -> Result<serde_json::Map<String, Value>, String> {
+pub fn validate_fields(
+    obj: &serde_json::Map<String, Value>,
+) -> Result<serde_json::Map<String, Value>, String> {
     let mut out = serde_json::Map::new();
     for (k, v) in obj {
         let f = get(k).ok_or_else(|| {
@@ -256,10 +283,29 @@ mod tests {
         assert_eq!(f.validate(&json!(36.8)).unwrap(), json!(36.8));
         assert!(f.validate(&json!(368)).is_err());
         assert_eq!(f.validate(&Value::Null).unwrap(), Value::Null);
-        assert_eq!(get("breast_left_min").unwrap().validate(&json!(5.0)).unwrap(), json!(5));
-        assert!(get("breast_left_min").unwrap().validate(&json!(5.5)).is_err());
-        assert!(get("stool_color").unwrap().validate(&json!("purple")).is_err());
-        assert_eq!(get("bath").unwrap().validate(&json!("sponge")).unwrap(), json!("sponge"));
+        assert_eq!(
+            get("breast_left_min")
+                .unwrap()
+                .validate(&json!(5.0))
+                .unwrap(),
+            json!(5)
+        );
+        assert!(
+            get("breast_left_min")
+                .unwrap()
+                .validate(&json!(5.5))
+                .is_err()
+        );
+        assert!(
+            get("stool_color")
+                .unwrap()
+                .validate(&json!("purple"))
+                .is_err()
+        );
+        assert_eq!(
+            get("bath").unwrap().validate(&json!("sponge")).unwrap(),
+            json!("sponge")
+        );
         assert!(get("bath").unwrap().validate(&json!("shower")).is_err());
         assert!(get("wet").unwrap().validate(&json!("yes")).is_err());
         let mut m = serde_json::Map::new();
@@ -270,7 +316,11 @@ mod tests {
     #[test]
     fn names_are_sql_identifiers() {
         for f in FIELDS {
-            assert!(f.name.chars().all(|c| c.is_ascii_lowercase() || c == '_' || c.is_ascii_digit()));
+            assert!(
+                f.name
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c == '_' || c.is_ascii_digit())
+            );
         }
     }
 }

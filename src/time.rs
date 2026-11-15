@@ -63,7 +63,8 @@ impl Clock {
     /// day not the same as the day's start + `hour` hours).
     pub fn at_hour(&self, ts: i64, hour: i64) -> i64 {
         let h = i8::try_from(hour.clamp(0, 23)).unwrap_or(0);
-        self.civil(self.zoned(ts).date().at(h, 0, 0, 0)).unwrap_or(self.day_start(ts) + hour * 3600)
+        self.civil(self.zoned(ts).date().at(h, 0, 0, 0))
+            .unwrap_or(self.day_start(ts) + hour * 3600)
     }
 
     /// Start of the day after the local day containing `ts`.
@@ -152,12 +153,21 @@ mod tests {
         // later today than now + 15 min: yesterday
         assert_eq!(c.fmt(c.parse("23:30", now).unwrap()), "2026-11-04 23:30");
         assert_eq!(c.fmt(c.parse("10:10", now).unwrap()), "2026-11-05 10:10");
-        assert_eq!(c.fmt(c.parse("2026-11-05T08:00:00Z", now).unwrap()), "2026-11-05 09:00");
+        assert_eq!(
+            c.fmt(c.parse("2026-11-05T08:00:00Z", now).unwrap()),
+            "2026-11-05 09:00"
+        );
         assert!(c.parse("bogus", now).is_err());
         // On a given day: a bare time stays on that day.
         let earlier = c.parse("2026-11-02 18:00", now).unwrap();
-        assert_eq!(c.fmt(c.parse_on("00:01", now, Some(earlier)).unwrap()), "2026-11-02 00:01");
-        assert_eq!(c.fmt(c.parse_on("2026-11-03 07:00", now, Some(earlier)).unwrap()), "2026-11-03 07:00");
+        assert_eq!(
+            c.fmt(c.parse_on("00:01", now, Some(earlier)).unwrap()),
+            "2026-11-02 00:01"
+        );
+        assert_eq!(
+            c.fmt(c.parse_on("2026-11-03 07:00", now, Some(earlier)).unwrap()),
+            "2026-11-03 07:00"
+        );
     }
 
     #[test]

@@ -48,7 +48,10 @@ delivery = "cesarean""#,
     if have_table {
         std::fs::copy(table, dir.path().join("who-weight-for-age.tsv")).unwrap();
     }
-    let change = concat!(env!("CARGO_MANIFEST_DIR"), "/data/newborn-weight-change.tsv");
+    let change = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/data/newborn-weight-change.tsv"
+    );
     if std::path::Path::new(change).exists() {
         std::fs::copy(change, dir.path().join("newborn-weight-change.tsv")).unwrap();
     }
@@ -57,14 +60,22 @@ delivery = "cesarean""#,
     let tok = random_token(32);
     app.db
         .with(|c| {
-            c.execute("INSERT INTO user (name, display_name, created_at) VALUES ('bas', 'Bas', 0)", [])?;
+            c.execute(
+                "INSERT INTO user (name, display_name, created_at) VALUES ('bas', 'Bas', 0)",
+                [],
+            )?;
             c.execute(
                 "INSERT INTO session (hash, user_id, created_at, expires) VALUES (?1, 1, 0, ?2)",
                 rusqlite::params![sha256_hex(&tok), now() + 3600],
             )
         })
         .unwrap();
-    T { _dir: dir, app, cookie: format!("{SESSION_COOKIE}={tok}"), birth }
+    T {
+        _dir: dir,
+        app,
+        cookie: format!("{SESSION_COOKIE}={tok}"),
+        birth,
+    }
 }
 
 struct Resp {
@@ -78,7 +89,10 @@ impl Resp {
         serde_json::from_str(&self.body).unwrap_or(Value::Null)
     }
     fn location(&self) -> String {
-        self.headers.get(header::LOCATION).map(|v| v.to_str().unwrap().to_string()).unwrap_or_default()
+        self.headers
+            .get(header::LOCATION)
+            .map(|v| v.to_str().unwrap().to_string())
+            .unwrap_or_default()
     }
 }
 
@@ -87,7 +101,11 @@ async fn send(t: &T, req: Request<Body>) -> Resp {
     let status = r.status();
     let headers = r.headers().clone();
     let body = String::from_utf8(to_bytes(r.into_body(), 1 << 22).await.unwrap().to_vec()).unwrap();
-    Resp { status, headers, body }
+    Resp {
+        status,
+        headers,
+        body,
+    }
 }
 
 fn get(path: &str) -> axum::http::request::Builder {
@@ -95,7 +113,10 @@ fn get(path: &str) -> axum::http::request::Builder {
 }
 
 fn post_json(path: &str, v: Value) -> Request<Body> {
-    Request::post(path).header(header::CONTENT_TYPE, "application/json").body(Body::from(v.to_string())).unwrap()
+    Request::post(path)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(v.to_string()))
+        .unwrap()
 }
 
 fn post_form(path: &str) -> axum::http::request::Builder {
@@ -104,7 +125,14 @@ fn post_form(path: &str) -> axum::http::request::Builder {
 
 /// Runs the OAuth flow and returns (client_id, access token, refresh token).
 async fn connect(t: &T) -> (String, String, String) {
-    let reg = send(t, post_json("/oauth/register", json!({"redirect_uris": [REDIRECT], "client_name": "Claude"}))).await;
+    let reg = send(
+        t,
+        post_json(
+            "/oauth/register",
+            json!({"redirect_uris": [REDIRECT], "client_name": "Claude"}),
+        ),
+    )
+    .await;
     assert_eq!(reg.status, StatusCode::CREATED, "{}", reg.body);
     let cid = reg.json()["client_id"].as_str().unwrap().to_string();
     let verifier = random_token(40);
@@ -118,27 +146,88 @@ async fn connect(t: &T) -> (String, String, String) {
     let r = send(t, get(&q).body(Body::empty()).unwrap()).await;
     assert!(r.location().starts_with("/login?next="), "{}", r.location());
     // With a session: the consent page.
-    let r = send(t, get(&q).header(header::COOKIE, &t.cookie).body(Body::empty()).unwrap()).await;
+    let r = send(
+        t,
+        get(&q)
+            .header(header::COOKIE, &t.cookie)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
     assert_eq!(r.status, StatusCode::OK);
-    let rid = r.body.split(r#"name="rid" value=""#).nth(1).unwrap().split('"').next().unwrap().to_string();
+    let rid = r
+        .body
+        .split(r#"name="rid" value=""#)
+        .nth(1)
+        .unwrap()
+        .split('"')
+        .next()
+        .unwrap()
+        .to_string();
     // Cross-site approval is refused.
     let body = format!("rid={}&decision=allow", crate::auth::urlenc(&rid));
-    let r = send(t, post_form("/oauth/authorize").header(header::COOKIE, &t.cookie).header(header::ORIGIN, "https://evil.example").body(Body::from(body.clone())).unwrap()).await;
+    let r = send(
+        t,
+        post_form("/oauth/authorize")
+            .header(header::COOKIE, &t.cookie)
+            .header(header::ORIGIN, "https://evil.example")
+            .body(Body::from(body.clone()))
+            .unwrap(),
+    )
+    .await;
     assert_eq!(r.status, StatusCode::FORBIDDEN);
-    let r = send(t, post_form("/oauth/authorize").header(header::COOKIE, &t.cookie).header(header::ORIGIN, ORIGIN).body(Body::from(body)).unwrap()).await;
+    let r = send(
+        t,
+        post_form("/oauth/authorize")
+            .header(header::COOKIE, &t.cookie)
+            .header(header::ORIGIN, ORIGIN)
+            .body(Body::from(body))
+            .unwrap(),
+    )
+    .await;
     assert!(r.status.is_redirection());
     let loc = webauthn_rs::prelude::Url::parse(&r.location()).unwrap();
     assert!(r.location().starts_with(REDIRECT));
-    let code = loc.query_pairs().find(|(k, _)| k == "code").unwrap().1.to_string();
-    assert_eq!(loc.query_pairs().find(|(k, _)| k == "state").unwrap().1, "xyz");
+    let code = loc
+        .query_pairs()
+        .find(|(k, _)| k == "code")
+        .unwrap()
+        .1
+        .to_string();
+    assert_eq!(
+        loc.query_pairs().find(|(k, _)| k == "state").unwrap().1,
+        "xyz"
+    );
     // A wrong verifier burns the code.
-    let form = |v: &str, c: &str| format!("grant_type=authorization_code&code={}&client_id={cid}&redirect_uri={}&code_verifier={v}", crate::auth::urlenc(c), crate::auth::urlenc(REDIRECT));
-    let tok = send(t, post_form("/oauth/token").body(Body::from(form(&verifier, &code))).unwrap()).await;
+    let form = |v: &str, c: &str| {
+        format!(
+            "grant_type=authorization_code&code={}&client_id={cid}&redirect_uri={}&code_verifier={v}",
+            crate::auth::urlenc(c),
+            crate::auth::urlenc(REDIRECT)
+        )
+    };
+    let tok = send(
+        t,
+        post_form("/oauth/token")
+            .body(Body::from(form(&verifier, &code)))
+            .unwrap(),
+    )
+    .await;
     assert_eq!(tok.status, StatusCode::OK, "{}", tok.body);
-    let again = send(t, post_form("/oauth/token").body(Body::from(form(&verifier, &code))).unwrap()).await;
+    let again = send(
+        t,
+        post_form("/oauth/token")
+            .body(Body::from(form(&verifier, &code)))
+            .unwrap(),
+    )
+    .await;
     assert_eq!(again.status, StatusCode::BAD_REQUEST, "code reusable");
     let j = tok.json();
-    (cid, j["access_token"].as_str().unwrap().into(), j["refresh_token"].as_str().unwrap().into())
+    (
+        cid,
+        j["access_token"].as_str().unwrap().into(),
+        j["refresh_token"].as_str().unwrap().into(),
+    )
 }
 
 async fn mcp(t: &T, tok: &str, method: &str, params: Value) -> Resp {
@@ -147,18 +236,30 @@ async fn mcp(t: &T, tok: &str, method: &str, params: Value) -> Resp {
         Request::post("/mcp")
             .header(header::CONTENT_TYPE, "application/json")
             .header(header::AUTHORIZATION, format!("Bearer {tok}"))
-            .body(Body::from(json!({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}).to_string()))
+            .body(Body::from(
+                json!({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}).to_string(),
+            ))
             .unwrap(),
     )
     .await
 }
 
 async fn tool(t: &T, tok: &str, name: &str, args: Value) -> (bool, Value) {
-    let r = mcp(t, tok, "tools/call", json!({"name": name, "arguments": args})).await;
+    let r = mcp(
+        t,
+        tok,
+        "tools/call",
+        json!({"name": name, "arguments": args}),
+    )
+    .await;
     assert_eq!(r.status, StatusCode::OK, "{}", r.body);
     let res = &r.json()["result"];
     let err = res["isError"].as_bool().unwrap_or(false);
-    let v = if err { json!(res["content"][0]["text"]) } else { res["structuredContent"].clone() };
+    let v = if err {
+        json!(res["content"][0]["text"])
+    } else {
+        res["structuredContent"].clone()
+    };
     (err, v)
 }
 
@@ -168,55 +269,163 @@ async fn oauth_and_mcp() {
     // Discovery.
     let r = send(&t, Request::post("/mcp").body(Body::from("{}")).unwrap()).await;
     assert_eq!(r.status, StatusCode::UNAUTHORIZED);
-    assert!(r.headers[header::WWW_AUTHENTICATE].to_str().unwrap()
-        .contains(&format!(r#"resource_metadata="{ORIGIN}/.well-known/oauth-protected-resource/mcp""#)));
-    let prm = send(&t, get("/.well-known/oauth-protected-resource/mcp").body(Body::empty()).unwrap()).await.json();
+    assert!(
+        r.headers[header::WWW_AUTHENTICATE]
+            .to_str()
+            .unwrap()
+            .contains(&format!(
+                r#"resource_metadata="{ORIGIN}/.well-known/oauth-protected-resource/mcp""#
+            ))
+    );
+    let prm = send(
+        &t,
+        get("/.well-known/oauth-protected-resource/mcp")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await
+    .json();
     assert_eq!(prm["resource"], format!("{ORIGIN}/mcp"));
-    let asm = send(&t, get("/.well-known/oauth-authorization-server").body(Body::empty()).unwrap()).await.json();
+    let asm = send(
+        &t,
+        get("/.well-known/oauth-authorization-server")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await
+    .json();
     assert_eq!(asm["issuer"], ORIGIN);
     // Foreign redirect URIs are refused.
-    let r = send(&t, post_json("/oauth/register", json!({"redirect_uris": ["https://evil.example/cb"]}))).await;
+    let r = send(
+        &t,
+        post_json(
+            "/oauth/register",
+            json!({"redirect_uris": ["https://evil.example/cb"]}),
+        ),
+    )
+    .await;
     assert_eq!(r.status, StatusCode::BAD_REQUEST);
 
     let (cid, access, refresh) = connect(&t).await;
 
     // MCP basics.
-    let init = mcp(&t, &access, "initialize", json!({"protocolVersion": "2025-06-18"})).await.json();
+    let init = mcp(
+        &t,
+        &access,
+        "initialize",
+        json!({"protocolVersion": "2025-06-18"}),
+    )
+    .await
+    .json();
     assert_eq!(init["result"]["protocolVersion"], "2025-06-18");
     // A version it doesn't speak: its newest instead.
-    let other = mcp(&t, &access, "initialize", json!({"protocolVersion": "2024-06-19"})).await.json();
+    let other = mcp(
+        &t,
+        &access,
+        "initialize",
+        json!({"protocolVersion": "2024-06-19"}),
+    )
+    .await
+    .json();
     assert_eq!(other["result"]["protocolVersion"], "2025-11-25");
-    assert!(init["result"]["instructions"].as_str().unwrap().contains("Baby"));
+    assert!(
+        init["result"]["instructions"]
+            .as_str()
+            .unwrap()
+            .contains("Baby")
+    );
     let tools = mcp(&t, &access, "tools/list", json!({})).await.json();
     assert_eq!(tools["result"]["tools"].as_array().unwrap().len(), 12);
-    let bad = send(&t, Request::post("/mcp").header(header::AUTHORIZATION, format!("Bearer {}x", &access[..access.len() - 1])).body(Body::from("{}")).unwrap()).await;
-    assert_eq!(bad.status, StatusCode::UNAUTHORIZED, "tampered token accepted");
+    let bad = send(
+        &t,
+        Request::post("/mcp")
+            .header(
+                header::AUTHORIZATION,
+                format!("Bearer {}x", &access[..access.len() - 1]),
+            )
+            .body(Body::from("{}"))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(
+        bad.status,
+        StatusCode::UNAUTHORIZED,
+        "tampered token accepted"
+    );
 
     // log, duplicate detection, update, history.
-    let (e, v) = tool(&t, &access, "log", json!({"text": "60 ml gekolfd, natte luier", "at": "now",
-        "fields": {"bottle_breastmilk_ml": 60, "wet": true, "dirty": null}})).await;
+    let (e, v) = tool(
+        &t,
+        &access,
+        "log",
+        json!({"text": "60 ml gekolfd, natte luier", "at": "now",
+        "fields": {"bottle_breastmilk_ml": 60, "wet": true, "dirty": null}}),
+    )
+    .await;
     assert!(!e && v["logged"] == true, "{v}");
     let id = v["entry"]["id"].as_i64().unwrap();
-    let (_, v) = tool(&t, &access, "log", json!({"text": "wet diaper", "fields": {"wet": true}})).await;
+    let (_, v) = tool(
+        &t,
+        &access,
+        "log",
+        json!({"text": "wet diaper", "fields": {"wet": true}}),
+    )
+    .await;
     assert_eq!(v["logged"], false, "duplicate not detected: {v}");
-    let (_, v) = tool(&t, &access, "log", json!({"text": "wet diaper", "fields": {"wet": true}, "confirm": true})).await;
+    let (_, v) = tool(
+        &t,
+        &access,
+        "log",
+        json!({"text": "wet diaper", "fields": {"wet": true}, "confirm": true}),
+    )
+    .await;
     assert_eq!(v["logged"], true);
-    let (e, v) = tool(&t, &access, "log", json!({"text": "x", "fields": {"temp_c": 368}})).await;
+    let (e, v) = tool(
+        &t,
+        &access,
+        "log",
+        json!({"text": "x", "fields": {"temp_c": 368}}),
+    )
+    .await;
     assert!(e, "implausible value accepted: {v}");
-    let (e, _) = tool(&t, &access, "log", json!({"text": "x", "fields": {"mood": "happy"}})).await;
+    let (e, _) = tool(
+        &t,
+        &access,
+        "log",
+        json!({"text": "x", "fields": {"mood": "happy"}}),
+    )
+    .await;
     assert!(e, "unknown field accepted");
     // Partial information: logged now, flagged for the parents, with a reason.
     let partial = json!({"text": "drinking at the breast now", "fields": {"latch": "with_aid"}, "needs_attention_by": ["user"], "confirm": true});
     let (e, v) = tool(&t, &access, "log", partial.clone()).await;
-    assert!(e && v.as_str().unwrap().contains("needs_attention_why is required"), "{v}");
+    assert!(
+        e && v
+            .as_str()
+            .unwrap()
+            .contains("needs_attention_why is required"),
+        "{v}"
+    );
     let mut with_why = partial;
     with_why["needs_attention_why"] = json!("still feeding: add duration and amount");
     let (e, v) = tool(&t, &access, "log", with_why).await;
     assert!(!e && v["logged"] == true, "{v}");
-    assert_eq!(v["entry"]["needs_attention"], json!({"by": ["user"], "why": "still feeding: add duration and amount"}));
-    let (e, v) = tool(&t, &access, "update", json!({"entry_id": id, "fields": {"bottle_formula_ml": 20}, "remove": ["dirty"]})).await;
+    assert_eq!(
+        v["entry"]["needs_attention"],
+        json!({"by": ["user"], "why": "still feeding: add duration and amount"})
+    );
+    let (e, v) = tool(
+        &t,
+        &access,
+        "update",
+        json!({"entry_id": id, "fields": {"bottle_formula_ml": 20}, "remove": ["dirty"]}),
+    )
+    .await;
     assert!(!e, "{v}");
-    assert_eq!(v["entry"]["fields"], json!({"bottle_breastmilk_ml": 60.0, "bottle_formula_ml": 20.0, "wet": true}));
+    assert_eq!(
+        v["entry"]["fields"],
+        json!({"bottle_breastmilk_ml": 60.0, "bottle_formula_ml": 20.0, "wet": true})
+    );
     let (_, v) = tool(&t, &access, "history", json!({"entry_id": id})).await;
     assert_eq!(v["versions"].as_array().unwrap().len(), 2);
     let (_, v) = tool(&t, &access, "status", json!({})).await;
@@ -226,9 +435,19 @@ async fn oauth_and_mcp() {
     assert_eq!(v["days"].as_array().unwrap().len(), 7);
     // entries: capped, with where to continue.
     let (_, v) = tool(&t, &access, "entries", json!({"limit": 1})).await;
-    assert_eq!((v["entries"].as_array().unwrap().len(), v["truncated"].as_bool()), (1, Some(true)), "{v}");
+    assert_eq!(
+        (
+            v["entries"].as_array().unwrap().len(),
+            v["truncated"].as_bool()
+        ),
+        (1, Some(true)),
+        "{v}"
+    );
     let (_, v2) = tool(&t, &access, "entries", json!({"from": v["next_from"]})).await;
-    assert!(v2["truncated"] == false && !v2["entries"].as_array().unwrap().is_empty(), "{v2}");
+    assert!(
+        v2["truncated"] == false && !v2["entries"].as_array().unwrap().is_empty(),
+        "{v2}"
+    );
     let (_, v) = tool(&t, &access, "delete", json!({"entry_id": id})).await;
     assert_eq!(v["entry"]["deleted"], true);
     let (_, v) = tool(&t, &access, "status", json!({})).await;
@@ -236,111 +455,312 @@ async fn oauth_and_mcp() {
     tool(&t, &access, "undelete", json!({"entry_id": id})).await;
 
     // sql: reads the log, but not credentials, and never writes.
-    let (e, v) = tool(&t, &access, "sql", json!({"query": "SELECT sum(bottle_breastmilk_ml) AS ml FROM entry WHERE deleted = 0"})).await;
+    let (e, v) = tool(
+        &t,
+        &access,
+        "sql",
+        json!({"query": "SELECT sum(bottle_breastmilk_ml) AS ml FROM entry WHERE deleted = 0"}),
+    )
+    .await;
     assert!(!e && v["rows"][0]["ml"] == 60.0, "{v}");
-    for q in ["SELECT * FROM kv", "SELECT * FROM passkey", "SELECT hash FROM session",
-              "SELECT * FROM user", "DELETE FROM entry", "UPDATE entry SET text = 'x'",
-              "ATTACH DATABASE '/tmp/x' AS x"] {
+    for q in [
+        "SELECT * FROM kv",
+        "SELECT * FROM passkey",
+        "SELECT hash FROM session",
+        "SELECT * FROM user",
+        "DELETE FROM entry",
+        "UPDATE entry SET text = 'x'",
+        "ATTACH DATABASE '/tmp/x' AS x",
+    ] {
         let (e, v) = tool(&t, &access, "sql", json!({"query": q})).await;
         assert!(e, "sql allowed {q}: {v}");
     }
-    let (e, _) = tool(&t, &access, "sql", json!({"query": "SELECT id, display_name FROM user"})).await;
+    let (e, _) = tool(
+        &t,
+        &access,
+        "sql",
+        json!({"query": "SELECT id, display_name FROM user"}),
+    )
+    .await;
     assert!(!e);
     // Inside the fields JSON, and counting users.
     let (e, v) = tool(&t, &access, "sql", json!({"query": "SELECT j.key, count(*) AS n FROM entry e, json_each(e.fields) j WHERE j.key = 'wet' GROUP BY j.key"})).await;
     assert!(!e && v["rows"][0]["n"].as_i64().unwrap() >= 1, "{v}");
-    let (e, v) = tool(&t, &access, "sql", json!({"query": "SELECT count(*) AS n FROM user"})).await;
+    let (e, v) = tool(
+        &t,
+        &access,
+        "sql",
+        json!({"query": "SELECT count(*) AS n FROM user"}),
+    )
+    .await;
     assert!(!e && v["rows"][0]["n"] == 1, "{v}");
 
     // Times: never in the future; an update's bare time stays on the entry's day.
-    let (e, v) = tool(&t, &access, "log", json!({"text": "feed", "at": "2031-01-01 10:00", "fields": {"bottle_formula_ml": 10}})).await;
+    let (e, v) = tool(
+        &t,
+        &access,
+        "log",
+        json!({"text": "feed", "at": "2031-01-01 10:00", "fields": {"bottle_formula_ml": 10}}),
+    )
+    .await;
     assert!(e && v.as_str().unwrap().contains("future"), "{v}");
     let days_ago = t.app.clock.fmt(now() - 3 * 86400);
-    let (_, v) = tool(&t, &access, "log", json!({"text": "temp", "at": days_ago, "fields": {"temp_c": 36.9}})).await;
+    let (_, v) = tool(
+        &t,
+        &access,
+        "log",
+        json!({"text": "temp", "at": days_ago, "fields": {"temp_c": 36.9}}),
+    )
+    .await;
     let old = v["entry"]["id"].as_i64().unwrap();
-    let (e, v) = tool(&t, &access, "update", json!({"entry_id": old, "at": "00:01"})).await;
+    let (e, v) = tool(
+        &t,
+        &access,
+        "update",
+        json!({"entry_id": old, "at": "00:01"}),
+    )
+    .await;
     assert!(!e, "{v}");
-    assert_eq!(v["entry"]["at"].as_str().unwrap(), format!("{} 00:01", &days_ago[..10]));
-    let (e, _) = tool(&t, &access, "update", json!({"entry_id": old, "at": "2031-01-01 10:00"})).await;
+    assert_eq!(
+        v["entry"]["at"].as_str().unwrap(),
+        format!("{} 00:01", &days_ago[..10])
+    );
+    let (e, _) = tool(
+        &t,
+        &access,
+        "update",
+        json!({"entry_id": old, "at": "2031-01-01 10:00"}),
+    )
+    .await;
     assert!(e, "update into the future accepted");
-    let (e, _) = tool(&t, &access, "update", json!({"entry_id": old, "text": "  "})).await;
+    let (e, _) = tool(
+        &t,
+        &access,
+        "update",
+        json!({"entry_id": old, "text": "  "}),
+    )
+    .await;
     assert!(e, "blank text accepted");
 
     // Anonymous registrations do not push out a client in use.
     for _ in 0..60 {
-        let r = send(&t, post_json("/oauth/register", json!({"redirect_uris": [REDIRECT]}))).await;
+        let r = send(
+            &t,
+            post_json("/oauth/register", json!({"redirect_uris": [REDIRECT]})),
+        )
+        .await;
         assert_eq!(r.status, StatusCode::CREATED);
     }
-    let n: i64 = t.app.db.with(|c| c.query_row("SELECT count(*) FROM oauth_client", [], |r| r.get(0))).unwrap();
+    let n: i64 = t
+        .app
+        .db
+        .with(|c| c.query_row("SELECT count(*) FROM oauth_client", [], |r| r.get(0)))
+        .unwrap();
     assert_eq!(n, 50);
 
     // attention, suggest, fields.
     let (_, v) = tool(&t, &access, "fields", json!({})).await;
     assert!(v["fields"].as_array().unwrap().len() >= 12);
-    let (_, v) = tool(&t, &access, "suggest", json!({"text": "wanted a sleep tracker"})).await;
+    let (_, v) = tool(
+        &t,
+        &access,
+        "suggest",
+        json!({"text": "wanted a sleep tracker"}),
+    )
+    .await;
     assert!(v["result"].as_str().unwrap().contains("recorded"));
 
     // Refresh tokens rotate.
-    let form = format!("grant_type=refresh_token&refresh_token={}&client_id={cid}", crate::auth::urlenc(&refresh));
-    let r = send(&t, post_form("/oauth/token").body(Body::from(form.clone())).unwrap()).await;
+    let form = format!(
+        "grant_type=refresh_token&refresh_token={}&client_id={cid}",
+        crate::auth::urlenc(&refresh)
+    );
+    let r = send(
+        &t,
+        post_form("/oauth/token")
+            .body(Body::from(form.clone()))
+            .unwrap(),
+    )
+    .await;
     assert_eq!(r.status, StatusCode::OK, "{}", r.body);
-    let r2 = send(&t, post_form("/oauth/token").body(Body::from(form)).unwrap()).await;
+    let r2 = send(
+        &t,
+        post_form("/oauth/token").body(Body::from(form)).unwrap(),
+    )
+    .await;
     assert_eq!(r2.status, StatusCode::BAD_REQUEST, "refresh token reusable");
     let new_access = r.json()["access_token"].as_str().unwrap().to_string();
-    assert_eq!(mcp(&t, &new_access, "ping", json!({})).await.status, StatusCode::OK);
+    assert_eq!(
+        mcp(&t, &new_access, "ping", json!({})).await.status,
+        StatusCode::OK
+    );
 
     // Rotating the signing key revokes access tokens.
-    t.app.db.with(|c| crate::auth::rotate_signing_key(c)).unwrap();
-    assert_eq!(mcp(&t, &new_access, "ping", json!({})).await.status, StatusCode::UNAUTHORIZED);
+    t.app
+        .db
+        .with(|c| crate::auth::rotate_signing_key(c))
+        .unwrap();
+    assert_eq!(
+        mcp(&t, &new_access, "ping", json!({})).await.status,
+        StatusCode::UNAUTHORIZED
+    );
 }
 
 #[tokio::test]
 async fn web_pages() {
     let t = setup();
     let r = send(&t, get("/").body(Body::empty()).unwrap()).await;
-    assert!(r.location().starts_with("/login"), "status page without session");
+    assert!(
+        r.location().starts_with("/login"),
+        "status page without session"
+    );
     // Sliding sessions: in use, the session (an hour left) is renewed, with
     // the cookie; not again the same day.
-    let r = send(&t, get("/charts").header(header::COOKIE, &t.cookie).body(Body::empty()).unwrap()).await;
-    let set = r.headers.get(header::SET_COOKIE).map(|v| v.to_str().unwrap().to_string()).unwrap_or_default();
-    assert!(set.starts_with(&t.cookie) && set.contains("Max-Age=2592000"), "{set}");
-    let expires: i64 = t.app.db.with(|c| c.query_row("SELECT expires FROM session", [], |r| r.get(0))).unwrap();
+    let r = send(
+        &t,
+        get("/charts")
+            .header(header::COOKIE, &t.cookie)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    let set = r
+        .headers
+        .get(header::SET_COOKIE)
+        .map(|v| v.to_str().unwrap().to_string())
+        .unwrap_or_default();
+    assert!(
+        set.starts_with(&t.cookie) && set.contains("Max-Age=2592000"),
+        "{set}"
+    );
+    let expires: i64 = t
+        .app
+        .db
+        .with(|c| c.query_row("SELECT expires FROM session", [], |r| r.get(0)))
+        .unwrap();
     assert!(expires > now() + 29 * 86400);
-    let r = send(&t, get("/charts").header(header::COOKIE, &t.cookie).body(Body::empty()).unwrap()).await;
-    assert!(r.headers.get(header::SET_COOKIE).is_none(), "renewed once a day");
-    let r = send(&t, get("/").header(header::COOKIE, &t.cookie).body(Body::empty()).unwrap()).await;
+    let r = send(
+        &t,
+        get("/charts")
+            .header(header::COOKIE, &t.cookie)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        r.headers.get(header::SET_COOKIE).is_none(),
+        "renewed once a day"
+    );
+    let r = send(
+        &t,
+        get("/")
+            .header(header::COOKIE, &t.cookie)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
     assert_eq!(r.status, StatusCode::OK);
     assert!(r.body.contains("Baby") && r.body.contains("Nothing logged yet today"));
-    assert!(r.headers[header::CONTENT_SECURITY_POLICY].to_str().unwrap().contains("frame-ancestors 'none'"));
+    assert!(
+        r.headers[header::CONTENT_SECURITY_POLICY]
+            .to_str()
+            .unwrap()
+            .contains("frame-ancestors 'none'")
+    );
     // With no-referrer, browsers send `Origin: null` on form posts and every
     // button would be refused as cross-site.
     assert_eq!(r.headers["referrer-policy"], "same-origin");
 
     // Installable as a home-screen app: manifest and icons without a session.
-    assert!(r.body.contains(r#"rel="manifest" href="/manifest.webmanifest""#) && r.body.contains("apple-touch-icon"));
-    assert!(r.headers[header::CONTENT_SECURITY_POLICY].to_str().unwrap().contains("manifest-src 'self'"));
+    assert!(
+        r.body
+            .contains(r#"rel="manifest" href="/manifest.webmanifest""#)
+            && r.body.contains("apple-touch-icon")
+    );
+    assert!(
+        r.headers[header::CONTENT_SECURITY_POLICY]
+            .to_str()
+            .unwrap()
+            .contains("manifest-src 'self'")
+    );
     // CSS and JS are versioned static files; nothing inline, so a strict CSP.
     let csp = r.headers[header::CONTENT_SECURITY_POLICY].to_str().unwrap();
-    assert!(csp.contains("script-src 'self'") && csp.contains("style-src 'self'") && !csp.contains("unsafe-inline") && !csp.contains("nonce"));
-    assert!(!r.body.contains("<style") && !r.body.contains("style=\"") && !r.body.contains("<script>"));
-    let v = r.body.split("/app.css?v=").nth(1).unwrap().split('"').next().unwrap().to_string();
-    assert!(r.body.contains(&format!(r#"<script src="/app.js?v={v}" defer>"#)));
+    assert!(
+        csp.contains("script-src 'self'")
+            && csp.contains("style-src 'self'")
+            && !csp.contains("unsafe-inline")
+            && !csp.contains("nonce")
+    );
+    assert!(
+        !r.body.contains("<style") && !r.body.contains("style=\"") && !r.body.contains("<script>")
+    );
+    let v = r
+        .body
+        .split("/app.css?v=")
+        .nth(1)
+        .unwrap()
+        .split('"')
+        .next()
+        .unwrap()
+        .to_string();
+    assert!(
+        r.body
+            .contains(&format!(r#"<script src="/app.js?v={v}" defer>"#))
+    );
     for (path, ct) in [("/app.css", "text/css"), ("/app.js", "text/javascript")] {
-        let a = send(&t, get(&format!("{path}?v={v}")).body(Body::empty()).unwrap()).await;
-        assert!(a.headers[header::CONTENT_TYPE].to_str().unwrap().starts_with(ct));
-        assert!(a.headers[header::CACHE_CONTROL].to_str().unwrap().contains("immutable"));
+        let a = send(
+            &t,
+            get(&format!("{path}?v={v}")).body(Body::empty()).unwrap(),
+        )
+        .await;
+        assert!(
+            a.headers[header::CONTENT_TYPE]
+                .to_str()
+                .unwrap()
+                .starts_with(ct)
+        );
+        assert!(
+            a.headers[header::CACHE_CONTROL]
+                .to_str()
+                .unwrap()
+                .contains("immutable")
+        );
     }
     let l = send(&t, get("/login?next=/charts").body(Body::empty()).unwrap()).await;
-    assert!(l.body.contains(r#"id="login" data-next="/charts""#), "{}", l.body);
+    assert!(
+        l.body.contains(r#"id="login" data-next="/charts""#),
+        "{}",
+        l.body
+    );
     // A backslash would take the browser off the site after login.
-    let l = send(&t, get("/login?next=/%5Cevil.example").body(Body::empty()).unwrap()).await;
+    let l = send(
+        &t,
+        get("/login?next=/%5Cevil.example")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
     assert!(l.body.contains(r#"id="login" data-next="/""#), "{}", l.body);
-    let m = send(&t, get("/manifest.webmanifest").body(Body::empty()).unwrap()).await;
+    let m = send(
+        &t,
+        get("/manifest.webmanifest").body(Body::empty()).unwrap(),
+    )
+    .await;
     assert_eq!(m.status, StatusCode::OK);
     assert_eq!(m.json()["display"], "standalone");
     assert_eq!(m.json()["name"], "Baby");
-    for icon in ["/icon-180.png", "/icon-192.png", "/icon-512.png", "/icon-maskable-512.png", "/favicon.ico", "/elephant.png"] {
-        let r = crate::router(t.app.clone()).oneshot(get(icon).body(Body::empty()).unwrap()).await.unwrap();
+    for icon in [
+        "/icon-180.png",
+        "/icon-192.png",
+        "/icon-512.png",
+        "/icon-maskable-512.png",
+        "/favicon.ico",
+        "/elephant.png",
+    ] {
+        let r = crate::router(t.app.clone())
+            .oneshot(get(icon).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
         assert_eq!(r.status(), StatusCode::OK, "{icon}");
         assert_eq!(r.headers()[header::CONTENT_TYPE], "image/png");
         let b = to_bytes(r.into_body(), 1 << 20).await.unwrap();
@@ -350,70 +770,321 @@ async fn web_pages() {
     // Free text: stored and marked for an agent. A common entry, unedited:
     // fields known straight away.
     let body = "text=60+ml+kunstvoeding+om+3+uur";
-    let r = send(&t, post_form("/add").header(header::COOKIE, &t.cookie).header(header::ORIGIN, ORIGIN).body(Body::from(body)).unwrap()).await;
+    let r = send(
+        &t,
+        post_form("/add")
+            .header(header::COOKIE, &t.cookie)
+            .header(header::ORIGIN, ORIGIN)
+            .body(Body::from(body))
+            .unwrap(),
+    )
+    .await;
     assert!(r.status.is_redirection(), "{}", r.body);
     let body = "text=Wet+diaper";
-    send(&t, post_form("/add").header(header::COOKIE, &t.cookie).header(header::ORIGIN, ORIGIN).body(Body::from(body)).unwrap()).await;
-    let r = send(&t, post_form("/add").header(header::COOKIE, &t.cookie).header(header::ORIGIN, "https://evil.example").body(Body::from(body)).unwrap()).await;
+    send(
+        &t,
+        post_form("/add")
+            .header(header::COOKIE, &t.cookie)
+            .header(header::ORIGIN, ORIGIN)
+            .body(Body::from(body))
+            .unwrap(),
+    )
+    .await;
+    let r = send(
+        &t,
+        post_form("/add")
+            .header(header::COOKIE, &t.cookie)
+            .header(header::ORIGIN, "https://evil.example")
+            .body(Body::from(body))
+            .unwrap(),
+    )
+    .await;
     assert_eq!(r.status, StatusCode::FORBIDDEN, "cross-site add accepted");
-    let r = send(&t, get("/add").header(header::COOKIE, &t.cookie).body(Body::empty()).unwrap()).await;
+    let r = send(
+        &t,
+        get("/add")
+            .header(header::COOKIE, &t.cookie)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
     assert!(!r.body.contains("Common entries") && !r.body.contains(r#"name="at""#));
-    let (n, attention, wet): (i64, i64, i64) = t.app.db.with(|c| c.query_row(
-        "SELECT count(*), sum(needs_attention_by = 2), sum(coalesce(wet, 0)) FROM entry", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))).unwrap();
-    assert_eq!((n, attention, wet), (2, 2, 0), "every web entry goes to an agent");
-    let r = send(&t, get("/").header(header::COOKIE, &t.cookie).body(Body::empty()).unwrap()).await;
+    let (n, attention, wet): (i64, i64, i64) = t
+        .app
+        .db
+        .with(|c| {
+            c.query_row(
+                "SELECT count(*), sum(needs_attention_by = 2), sum(coalesce(wet, 0)) FROM entry",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+        })
+        .unwrap();
+    assert_eq!(
+        (n, attention, wet),
+        (2, 2, 0),
+        "every web entry goes to an agent"
+    );
+    let r = send(
+        &t,
+        get("/")
+            .header(header::COOKIE, &t.cookie)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
     // Entries needing attention: once each, in their own card first (not in the log), with the reason.
-    assert!(r.body.contains("Needs attention") && r.body.find("Needs attention") < r.body.find(r#"class="nexts""#) && r.body.contains("🤖") && r.body.matches("process the entries that need attention").count() == 1, "{}", r.body);
-    assert_eq!(r.body.matches("fields not extracted yet").count(), 2, "{}", r.body);
-    let r = send(&t, get("/charts").header(header::COOKIE, &t.cookie).body(Body::empty()).unwrap()).await;
+    assert!(
+        r.body.contains("Needs attention")
+            && r.body.find("Needs attention") < r.body.find(r#"class="nexts""#)
+            && r.body.contains("🤖")
+            && r.body
+                .matches("process the entries that need attention")
+                .count()
+                == 1,
+        "{}",
+        r.body
+    );
+    assert_eq!(
+        r.body.matches("fields not extracted yet").count(),
+        2,
+        "{}",
+        r.body
+    );
+    let r = send(
+        &t,
+        get("/charts")
+            .header(header::COOKIE, &t.cookie)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
     assert!(r.status == StatusCode::OK && r.body.contains("<svg"));
     if t.app.growth.is_some() {
-        assert!(r.body.contains("WHO weight-for-age") && r.body.contains("<polygon"), "growth bands missing");
+        assert!(
+            r.body.contains("WHO weight-for-age") && r.body.contains("<polygon"),
+            "growth bands missing"
+        );
     }
-    let r2 = send(&t, get("/charts").header(header::COOKIE, &t.cookie).body(Body::empty()).unwrap()).await;
-    assert!(!r2.body.contains("🌡️ Temperature"), "no temperature chart without readings");
+    let r2 = send(
+        &t,
+        get("/charts")
+            .header(header::COOKIE, &t.cookie)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        !r2.body.contains("🌡️ Temperature"),
+        "no temperature chart without readings"
+    );
     for v in ["36.9", "38.1"] {
-        t.app.db.with(|c| Ok(crate::entries::insert(c, 1, &crate::entries::NewEntry {
-            at: now() - 3600, duration_s: None, text: format!("temp {v}"),
-            fields: serde_json::from_str(&format!(r#"{{"temp_c": {v}}}"#)).unwrap(), attention_by: 0, attention_why: None }, now()))).unwrap().unwrap();
+        t.app
+            .db
+            .with(|c| {
+                Ok(crate::entries::insert(
+                    c,
+                    1,
+                    &crate::entries::NewEntry {
+                        at: now() - 3600,
+                        duration_s: None,
+                        text: format!("temp {v}"),
+                        fields: serde_json::from_str(&format!(r#"{{"temp_c": {v}}}"#)).unwrap(),
+                        attention_by: 0,
+                        attention_why: None,
+                    },
+                    now(),
+                ))
+            })
+            .unwrap()
+            .unwrap();
     }
-    let r2 = send(&t, get("/charts").header(header::COOKIE, &t.cookie).body(Body::empty()).unwrap()).await;
-    assert!(r2.body.contains("🌡️ Temperature") && r2.body.contains("38.1 °C") && r2.body.contains("#c0503e"), "temperature chart missing");
+    let r2 = send(
+        &t,
+        get("/charts")
+            .header(header::COOKIE, &t.cookie)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        r2.body.contains("🌡️ Temperature")
+            && r2.body.contains("38.1 °C")
+            && r2.body.contains("#c0503e"),
+        "temperature chart missing"
+    );
     if t.app.change.is_some() {
-        assert!(r.body.contains("Weight change since birth") && r.body.contains("a C-section"), "weight-change chart missing");
+        assert!(
+            r.body.contains("Weight change since birth") && r.body.contains("a C-section"),
+            "weight-change chart missing"
+        );
     }
     // Status: last and next grouped per kind; previous days.
-    let r = send(&t, get("/").header(header::COOKIE, &t.cookie).body(Body::empty()).unwrap()).await;
-    assert!(r.body.contains("Wet diaper") && r.body.contains(r#"<h2>Today</h2><span class="next-none""#) && r.body.contains("Today so far"));
-    assert!(!r.body.contains("🍼 Feeding guide"), "the feeding guide card was removed");
+    let r = send(
+        &t,
+        get("/")
+            .header(header::COOKIE, &t.cookie)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        r.body.contains("Wet diaper")
+            && r.body.contains(r#"<h2>Today</h2><span class="next-none""#)
+            && r.body.contains("Today so far")
+    );
+    assert!(
+        !r.body.contains("🍼 Feeding guide"),
+        "the feeding guide card was removed"
+    );
     // Sleeping side: after "facing left", the feed tile says the next side is right.
-    t.app.db.with(|c| Ok(crate::entries::insert(c, 1, &crate::entries::NewEntry {
-        at: now() - 60, duration_s: None, text: "Put down facing left".into(),
-        fields: serde_json::from_str(r#"{"sleep_facing": "left"}"#).unwrap(), attention_by: 0, attention_why: None }, now()))).unwrap().unwrap();
-    let r = send(&t, get("/").header(header::COOKIE, &t.cookie).body(Body::empty()).unwrap()).await;
-    assert!(r.body.contains("😴 face ➡️ right") && !r.body.contains("(last ⬅️"), "next sleeping side missing");
+    t.app
+        .db
+        .with(|c| {
+            Ok(crate::entries::insert(
+                c,
+                1,
+                &crate::entries::NewEntry {
+                    at: now() - 60,
+                    duration_s: None,
+                    text: "Put down facing left".into(),
+                    fields: serde_json::from_str(r#"{"sleep_facing": "left"}"#).unwrap(),
+                    attention_by: 0,
+                    attention_why: None,
+                },
+                now(),
+            ))
+        })
+        .unwrap()
+        .unwrap();
+    let r = send(
+        &t,
+        get("/")
+            .header(header::COOKIE, &t.cookie)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        r.body.contains("😴 face ➡️ right") && !r.body.contains("(last ⬅️"),
+        "next sleeping side missing"
+    );
     // Day 3 of life: the birth date plus two days.
     let clock = &t.app.clock;
-    let day3 = clock.zoned(t.birth).date().checked_add(jiff::Span::new().days(2)).unwrap();
-    let r = send(&t, get(&format!("/day?date={day3}")).header(header::COOKIE, &t.cookie).body(Body::empty()).unwrap()).await;
-    assert_eq!(r.location(), format!("/?day={day3}"), "a day is the status page with that day in view");
-    let r = send(&t, get(&format!("/?day={day3}")).header(header::COOKIE, &t.cookie).body(Body::empty()).unwrap()).await;
+    let day3 = clock
+        .zoned(t.birth)
+        .date()
+        .checked_add(jiff::Span::new().days(2))
+        .unwrap();
+    let r = send(
+        &t,
+        get(&format!("/day?date={day3}"))
+            .header(header::COOKIE, &t.cookie)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(
+        r.location(),
+        format!("/?day={day3}"),
+        "a day is the status page with that day in view"
+    );
+    let r = send(
+        &t,
+        get(&format!("/?day={day3}"))
+            .header(header::COOKIE, &t.cookie)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
     assert_eq!(r.status, StatusCode::OK);
     let heading = day3.strftime("%a %-d %B").to_string();
-    assert!(r.body.contains(&heading) && r.body.contains("day 3 of life") && r.body.contains("Nothing logged this day"), "{heading}");
-    assert!(r.body.contains(r#"<div class="now-only" hidden>"#) && r.body.contains(&format!(r#"id="daylog" data-day="{day3}""#)), "what's next hidden on a past day");
+    assert!(
+        r.body.contains(&heading)
+            && r.body.contains("day 3 of life")
+            && r.body.contains("Nothing logged this day"),
+        "{heading}"
+    );
+    assert!(
+        r.body.contains(r#"<div class="now-only" hidden>"#)
+            && r.body
+                .contains(&format!(r#"id="daylog" data-day="{day3}""#)),
+        "what's next hidden on a past day"
+    );
     let (prev, next) = (day3.yesterday().unwrap(), day3.tomorrow().unwrap());
-    assert!(r.body.contains(&format!(r#"href="/?day={prev}" data-day="{prev}""#)) && r.body.contains(&format!(r#"href="/?day={next}""#)));
-    let part = send(&t, get(&format!("/log?date={day3}")).header(header::COOKIE, &t.cookie).body(Body::empty()).unwrap()).await;
-    assert!(part.body.starts_with(r#"<div class="card">"#) && part.body.contains("day 3 of life") && !part.body.contains("<html"), "{}", part.body);
-    let tl = send(&t, get(&format!("/timeline?date={day3}&z=3")).header(header::COOKIE, &t.cookie).body(Body::empty()).unwrap()).await;
-    assert!(tl.body.starts_with("<svg x=") && tl.body.contains(&format!(r#"data-day="{day3}""#)), "{}", tl.body);
+    assert!(
+        r.body
+            .contains(&format!(r#"href="/?day={prev}" data-day="{prev}""#))
+            && r.body.contains(&format!(r#"href="/?day={next}""#))
+    );
+    let part = send(
+        &t,
+        get(&format!("/log?date={day3}"))
+            .header(header::COOKIE, &t.cookie)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        part.body.starts_with(r#"<div class="card">"#)
+            && part.body.contains("day 3 of life")
+            && !part.body.contains("<html"),
+        "{}",
+        part.body
+    );
+    let tl = send(
+        &t,
+        get(&format!("/timeline?date={day3}&z=3"))
+            .header(header::COOKIE, &t.cookie)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        tl.body.starts_with("<svg x=") && tl.body.contains(&format!(r#"data-day="{day3}""#)),
+        "{}",
+        tl.body
+    );
     // At the week zoom: the week (of life) below the timeline, days zoom in.
-    let wk = send(&t, get(&format!("/log?date={day3}&z=3")).header(header::COOKIE, &t.cookie).body(Body::empty()).unwrap()).await;
-    assert!(wk.body.contains("<h2>Week 1") && wk.body.contains("day 1–7 of life") && wk.body.contains(&format!(r#"data-day="{day3}" data-zoom="2""#)), "{}", wk.body);
-    let r = send(&t, get("/").header(header::COOKIE, format!("{}; tlz2=3", t.cookie)).body(Body::empty()).unwrap()).await;
-    assert!(r.body.contains(r#"<div class="now-only" hidden>"#) && r.body.contains("<h2>Week ") && r.body.contains(r#"data-week-z="3""#), "week zoom: the week instead of today");
-    let r = send(&t, get("/day?date=2099-01-01").header(header::COOKIE, &t.cookie).body(Body::empty()).unwrap()).await;
+    let wk = send(
+        &t,
+        get(&format!("/log?date={day3}&z=3"))
+            .header(header::COOKIE, &t.cookie)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        wk.body.contains("<h2>Week 1")
+            && wk.body.contains("day 1–7 of life")
+            && wk
+                .body
+                .contains(&format!(r#"data-day="{day3}" data-zoom="2""#)),
+        "{}",
+        wk.body
+    );
+    let r = send(
+        &t,
+        get("/")
+            .header(header::COOKIE, format!("{}; tlz2=3", t.cookie))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        r.body.contains(r#"<div class="now-only" hidden>"#)
+            && r.body.contains("<h2>Week ")
+            && r.body.contains(r#"data-week-z="3""#),
+        "week zoom: the week instead of today"
+    );
+    let r = send(
+        &t,
+        get("/day?date=2099-01-01")
+            .header(header::COOKIE, &t.cookie)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
     assert_eq!(r.location(), "/", "future day should go to today");
 }
 
@@ -425,13 +1096,26 @@ fn push_decrypt(ua: &p256::SecretKey, auth: &[u8], body: &[u8]) -> Vec<u8> {
     let idlen = rest[4] as usize;
     let (as_public, ct) = rest[5..].split_at(idlen);
     let ua_public = ua.public_key().to_sec1_point(false).as_bytes().to_vec();
-    let shared = p256::ecdh::diffie_hellman(ua.to_nonzero_scalar(), p256::PublicKey::from_sec1_bytes(as_public).unwrap().as_affine());
+    let shared = p256::ecdh::diffie_hellman(
+        ua.to_nonzero_scalar(),
+        p256::PublicKey::from_sec1_bytes(as_public)
+            .unwrap()
+            .as_affine(),
+    );
     let h = crate::push::hmac;
-    let ikm = h(&h(auth, &[shared.raw_secret_bytes().as_slice()]), &[b"WebPush: info\0", &ua_public, as_public, &[1]]);
+    let ikm = h(
+        &h(auth, &[shared.raw_secret_bytes().as_slice()]),
+        &[b"WebPush: info\0", &ua_public, as_public, &[1]],
+    );
     let prk = h(salt, &[&ikm]);
     let cek = &h(&prk, &[b"Content-Encoding: aes128gcm\0", &[1]])[..16];
-    let nonce: [u8; 12] = h(&prk, &[b"Content-Encoding: nonce\0", &[1]])[..12].try_into().unwrap();
-    let mut pt = aes_gcm::Aes128Gcm::new_from_slice(cek).unwrap().decrypt((&nonce).into(), ct).unwrap();
+    let nonce: [u8; 12] = h(&prk, &[b"Content-Encoding: nonce\0", &[1]])[..12]
+        .try_into()
+        .unwrap();
+    let mut pt = aes_gcm::Aes128Gcm::new_from_slice(cek)
+        .unwrap()
+        .decrypt((&nonce).into(), ct)
+        .unwrap();
     assert_eq!(pt.pop(), Some(2), "last-record delimiter");
     pt
 }
@@ -445,25 +1129,53 @@ async fn push_notifications() {
     let seen: Arc<Mutex<Seen>> = Arc::default();
     let s2 = seen.clone();
     let fake = axum::Router::new()
-        .route("/ok", axum::routing::post(move |h: axum::http::HeaderMap, b: axum::body::Bytes| {
-            let s = s2.clone();
-            async move {
-                s.lock().unwrap().push((h, b.to_vec()));
-                StatusCode::CREATED
-            }
-        }))
+        .route(
+            "/ok",
+            axum::routing::post(move |h: axum::http::HeaderMap, b: axum::body::Bytes| {
+                let s = s2.clone();
+                async move {
+                    s.lock().unwrap().push((h, b.to_vec()));
+                    StatusCode::CREATED
+                }
+            }),
+        )
         .route("/gone", axum::routing::post(|| async { StatusCode::GONE }));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move { axum::serve(listener, fake).await.unwrap() });
 
     // The page: key for the browser, choices on by default.
-    let r = send(&t, get("/notifications").header(header::COOKIE, &t.cookie).body(Body::empty()).unwrap()).await;
+    let r = send(
+        &t,
+        get("/notifications")
+            .header(header::COOKIE, &t.cookie)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
     assert_eq!(r.status, StatusCode::OK);
-    assert!(r.body.contains(r#"data-key="B"#) && r.body.matches(" checked").count() == 5, "{}", r.body);
-    let (f, e, c) = (r.body.find("🍼 Feeding").unwrap(), r.body.find("📝 Entries").unwrap(), r.body.find("💊 Care").unwrap());
-    assert!(f < r.body.find(r#"data-kind="feed_warning""#).unwrap() && r.body.find(r#"data-kind="feed_warning""#).unwrap() < e && e < r.body.find(r#"data-kind="changes""#).unwrap() && r.body.find(r#"data-kind="changes""#).unwrap() < c);
-    assert!(r.headers[header::CONTENT_SECURITY_POLICY].to_str().unwrap().contains("worker-src 'self'"));
+    assert!(
+        r.body.contains(r#"data-key="B"#) && r.body.matches(" checked").count() == 5,
+        "{}",
+        r.body
+    );
+    let (f, e, c) = (
+        r.body.find("🍼 Feeding").unwrap(),
+        r.body.find("📝 Entries").unwrap(),
+        r.body.find("💊 Care").unwrap(),
+    );
+    assert!(
+        f < r.body.find(r#"data-kind="feed_warning""#).unwrap()
+            && r.body.find(r#"data-kind="feed_warning""#).unwrap() < e
+            && e < r.body.find(r#"data-kind="changes""#).unwrap()
+            && r.body.find(r#"data-kind="changes""#).unwrap() < c
+    );
+    assert!(
+        r.headers[header::CONTENT_SECURITY_POLICY]
+            .to_str()
+            .unwrap()
+            .contains("worker-src 'self'")
+    );
 
     // Subscribing: same-origin and logged in only; https endpoints only.
     let ua = crate::push::random_secret();
@@ -474,18 +1186,53 @@ async fn push_notifications() {
     let auth = B64.encode([7u8; 16]);
     let sub = |ep: &str| json!({"endpoint": ep, "keys": {"p256dh": ua_pub, "auth": auth}});
     let req = |v: Value, origin: &str, cookie: bool| {
-        let mut b = Request::post("/push/subscribe").header(header::CONTENT_TYPE, "application/json").header(header::ORIGIN, origin);
+        let mut b = Request::post("/push/subscribe")
+            .header(header::CONTENT_TYPE, "application/json")
+            .header(header::ORIGIN, origin);
         if cookie {
             b = b.header(header::COOKIE, &t.cookie);
         }
         b.body(Body::from(v.to_string())).unwrap()
     };
-    assert_eq!(send(&t, req(sub("https://push.example/x"), "https://evil.example", true)).await.status, StatusCode::FORBIDDEN);
-    assert_eq!(send(&t, req(sub("https://push.example/x"), ORIGIN, false)).await.status, StatusCode::UNAUTHORIZED);
-    assert_eq!(send(&t, req(sub("http://push.example/x"), ORIGIN, true)).await.status, StatusCode::BAD_REQUEST);
-    assert_eq!(send(&t, req(sub("https://push.example/x"), ORIGIN, true)).await.status, StatusCode::OK);
-    let r = send(&t, Request::post("/push/unsubscribe").header(header::CONTENT_TYPE, "application/json").header(header::ORIGIN, ORIGIN)
-        .header(header::COOKIE, &t.cookie).body(Body::from(json!({"endpoint": "https://push.example/x"}).to_string())).unwrap()).await;
+    assert_eq!(
+        send(
+            &t,
+            req(sub("https://push.example/x"), "https://evil.example", true)
+        )
+        .await
+        .status,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        send(&t, req(sub("https://push.example/x"), ORIGIN, false))
+            .await
+            .status,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        send(&t, req(sub("http://push.example/x"), ORIGIN, true))
+            .await
+            .status,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        send(&t, req(sub("https://push.example/x"), ORIGIN, true))
+            .await
+            .status,
+        StatusCode::OK
+    );
+    let r = send(
+        &t,
+        Request::post("/push/unsubscribe")
+            .header(header::CONTENT_TYPE, "application/json")
+            .header(header::ORIGIN, ORIGIN)
+            .header(header::COOKIE, &t.cookie)
+            .body(Body::from(
+                json!({"endpoint": "https://push.example/x"}).to_string(),
+            ))
+            .unwrap(),
+    )
+    .await;
     assert_eq!(r.status, StatusCode::OK);
     // The fake service is plain http on localhost, so put those in directly.
     t.app.db.with(|c| {
@@ -495,44 +1242,160 @@ async fn push_notifications() {
         }
         Ok(())
     }).unwrap();
-    assert_eq!(t.app.db.with(|c| c.query_row("SELECT count(*) FROM push_subscription", [], |r| r.get::<_, i64>(0))).unwrap(), 2);
+    assert_eq!(
+        t.app
+            .db
+            .with(
+                |c| c.query_row("SELECT count(*) FROM push_subscription", [], |r| r
+                    .get::<_, i64>(0))
+            )
+            .unwrap(),
+        2
+    );
 
     // Choices.
-    let pref = |v: Value, origin: &str| Request::post("/push/prefs").header(header::CONTENT_TYPE, "application/json").header(header::ORIGIN, origin)
-        .header(header::COOKIE, &t.cookie).body(Body::from(v.to_string())).unwrap();
-    assert_eq!(send(&t, pref(json!({"kind": "feed_overdue", "enabled": false}), "https://evil.example")).await.status, StatusCode::FORBIDDEN);
-    assert_eq!(send(&t, pref(json!({"kind": "nonsense", "enabled": false}), ORIGIN)).await.status, StatusCode::BAD_REQUEST);
-    assert_eq!(send(&t, pref(json!({"kind": "feed_overdue", "enabled": false}), ORIGIN)).await.status, StatusCode::OK);
-    t.app.db.with(|c| {
-        assert!(crate::notify::wants(c, 1, "feed_soon")? && !crate::notify::wants(c, 1, "feed_overdue")? && crate::notify::wants(c, 1, "attention")?);
-        Ok(())
-    }).unwrap();
+    let pref = |v: Value, origin: &str| {
+        Request::post("/push/prefs")
+            .header(header::CONTENT_TYPE, "application/json")
+            .header(header::ORIGIN, origin)
+            .header(header::COOKIE, &t.cookie)
+            .body(Body::from(v.to_string()))
+            .unwrap()
+    };
+    assert_eq!(
+        send(
+            &t,
+            pref(
+                json!({"kind": "feed_overdue", "enabled": false}),
+                "https://evil.example"
+            )
+        )
+        .await
+        .status,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        send(
+            &t,
+            pref(json!({"kind": "nonsense", "enabled": false}), ORIGIN)
+        )
+        .await
+        .status,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        send(
+            &t,
+            pref(json!({"kind": "feed_overdue", "enabled": false}), ORIGIN)
+        )
+        .await
+        .status,
+        StatusCode::OK
+    );
+    t.app
+        .db
+        .with(|c| {
+            assert!(
+                crate::notify::wants(c, 1, "feed_soon")?
+                    && !crate::notify::wants(c, 1, "feed_overdue")?
+                    && crate::notify::wants(c, 1, "attention")?
+            );
+            Ok(())
+        })
+        .unwrap();
 
     // A test push: encrypted, VAPID-signed, carrying only a message id.
-    let r = send(&t, Request::post("/push/test").header(header::ORIGIN, ORIGIN).header(header::COOKIE, &t.cookie).body(Body::empty()).unwrap()).await;
+    let r = send(
+        &t,
+        Request::post("/push/test")
+            .header(header::ORIGIN, ORIGIN)
+            .header(header::COOKIE, &t.cookie)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
     assert_eq!(r.json()["sent"], 1, "{}", r.body);
-    assert_eq!(t.app.db.with(|c| c.query_row("SELECT count(*) FROM push_subscription", [], |r| r.get::<_, i64>(0))).unwrap(), 1, "410 removes it");
+    assert_eq!(
+        t.app
+            .db
+            .with(
+                |c| c.query_row("SELECT count(*) FROM push_subscription", [], |r| r
+                    .get::<_, i64>(0))
+            )
+            .unwrap(),
+        1,
+        "410 removes it"
+    );
     let (h, b) = seen.lock().unwrap().pop().unwrap();
     assert_eq!(h["content-encoding"], "aes128gcm");
-    assert_eq!(h["topic"], crate::push::topic("test").as_str(), "a valid base64url topic");
-    assert!(h["authorization"].to_str().unwrap().starts_with("vapid t=ey"));
+    assert_eq!(
+        h["topic"],
+        crate::push::topic("test").as_str(),
+        "a valid base64url topic"
+    );
+    assert!(
+        h["authorization"]
+            .to_str()
+            .unwrap()
+            .starts_with("vapid t=ey")
+    );
     let pt: Value = serde_json::from_slice(&push_decrypt(&ua, &[7u8; 16], &b)).unwrap();
     let id = pt["m"].as_str().unwrap();
     assert_eq!(pt.as_object().unwrap().len(), 1, "nothing else in the push");
-    let r = send(&t, get(&format!("/push/message/{id}")).body(Body::empty()).unwrap()).await;
+    let r = send(
+        &t,
+        get(&format!("/push/message/{id}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
     assert_eq!(r.status, StatusCode::OK);
     assert_eq!(r.json()["title"], "🔔 Baby: test");
-    assert!(r.json()["badge"].is_number(), "the badge travels with the message");
-    assert_eq!(send(&t, get("/push/badge").body(Body::empty()).unwrap()).await.status, StatusCode::UNAUTHORIZED);
-    let b = send(&t, get("/push/badge").header(header::COOKIE, &t.cookie).body(Body::empty()).unwrap()).await;
+    assert!(
+        r.json()["badge"].is_number(),
+        "the badge travels with the message"
+    );
+    assert_eq!(
+        send(&t, get("/push/badge").body(Body::empty()).unwrap())
+            .await
+            .status,
+        StatusCode::UNAUTHORIZED
+    );
+    let b = send(
+        &t,
+        get("/push/badge")
+            .header(header::COOKIE, &t.cookie)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
     assert_eq!(b.status, StatusCode::OK);
-    assert_eq!(b.json()["count"].as_u64().unwrap() as usize, b.json()["items"].as_array().unwrap().len());
-    assert!(b.json()["groups"].as_array().is_some_and(|g| !g.iter().any(|x| x == "test")), "a test notification never stays: {}", b.body);
-    assert_eq!(send(&t, get("/push/message/nope").body(Body::empty()).unwrap()).await.status, StatusCode::NOT_FOUND);
+    assert_eq!(
+        b.json()["count"].as_u64().unwrap() as usize,
+        b.json()["items"].as_array().unwrap().len()
+    );
+    assert!(
+        b.json()["groups"]
+            .as_array()
+            .is_some_and(|g| !g.iter().any(|x| x == "test")),
+        "a test notification never stays: {}",
+        b.body
+    );
+    assert_eq!(
+        send(&t, get("/push/message/nope").body(Body::empty()).unwrap())
+            .await
+            .status,
+        StatusCode::NOT_FOUND
+    );
 
     // The service worker.
     let r = send(&t, get("/sw.js").body(Body::empty()).unwrap()).await;
-    assert!(r.headers[header::CONTENT_TYPE].to_str().unwrap().starts_with("text/javascript"));
+    assert!(
+        r.headers[header::CONTENT_TYPE]
+            .to_str()
+            .unwrap()
+            .starts_with("text/javascript")
+    );
     assert!(r.body.starts_with(r#"const NAME = "Baby";"#) && r.body.contains("showNotification"));
 }
 
@@ -540,64 +1403,205 @@ async fn push_notifications() {
 async fn entry_history_page() {
     let t = setup();
     let now = now();
-    let id = t.app.db.with(|c| {
-        let e = crate::entries::insert(c, 1, &crate::entries::NewEntry {
-            at: now - 60, duration_s: None, text: "50 ml flesvoeding op 10 ml gekolfd".into(),
-            fields: serde_json::from_value(json!({"bottle_formula_ml": 50, "vomit": true})).unwrap(),
-            attention_by: crate::entries::BY_AGENT, attention_why: Some("split".into()),
-        }, now - 60).unwrap();
-        let mut e2 = e.clone();
-        e2.fields = serde_json::from_value(json!({"bottle_formula_ml": 40, "bottle_breastmilk_ml": 10})).unwrap();
-        e2.attention_by = 0;
-        e2.attention_why = None;
-        crate::entries::save(c, 1, &e2, now).unwrap();
-        Ok(e.entry_id)
-    }).unwrap();
-    let r = send(&t, get(&format!("/entry/{id}")).body(Body::empty()).unwrap()).await;
+    let id = t
+        .app
+        .db
+        .with(|c| {
+            let e = crate::entries::insert(
+                c,
+                1,
+                &crate::entries::NewEntry {
+                    at: now - 60,
+                    duration_s: None,
+                    text: "50 ml flesvoeding op 10 ml gekolfd".into(),
+                    fields: serde_json::from_value(json!({"bottle_formula_ml": 50, "vomit": true}))
+                        .unwrap(),
+                    attention_by: crate::entries::BY_AGENT,
+                    attention_why: Some("split".into()),
+                },
+                now - 60,
+            )
+            .unwrap();
+            let mut e2 = e.clone();
+            e2.fields = serde_json::from_value(
+                json!({"bottle_formula_ml": 40, "bottle_breastmilk_ml": 10}),
+            )
+            .unwrap();
+            e2.attention_by = 0;
+            e2.attention_why = None;
+            crate::entries::save(c, 1, &e2, now).unwrap();
+            Ok(e.entry_id)
+        })
+        .unwrap();
+    let r = send(
+        &t,
+        get(&format!("/entry/{id}")).body(Body::empty()).unwrap(),
+    )
+    .await;
     assert!(r.location().starts_with("/login"), "needs a session");
-    let r = send(&t, get(&format!("/entry/{id}")).header(header::COOKIE, &t.cookie).body(Body::empty()).unwrap()).await;
+    let r = send(
+        &t,
+        get(&format!("/entry/{id}"))
+            .header(header::COOKIE, &t.cookie)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
     assert_eq!(r.status, StatusCode::OK);
     assert!(r.body.contains("History · 2 versions"), "{}", r.body);
     assert!(r.body.contains(r#"<span class="chg"><span class="chip del" title="bottle_formula_ml: 50 ml">🍼 50 ml formula</span> → <span class="chip add" title="bottle_formula_ml: 40 ml">🍼 40 ml formula</span></span>"#), "{}", r.body);
     assert!(r.body.contains(r#"<span class="chip del" title="vomit: yes">🤢 spit-up</span>"#) && r.body.contains(r#"<span class="chip add" title="bottle_breastmilk_ml: 10 ml">🍼 10 ml breast milk</span>"#));
-    assert!(r.body.contains(r#"<span class="chip add" title="bottle_formula_ml: 50 ml">"#), "v1 shows the fields it started with");
+    assert!(
+        r.body
+            .contains(r#"<span class="chip add" title="bottle_formula_ml: 50 ml">"#),
+        "v1 shows the fields it started with"
+    );
     assert!(r.body.contains("attention cleared (was: split)") && r.body.contains("🤖"));
-    assert!(r.body.find(">v2<").unwrap() < r.body.find(">v1<").unwrap(), "newest first");
-    let day = send(&t, get("/").header(header::COOKIE, &t.cookie).body(Body::empty()).unwrap()).await;
+    assert!(
+        r.body.find(">v2<").unwrap() < r.body.find(">v1<").unwrap(),
+        "newest first"
+    );
+    let day = send(
+        &t,
+        get("/")
+            .header(header::COOKIE, &t.cookie)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
     assert!(day.body.contains(&format!(r#"href="/entry/{id}""#)) && day.body.contains("✎ v2"));
-    assert!(day.body.contains(r#"<div class="sub">Bas</div><div class="sub">✎ v2</div>"#), "who logged it, then the edit mark");
-    assert_eq!(send(&t, get("/entry/999999").header(header::COOKIE, &t.cookie).body(Body::empty()).unwrap()).await.status, StatusCode::NOT_FOUND);
+    assert!(
+        day.body
+            .contains(r#"<div class="sub">Bas</div><div class="sub">✎ v2</div>"#),
+        "who logged it, then the edit mark"
+    );
+    assert_eq!(
+        send(
+            &t,
+            get("/entry/999999")
+                .header(header::COOKIE, &t.cookie)
+                .body(Body::empty())
+                .unwrap()
+        )
+        .await
+        .status,
+        StatusCode::NOT_FOUND
+    );
 }
 
 #[tokio::test]
 async fn viewer_sees_only_charts() {
     let t = setup();
     let (_, access, _) = connect(&t).await;
-    let (err, v) = tool(&t, &access, "log", json!({"text": "80 ml formula", "fields": {"bottle_formula_ml": 80}})).await;
+    let (err, v) = tool(
+        &t,
+        &access,
+        "log",
+        json!({"text": "80 ml formula", "fields": {"bottle_formula_ml": 80}}),
+    )
+    .await;
     assert!(!err, "{v}");
     // A parent can preview the page as a viewer sees it.
-    let own = send(&t, get("/charts").header(header::COOKIE, &t.cookie).body(Body::empty()).unwrap()).await;
-    assert!(own.body.contains("expected by midnight") && own.body.contains(r#"<option value="user" selected>"#));
-    let pv = send(&t, get("/charts?as=viewer").header(header::COOKIE, &t.cookie).body(Body::empty()).unwrap()).await;
-    assert!(pv.body.contains("Up to and including yesterday") && pv.body.contains(r#"<option value="viewer" selected>"#), "{}", pv.body);
-    assert!(!pv.body.contains("expected by midnight") && !pv.body.contains(r#"href="/day""#), "{}", pv.body);
+    let own = send(
+        &t,
+        get("/charts")
+            .header(header::COOKIE, &t.cookie)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        own.body.contains("expected by midnight")
+            && own.body.contains(r#"<option value="user" selected>"#)
+    );
+    let pv = send(
+        &t,
+        get("/charts?as=viewer")
+            .header(header::COOKIE, &t.cookie)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        pv.body.contains("Up to and including yesterday")
+            && pv.body.contains(r#"<option value="viewer" selected>"#),
+        "{}",
+        pv.body
+    );
+    assert!(
+        !pv.body.contains("expected by midnight") && !pv.body.contains(r#"href="/day""#),
+        "{}",
+        pv.body
+    );
     // The user becomes a viewer (say a grandparent).
-    t.app.db.with(|c| c.execute("UPDATE user SET role = 'viewer' WHERE id = 1", [])).unwrap();
-    assert_eq!(mcp(&t, &access, "tools/list", json!({})).await.status, StatusCode::UNAUTHORIZED, "no MCP, even with an older token");
+    t.app
+        .db
+        .with(|c| c.execute("UPDATE user SET role = 'viewer' WHERE id = 1", []))
+        .unwrap();
+    assert_eq!(
+        mcp(&t, &access, "tools/list", json!({})).await.status,
+        StatusCode::UNAUTHORIZED,
+        "no MCP, even with an older token"
+    );
     for p in ["/", "/day", "/add", "/entry/1", "/notifications"] {
-        let r = send(&t, get(p).header(header::COOKIE, &t.cookie).body(Body::empty()).unwrap()).await;
+        let r = send(
+            &t,
+            get(p)
+                .header(header::COOKIE, &t.cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
         assert_eq!(r.location(), "/charts", "{p}");
     }
     let body = "text=Wet+diaper";
-    let r = send(&t, post_form("/add").header(header::COOKIE, &t.cookie).header(header::ORIGIN, ORIGIN).body(Body::from(body)).unwrap()).await;
+    let r = send(
+        &t,
+        post_form("/add")
+            .header(header::COOKIE, &t.cookie)
+            .header(header::ORIGIN, ORIGIN)
+            .body(Body::from(body))
+            .unwrap(),
+    )
+    .await;
     assert_eq!(r.location(), "/charts");
-    let n: i64 = t.app.db.with(|c| c.query_row("SELECT count(*) FROM entry", [], |r| r.get(0))).unwrap();
+    let n: i64 = t
+        .app
+        .db
+        .with(|c| c.query_row("SELECT count(*) FROM entry", [], |r| r.get(0)))
+        .unwrap();
     assert_eq!(n, 1, "a viewer can't add");
-    let r = send(&t, get("/charts").header(header::COOKIE, &t.cookie).body(Body::empty()).unwrap()).await;
+    let r = send(
+        &t,
+        get("/charts")
+            .header(header::COOKIE, &t.cookie)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
     assert_eq!(r.status, StatusCode::OK);
-    assert!(r.body.contains("Up to and including yesterday") && !r.body.contains("expected by midnight"), "{}", r.body);
-    assert!(!r.body.contains(r#"href="/day""#) && !r.body.contains(r#"href="/add""#), "only the charts in the menu");
-    assert_eq!(send(&t, get("/push/badge").header(header::COOKIE, &t.cookie).body(Body::empty()).unwrap()).await.status, StatusCode::UNAUTHORIZED);
+    assert!(
+        r.body.contains("Up to and including yesterday")
+            && !r.body.contains("expected by midnight"),
+        "{}",
+        r.body
+    );
+    assert!(
+        !r.body.contains(r#"href="/day""#) && !r.body.contains(r#"href="/add""#),
+        "only the charts in the menu"
+    );
+    assert_eq!(
+        send(
+            &t,
+            get("/push/badge")
+                .header(header::COOKIE, &t.cookie)
+                .body(Body::empty())
+                .unwrap()
+        )
+        .await
+        .status,
+        StatusCode::UNAUTHORIZED
+    );
 }
 
 #[tokio::test]
@@ -605,21 +1609,70 @@ async fn live_events() {
     use futures_util::StreamExt;
     let t = setup();
     // Without a session: no stream.
-    let r = crate::router(t.app.clone()).oneshot(get("/events").body(Body::empty()).unwrap()).await.unwrap();
+    let r = crate::router(t.app.clone())
+        .oneshot(get("/events").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
     assert_eq!(r.status(), StatusCode::UNAUTHORIZED);
-    let r = crate::router(t.app.clone()).oneshot(get("/events").header(header::COOKIE, &t.cookie).body(Body::empty()).unwrap()).await.unwrap();
+    let r = crate::router(t.app.clone())
+        .oneshot(
+            get("/events")
+                .header(header::COOKIE, &t.cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
     assert_eq!(r.headers()[header::CONTENT_TYPE], "text/event-stream");
     let mut body = r.into_body().into_data_stream();
-    let mut next = async || String::from_utf8(tokio::time::timeout(std::time::Duration::from_secs(2), body.next()).await.unwrap().unwrap().unwrap().to_vec()).unwrap();
+    let mut next = async || {
+        String::from_utf8(
+            tokio::time::timeout(std::time::Duration::from_secs(2), body.next())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap()
+                .to_vec(),
+        )
+        .unwrap()
+    };
     let v = t.app.version.load(std::sync::atomic::Ordering::Relaxed);
     assert_eq!(next().await, format!("event: hello\ndata: {v}\n\n"));
     // A change to the log, by whatever way: "changed", with the new version.
-    t.app.db.run(|c| crate::entries::insert(c, 1, &crate::entries::NewEntry {
-        at: now(), duration_s: None, text: "wet".into(), fields: serde_json::from_value(json!({"wet": true})).unwrap(),
-        attention_by: 0, attention_why: None,
-    }, now())).unwrap();
+    t.app
+        .db
+        .run(|c| {
+            crate::entries::insert(
+                c,
+                1,
+                &crate::entries::NewEntry {
+                    at: now(),
+                    duration_s: None,
+                    text: "wet".into(),
+                    fields: serde_json::from_value(json!({"wet": true})).unwrap(),
+                    attention_by: 0,
+                    attention_why: None,
+                },
+                now(),
+            )
+        })
+        .unwrap();
     assert_eq!(next().await, format!("event: changed\ndata: {}\n\n", v + 1));
     // The status page says which version it shows.
-    let page = send(&t, get("/").header(header::COOKIE, &t.cookie).body(Body::empty()).unwrap()).await;
-    assert!(page.body.contains(&format!(r#"<body data-live="60" data-version="{}">"#, v + 1)), "{}", &page.body[..300]);
+    let page = send(
+        &t,
+        get("/")
+            .header(header::COOKIE, &t.cookie)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        page.body.contains(&format!(
+            r#"<body data-live="60" data-version="{}">"#,
+            v + 1
+        )),
+        "{}",
+        &page.body[..300]
+    );
 }

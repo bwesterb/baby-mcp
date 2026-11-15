@@ -166,7 +166,9 @@ impl Db {
             std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
         }
         let conn = Connection::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
-        let db = Db { conn: Mutex::new(conn) };
+        let db = Db {
+            conn: Mutex::new(conn),
+        };
         db.with(|c| {
             c.execute_batch(
                 "PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;",
@@ -178,14 +180,20 @@ impl Db {
     }
 
     /// Runs `f` with the connection; calls are short, so a mutex suffices.
-    pub fn with<T>(&self, f: impl FnOnce(&mut Connection) -> rusqlite::Result<T>) -> rusqlite::Result<T> {
+    pub fn with<T>(
+        &self,
+        f: impl FnOnce(&mut Connection) -> rusqlite::Result<T>,
+    ) -> rusqlite::Result<T> {
         let mut c = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         f(&mut c)
     }
 
     /// Like `with`, for code whose errors are messages (as the entries
     /// functions give): a database error becomes one too.
-    pub fn run<T>(&self, f: impl FnOnce(&mut Connection) -> Result<T, String>) -> Result<T, String> {
+    pub fn run<T>(
+        &self,
+        f: impl FnOnce(&mut Connection) -> Result<T, String>,
+    ) -> Result<T, String> {
         let mut c = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         f(&mut c)
     }
@@ -268,7 +276,11 @@ mod tests {
             let o = columns(c, "entry_old")?;
             for f in FIELDS {
                 assert!(e.contains(&f.name.to_string()), "entry lacks {}", f.name);
-                assert!(o.contains(&f.name.to_string()), "entry_old lacks {}", f.name);
+                assert!(
+                    o.contains(&f.name.to_string()),
+                    "entry_old lacks {}",
+                    f.name
+                );
             }
             // entry_old = entry's columns + superseded_at, in any order
             let mut e2 = e.clone();

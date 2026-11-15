@@ -27,7 +27,9 @@ impl App {
     pub fn new(cfg: Config) -> Result<App, String> {
         let clock = Clock::new(&cfg.tz)?;
         let db = Db::open(&cfg.db_path())?;
-        let fixed = db.with(|c| crate::auth::fix_cred_ids(c)).map_err(|e| e.to_string())?;
+        let fixed = db
+            .with(|c| crate::auth::fix_cred_ids(c))
+            .map_err(|e| e.to_string())?;
         if fixed > 0 {
             eprintln!("passkeys: stored the credential id of {fixed} passkey(s)");
         }
@@ -36,14 +38,22 @@ impl App {
         let growth = if path.exists() {
             Some(std::sync::Arc::new(crate::growth::Table::load(&path)?))
         } else {
-            eprintln!("note: {} not found; running without WHO growth percentiles", path.display());
+            eprintln!(
+                "note: {} not found; running without WHO growth percentiles",
+                path.display()
+            );
             None
         };
         let path = cfg.weight_change_table_path();
         let change = if path.exists() {
-            Some(std::sync::Arc::new(crate::growth::WeightChange::load(&path)?))
+            Some(std::sync::Arc::new(crate::growth::WeightChange::load(
+                &path,
+            )?))
         } else {
-            eprintln!("note: {} not found; running without first-month weight-change percentiles", path.display());
+            eprintln!(
+                "note: {} not found; running without first-month weight-change percentiles",
+                path.display()
+            );
             None
         };
         // Every row written to the log, from MCP, the web or anything else
@@ -53,16 +63,29 @@ impl App {
         {
             let (version, changes) = (version.clone(), changes.clone());
             db.with(|c| {
-                c.update_hook(Some(move |_: rusqlite::hooks::Action, _: &str, table: &str, _: i64| {
-                    if table == "entry" {
-                        let v = version.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-                        let _ = changes.send(v);
-                    }
-                }))
+                c.update_hook(Some(
+                    move |_: rusqlite::hooks::Action, _: &str, table: &str, _: i64| {
+                        if table == "entry" {
+                            let v = version.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                            let _ = changes.send(v);
+                        }
+                    },
+                ))
             })
             .map_err(|e| e.to_string())?;
         }
-        Ok(App { cfg, db, clock, wa, mem: Mutex::new(Mem::default()), growth, change, push_client: crate::notify::client(), version, changes })
+        Ok(App {
+            cfg,
+            db,
+            clock,
+            wa,
+            mem: Mutex::new(Mem::default()),
+            growth,
+            change,
+            push_client: crate::notify::client(),
+            version,
+            changes,
+        })
     }
 
     /// The in-memory state (ceremonies, codes); a panic elsewhere while it

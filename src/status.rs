@@ -4,8 +4,8 @@
 //! admin command) return.
 
 use crate::entries::{
-    self as en, Baby, Entry, Totals, BY_AGENT, BY_USER, ESTIMATE_BACK, FEED_SQL, TOP_UP_WITHIN, attention, feed_episodes,
-    feed_gap, last_where, list, user_names, view,
+    self as en, BY_AGENT, BY_USER, Baby, ESTIMATE_BACK, Entry, FEED_SQL, TOP_UP_WITHIN, Totals,
+    attention, feed_episodes, feed_gap, last_where, list, user_names, view,
 };
 use crate::feeding::Guidance;
 use crate::time::{Clock, fmt_dur};
@@ -127,7 +127,11 @@ impl Vitamins {
     }
     /// Still to give today: K, D.
     pub fn to_give(&self) -> Vec<&'static str> {
-        self.all().iter().filter(|v| v.active && !v.given_today && !v.not_needed).map(|v| v.label).collect()
+        self.all()
+            .iter()
+            .filter(|v| v.active && !v.given_today && !v.not_needed)
+            .map(|v| v.label)
+            .collect()
     }
 }
 
@@ -168,7 +172,9 @@ impl Status {
 
     /// Entries needing a parent (🙋).
     pub fn needs_user(&self) -> impl Iterator<Item = &Entry> {
-        self.attention.iter().filter(|e| e.attention_by & BY_USER != 0)
+        self.attention
+            .iter()
+            .filter(|e| e.attention_by & BY_USER != 0)
     }
 
     /// As the `status` tool returns it.
@@ -176,7 +182,13 @@ impl Status {
         let now = self.now;
         let since = |e: &Option<Entry>, extra: Option<Value>| since(e, clock, now, extra);
         let field = |e: &Option<Entry>, k: &str| e.as_ref().and_then(|e| e.fields.get(k).cloned());
-        let rel = |t: i64| if t >= now { ("due_in", fmt_dur(t - now)) } else { ("overdue_by", fmt_dur(now - t)) };
+        let rel = |t: i64| {
+            if t >= now {
+                ("due_in", fmt_dur(t - now))
+            } else {
+                ("overdue_by", fmt_dur(now - t))
+            }
+        };
         let next_feed = self.next_feed.map(|f| {
             let (k, d) = rel(f.at);
             json!({
@@ -225,7 +237,11 @@ impl Status {
         if let Some(bw) = baby.birth_weight_g {
             out["birth_weight_g"] = json!(bw);
         }
-        if let Some((w, wt)) = self.last_weight.as_ref().and_then(|e| Some((e.num("weight_g")?, e.at))) {
+        if let Some((w, wt)) = self
+            .last_weight
+            .as_ref()
+            .and_then(|e| Some((e.num("weight_g")?, e.at)))
+        {
             out["weight_vs_birth"] = json!(en::weight_vs_birth(w, baby.birth_weight_g));
             out["weight_percentile"] = baby.percentile_json(w, wt);
             out["weight_change_percentile"] = baby.change_json(w, wt);
@@ -235,7 +251,9 @@ impl Status {
         }
         if let (Some(r), Some(b)) = (self.regained, baby.birth) {
             out["birth_weight_regained"] = match r {
-                Some(t) => json!({"regained": true, "on": clock.day(t), "age_days": crate::growth::age_days(b, t)}),
+                Some(t) => {
+                    json!({"regained": true, "on": clock.day(t), "age_days": crate::growth::age_days(b, t)})
+                }
                 None => json!({"regained": false}),
             };
         }
@@ -289,14 +307,18 @@ impl Status {
 
 /// Why vitamin K is not needed today.
 pub fn vitamin_k_reason(formula_yesterday: f64) -> String {
-    format!("{formula_yesterday:.0} ml formula yesterday: with at least {:.0} ml a day, formula gives enough vitamin K", en::VITAMIN_K_FORMULA_ML)
+    format!(
+        "{formula_yesterday:.0} ml formula yesterday: with at least {:.0} ml a day, formula gives enough vitamin K",
+        en::VITAMIN_K_FORMULA_ML
+    )
 }
 
 fn since(e: &Option<Entry>, clock: &Clock, now: i64, extra: Option<Value>) -> Value {
     match e {
         None => Value::Null,
         Some(e) => {
-            let mut v = json!({"at": clock.fmt(e.at), "ago": fmt_dur(now - e.at), "entry_id": e.entry_id});
+            let mut v =
+                json!({"at": clock.fmt(e.at), "ago": fmt_dur(now - e.at), "entry_id": e.entry_id});
             if let Some(x) = extra {
                 v["value"] = x;
             }
@@ -313,7 +335,12 @@ pub fn estimate_feed(eps: &[(i64, i64)], max_gap: Option<i64>) -> Option<FeedEst
     let (usual, &(_, last)) = (feed_gap(eps)?, eps.last()?);
     let gap = usual.max(FEED_GAP_MIN);
     let gap = max_gap.map_or(gap, |m| gap.min(m.max(FEED_GAP_MIN)));
-    Some(FeedEstimate { at: last + gap, gap, n: eps.len().min(9), usual })
+    Some(FeedEstimate {
+        at: last + gap,
+        gap,
+        n: eps.len().min(9),
+        usual,
+    })
 }
 
 /// Fewer wet diapers in the last 24 hours than usual for her age: at least as
@@ -331,8 +358,19 @@ pub fn wet_warning(clock: &Clock, baby: &Baby, day: &[Entry], now: i64) -> Optio
     if wet >= min {
         return None;
     }
-    let rule = if dol >= 6 { "usually at least 6 from day 6".to_string() } else { format!("usually at least {min} on day {dol}") };
-    Some(WetWarning { wet, minimum: min, text: format!("Only {wet} wet diaper{} in the last 24 h ({rule})", if wet == 1 { "" } else { "s" }) })
+    let rule = if dol >= 6 {
+        "usually at least 6 from day 6".to_string()
+    } else {
+        format!("usually at least {min} on day {dol}")
+    };
+    Some(WetWarning {
+        wet,
+        minimum: min,
+        text: format!(
+            "Only {wet} wet diaper{} in the last 24 h ({rule})",
+            if wet == 1 { "" } else { "s" }
+        ),
+    })
 }
 
 /// After a feed without a side logged, how long "put her down now facing …"
@@ -355,26 +393,60 @@ pub fn status(c: &Connection, clock: &Clock, baby: &Baby, now: i64) -> Result<St
     let since = |from: i64| &upto_now[upto_now.partition_point(|e| e.at < from)..];
     // Totals over [from, to) (a feed just before `from` only tells whether
     // the first ones are top-ups).
-    let totals = |from: i64, to: i64| en::totals_from(since(from - en::FEED_LOOKBACK).iter().filter(|e| e.at < to), from);
-    // The last matching entry: from the window, or else the database.
-    let last = |pred: &dyn Fn(&Entry) -> bool, cond: &str| match window.iter().rev().find(|e| pred(e)) {
-        Some(e) => Ok(Some(e.clone())),
-        None => last_where(c, &format!("{cond} AND at <= {until}")),
+    let totals = |from: i64, to: i64| {
+        en::totals_from(
+            since(from - en::FEED_LOOKBACK).iter().filter(|e| e.at < to),
+            from,
+        )
     };
+    // The last matching entry: from the window, or else the database.
+    let last =
+        |pred: &dyn Fn(&Entry) -> bool, cond: &str| match window.iter().rev().find(|e| pred(e)) {
+            Some(e) => Ok(Some(e.clone())),
+            None => last_where(c, &format!("{cond} AND at <= {until}")),
+        };
     let has = |k: &'static str| move |e: &Entry| e.fields.get(k).is_some_and(|v| !v.is_null());
 
     let last_weight = last(&has("weight_g"), "weight_g IS NOT NULL")?;
     let regained = match (baby.birth_weight_g, baby.birth) {
         // Back at birth weight: the first weighing at or above it after birth.
-        (Some(bw), Some(b)) => Some(en::query(c, "deleted = 0 AND weight_g >= ?2 AND at > ?1 AND at <= ?3 ORDER BY at LIMIT 1", rusqlite::params![b, bw, until])?.pop().map(|e| e.at)),
+        (Some(bw), Some(b)) => Some(
+            en::query(
+                c,
+                "deleted = 0 AND weight_g >= ?2 AND at > ?1 AND at <= ?3 ORDER BY at LIMIT 1",
+                rusqlite::params![b, bw, until],
+            )?
+            .pop()
+            .map(|e| e.at),
+        ),
         _ => None,
     };
-    let guidance = crate::feeding::for_status(clock, baby, last_weight.as_ref().and_then(|e| Some((e.num("weight_g")?, e.at))), upto_now, now);
+    let guidance = crate::feeding::for_status(
+        clock,
+        baby,
+        last_weight
+            .as_ref()
+            .and_then(|e| Some((e.num("weight_g")?, e.at))),
+        upto_now,
+        now,
+    );
 
-    let last_bath = last(&|e| matches!(e.str("bath"), Some("with_soap" | "without_soap")), "bath IN ('with_soap', 'without_soap')")?;
-    let due_day = clock.day_start(last_bath.as_ref().map(|e| e.at + en::BATH_EVERY).unwrap_or(now));
+    let last_bath = last(
+        &|e| matches!(e.str("bath"), Some("with_soap" | "without_soap")),
+        "bath IN ('with_soap', 'without_soap')",
+    )?;
+    let due_day = clock.day_start(
+        last_bath
+            .as_ref()
+            .map(|e| e.at + en::BATH_EVERY)
+            .unwrap_or(now),
+    );
     let bath = Bath {
-        due_at: if last_bath.is_some() { clock.at_hour(due_day, en::BATH_REMIND_HOUR) } else { now },
+        due_at: if last_bath.is_some() {
+            clock.at_hour(due_day, en::BATH_REMIND_HOUR)
+        } else {
+            now
+        },
         day_end: clock.next_day_start(due_day),
         due_day,
         last: last_bath,
@@ -389,7 +461,15 @@ pub fn status(c: &Connection, clock: &Clock, baby: &Baby, now: i64) -> Result<St
             let formula_yesterday = totals(clock.day_start(today - 3600), today).formula_ml;
             let mut vs = vec![];
             for (key, field, label) in en::VITAMINS {
-                let until = en::day_plus(clock, b, if key == "k" { jiff::Span::new().weeks(12) } else { jiff::Span::new().years(4) });
+                let until = en::day_plus(
+                    clock,
+                    b,
+                    if key == "k" {
+                        jiff::Span::new().weeks(12)
+                    } else {
+                        jiff::Span::new().years(4)
+                    },
+                );
                 let active = today >= from && today < until;
                 let last = last(&|e| e.is(field), &format!("{field} = 1"))?;
                 vs.push(Vitamin {
@@ -399,17 +479,28 @@ pub fn status(c: &Connection, clock: &Clock, baby: &Baby, now: i64) -> Result<St
                     until,
                     given_today: last.as_ref().is_some_and(|e| e.at >= today),
                     last,
-                    not_needed: key == "k" && active && formula_yesterday >= en::VITAMIN_K_FORMULA_ML,
+                    not_needed: key == "k"
+                        && active
+                        && formula_yesterday >= en::VITAMIN_K_FORMULA_ML,
                 });
             }
             let [k, d]: [Vitamin; 2] = vs.try_into().expect("two vitamins");
-            Some(Vitamins { from, remind_at: clock.at_hour(today, en::VITAMIN_REMIND_HOUR), formula_yesterday, k, d })
+            Some(Vitamins {
+                from,
+                remind_at: clock.at_hour(today, en::VITAMIN_REMIND_HOUR),
+                formula_yesterday,
+                k,
+                d,
+            })
         }
     };
 
     let mut sleep = None;
     let last_side = last(&has("sleep_facing"), "sleep_facing IS NOT NULL")?;
-    if let Some((e, side)) = last_side.as_ref().and_then(|e| Some((e, e.str("sleep_facing")?))) {
+    if let Some((e, side)) = last_side
+        .as_ref()
+        .and_then(|e| Some((e, e.str("sleep_facing")?)))
+    {
         let other = |s: &str| if s == "left" { "right" } else { "left" }.to_string();
         // Feeds since (a top-up isn't a new feed: no new put-down).
         let from = e.at - en::FEED_LOOKBACK;
@@ -420,8 +511,15 @@ pub fn status(c: &Connection, clock: &Clock, baby: &Baby, now: i64) -> Result<St
             older = list(c, from, now + 1, false)?;
             &older[..]
         };
-        let since: Vec<(i64, i64)> = feed_episodes(es).into_iter().filter(|f| f.0 > e.at).collect();
-        let current = if since.len().is_multiple_of(2) { side.to_string() } else { other(side) };
+        let since: Vec<(i64, i64)> = feed_episodes(es)
+            .into_iter()
+            .filter(|f| f.0 > e.at)
+            .collect();
+        let current = if since.len().is_multiple_of(2) {
+            side.to_string()
+        } else {
+            other(side)
+        };
         sleep = Some(SleepFacing {
             last: side.to_string(),
             last_at: e.at,
@@ -435,7 +533,10 @@ pub fn status(c: &Connection, clock: &Clock, baby: &Baby, now: i64) -> Result<St
     Ok(Status {
         now,
         last_feed: last(&Entry::is_feed, FEED_SQL)?,
-        next_feed: estimate_feed(&feed_episodes(since(now - ESTIMATE_BACK)), guidance.as_ref().map(|g| g.max_gap)),
+        next_feed: estimate_feed(
+            &feed_episodes(since(now - ESTIMATE_BACK)),
+            guidance.as_ref().map(|g| g.max_gap),
+        ),
         prep_s: baby.feed_prep_s,
         last_wet: last(&|e| e.is("wet"), "wet = 1")?,
         last_dirty: last(&|e| e.is("dirty"), "dirty = 1")?,
@@ -463,18 +564,46 @@ pub fn status_json(c: &Connection, clock: &Clock, baby: &Baby, now: i64) -> Resu
 #[cfg(test)]
 pub fn entry(at: i64, fields: Value) -> Entry {
     Entry {
-        entry_id: 1, version: 1, at, duration_s: None, text: String::new(), fields: fields.as_object().cloned().unwrap_or_default(),
-        attention_by: 0, attention_why: None, deleted: false, changed_at: at, changed_by: 1, superseded_at: None,
+        entry_id: 1,
+        version: 1,
+        at,
+        duration_s: None,
+        text: String::new(),
+        fields: fields.as_object().cloned().unwrap_or_default(),
+        attention_by: 0,
+        attention_why: None,
+        deleted: false,
+        changed_at: at,
+        changed_by: 1,
+        superseded_at: None,
     }
 }
 
 /// Both vitamins from `from`, given today or not, for tests.
 #[cfg(test)]
-pub fn vitamins(clock: &Clock, from: &str, remind_at: i64, k: (bool, bool), d: (bool, bool)) -> Vitamins {
+pub fn vitamins(
+    clock: &Clock,
+    from: &str,
+    remind_at: i64,
+    k: (bool, bool),
+    d: (bool, bool),
+) -> Vitamins {
     let v = |key, label, (active, given_today): (bool, bool), until: &str| Vitamin {
-        key, label, active, given_today, until: clock.date_start(until).unwrap() + 86400, last: None, not_needed: false,
+        key,
+        label,
+        active,
+        given_today,
+        until: clock.date_start(until).unwrap() + 86400,
+        last: None,
+        not_needed: false,
     };
-    Vitamins { from: clock.date_start(from).unwrap(), remind_at, formula_yesterday: 0.0, k: v("k", "K", k, "2026-01-22"), d: v("d", "D", d, "2029-10-30") }
+    Vitamins {
+        from: clock.date_start(from).unwrap(),
+        remind_at,
+        formula_yesterday: 0.0,
+        k: v("k", "K", k, "2026-01-22"),
+        d: v("d", "D", d, "2029-10-30"),
+    }
 }
 
 #[cfg(test)]
@@ -490,7 +619,10 @@ mod tests {
     fn estimate_at_least_two_hours() {
         let eps: Vec<(i64, i64)> = (0..6).map(|k| (k * 5400, k * 5400)).collect();
         let f = estimate_feed(&eps, Some(3 * 3600)).unwrap();
-        assert_eq!((f.usual, f.gap, f.at), (5400, FEED_GAP_MIN, 5 * 5400 + FEED_GAP_MIN));
+        assert_eq!(
+            (f.usual, f.gap, f.at),
+            (5400, FEED_GAP_MIN, 5 * 5400 + FEED_GAP_MIN)
+        );
         // A plan allowing less than 2 hours still gets 2.
         assert_eq!(estimate_feed(&eps, Some(3600)).unwrap().gap, FEED_GAP_MIN);
     }
@@ -502,8 +634,17 @@ mod tests {
         let clock = Clock::new("Europe/Amsterdam").unwrap();
         let at = |s: &str| clock.parse(s, 0).unwrap();
         let now = at("2025-11-10 12:00");
-        let baby = Baby { name: "B".into(), birth: Some(at("2025-10-31 16:40")), birth_weight_g: Some(3900.0), sex: None, growth: None,
-                          delivery: None, change: None, aim_feeds_per_day: Some(7.0), feed_prep_s: 900 };
+        let baby = Baby {
+            name: "B".into(),
+            birth: Some(at("2025-10-31 16:40")),
+            birth_weight_g: Some(3900.0),
+            sex: None,
+            growth: None,
+            delivery: None,
+            change: None,
+            aim_feeds_per_day: Some(7.0),
+            feed_prep_s: 900,
+        };
         let n = Arc::new(AtomicUsize::new(0));
         db.with(|c| {
             // A weighing and a temperature long ago; then five days of feeds,

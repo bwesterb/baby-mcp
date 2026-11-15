@@ -40,8 +40,12 @@ fn field_schema() -> Value {
     let mut props = Map::new();
     for f in FIELDS {
         let mut s = match f.kind {
-            registry::Kind::Number { min, max } => json!({"type": ["number", "null"], "minimum": min, "maximum": max}),
-            registry::Kind::Integer { min, max } => json!({"type": ["integer", "null"], "minimum": min, "maximum": max}),
+            registry::Kind::Number { min, max } => {
+                json!({"type": ["number", "null"], "minimum": min, "maximum": max})
+            }
+            registry::Kind::Integer { min, max } => {
+                json!({"type": ["integer", "null"], "minimum": min, "maximum": max})
+            }
             registry::Kind::Bool => json!({"type": ["boolean", "null"]}),
             registry::Kind::Choice(o) => {
                 let mut e: Vec<Value> = o.iter().map(|x| json!(x)).collect();
@@ -49,7 +53,11 @@ fn field_schema() -> Value {
                 json!({"enum": e})
             }
         };
-        let unit = if f.unit.is_empty() { String::new() } else { format!(" ({})", f.unit) };
+        let unit = if f.unit.is_empty() {
+            String::new()
+        } else {
+            format!(" ({})", f.unit)
+        };
         s["description"] = json!(format!("{}{unit}", f.help));
         props.insert(f.name.into(), s);
     }
@@ -154,7 +162,11 @@ pub async fn handle(State(app): State<Arc<App>>, headers: HeaderMap, body: Bytes
     match res {
         Ok(Some(v)) => Json(v).into_response(),
         Ok(None) => StatusCode::ACCEPTED.into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("tool call failed: {e}")).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("tool call failed: {e}"),
+        )
+            .into_response(),
     }
 }
 
@@ -184,7 +196,11 @@ fn one(app: &App, user: i64, req: &Value) -> Option<Value> {
             let args = req["params"].get("arguments").cloned().unwrap_or(json!({}));
             let started = Instant::now();
             let r = call(app, user, name, &args);
-            eprintln!("mcp: user {user} {name} {} in {:?}", if r.is_ok() { "ok" } else { "error" }, started.elapsed());
+            eprintln!(
+                "mcp: user {user} {name} {} in {:?}",
+                if r.is_ok() { "ok" } else { "error" },
+                started.elapsed()
+            );
             match r {
                 Ok(v) => json!({
                     "content": [{"type": "text", "text": serde_json::to_string_pretty(&v).unwrap()}],
@@ -193,7 +209,13 @@ fn one(app: &App, user: i64, req: &Value) -> Option<Value> {
                 Err(e) => json!({"content": [{"type": "text", "text": e}], "isError": true}),
             }
         }
-        _ => return Some(rpc_error(id, -32601, &format!("method not found: {method}"))),
+        _ => {
+            return Some(rpc_error(
+                id,
+                -32601,
+                &format!("method not found: {method}"),
+            ));
+        }
     };
     Some(json!({"jsonrpc": "2.0", "id": id, "result": result}))
 }
@@ -201,7 +223,8 @@ fn one(app: &App, user: i64, req: &Value) -> Option<Value> {
 // ------------------------------------------------------------- tools
 
 fn arg_i64(a: &Value, k: &str) -> Result<i64, String> {
-    a[k].as_i64().ok_or_else(|| format!("{k} is required (an integer)"))
+    a[k].as_i64()
+        .ok_or_else(|| format!("{k} is required (an integer)"))
 }
 
 fn attention_arg(a: &Value) -> Result<Option<i64>, String> {
@@ -235,7 +258,9 @@ fn duration_arg(a: &Value) -> Result<Option<Option<i64>>, String> {
         None => Ok(None),
         Some(Value::Null) => Ok(Some(None)),
         Some(v) => match v.as_f64() {
-            Some(m) if (0.0..=7.0 * 1440.0).contains(&m) => Ok(Some(Some((m * 60.0).round() as i64))),
+            Some(m) if (0.0..=7.0 * 1440.0).contains(&m) => {
+                Ok(Some(Some((m * 60.0).round() as i64)))
+            }
             _ => Err("duration_min must be minutes between 0 and a week".into()),
         },
     }
@@ -260,7 +285,11 @@ const ENTRIES_MAX: usize = 500;
 const PROTOCOL_VERSIONS: [&str; 4] = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
 
 fn protocol_version(asked: Option<&str>) -> &'static str {
-    PROTOCOL_VERSIONS.iter().find(|v| Some(**v) == asked).copied().unwrap_or(PROTOCOL_VERSIONS[0])
+    PROTOCOL_VERSIONS
+        .iter()
+        .find(|v| Some(**v) == asked)
+        .copied()
+        .unwrap_or(PROTOCOL_VERSIONS[0])
 }
 
 fn call(app: &App, user: i64, name: &str, a: &Value) -> Result<Value, String> {
@@ -268,15 +297,34 @@ fn call(app: &App, user: i64, name: &str, a: &Value) -> Result<Value, String> {
     let t = now();
     match name {
         "log" => {
-            let text = a["text"].as_str().map(str::trim).filter(|s| !s.is_empty()).ok_or("text is required")?;
+            let text = a["text"]
+                .as_str()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .ok_or("text is required")?;
             let at = not_future(clock.parse(a["at"].as_str().unwrap_or(""), t)?, t)?;
             let fields = fields_arg(a)?;
             let by = attention_arg(a)?.unwrap_or(0);
-            let why = a["needs_attention_why"].as_str().map(str::trim).filter(|w| !w.is_empty()).map(str::to_string).filter(|_| by != 0);
+            let why = a["needs_attention_why"]
+                .as_str()
+                .map(str::trim)
+                .filter(|w| !w.is_empty())
+                .map(str::to_string)
+                .filter(|_| by != 0);
             if by != 0 && why.is_none() {
-                return Err("needs_attention_why is required with needs_attention_by: say what is missing".into());
+                return Err(
+                    "needs_attention_why is required with needs_attention_by: say what is missing"
+                        .into(),
+                );
             }
-            let n = NewEntry { at, duration_s: duration_arg(a)?.flatten(), text: text.into(), fields, attention_by: by, attention_why: why };
+            let n = NewEntry {
+                at,
+                duration_s: duration_arg(a)?.flatten(),
+                text: text.into(),
+                fields,
+                attention_by: by,
+                attention_why: why,
+            };
             app.db.run(|c| {
                 let names = en::user_names(c)?;
                 let groups = crate::registry::groups(&n.fields);
@@ -306,7 +354,10 @@ fn call(app: &App, user: i64, name: &str, a: &Value) -> Result<Value, String> {
                     e.duration_s = d;
                 }
                 if let Some(text) = a["text"].as_str() {
-                    e.text = Some(text.trim()).filter(|t| !t.is_empty()).ok_or("text cannot be empty")?.to_string();
+                    e.text = Some(text.trim())
+                        .filter(|t| !t.is_empty())
+                        .ok_or("text cannot be empty")?
+                        .to_string();
                 }
                 e.fields.extend(fields);
                 if let Some(rm) = a["remove"].as_array() {
@@ -316,9 +367,16 @@ fn call(app: &App, user: i64, name: &str, a: &Value) -> Result<Value, String> {
                 }
                 if let Some(by) = attention_arg(a)? {
                     e.attention_by = by;
-                    e.attention_why = if by == 0 { None } else {
-                        Some(a["needs_attention_why"].as_str().map(str::to_string)
-                            .or(e.attention_why.clone()).ok_or("needs_attention_why is required")?)
+                    e.attention_why = if by == 0 {
+                        None
+                    } else {
+                        Some(
+                            a["needs_attention_why"]
+                                .as_str()
+                                .map(str::to_string)
+                                .or(e.attention_why.clone())
+                                .ok_or("needs_attention_why is required")?,
+                        )
                     };
                 } else if let Some(why) = a["needs_attention_why"].as_str() {
                     e.attention_why = Some(why.into());
@@ -374,24 +432,43 @@ fn call(app: &App, user: i64, name: &str, a: &Value) -> Result<Value, String> {
                 Ok(json!({"entries": en::attention(c, mask)?.iter().map(|e| en::view(e, clock, &names)).collect::<Vec<_>>()}))
             })
         }
-        "status" => app.db.run(|c| crate::status::status_json(c, clock, &app.baby(), t)),
+        "status" => app
+            .db
+            .run(|c| crate::status::status_json(c, clock, &app.baby(), t)),
         "stats" => {
             let today = clock.day_start(t);
-            let from = match a["from"].as_str() { Some(d) => clock.date_start(d)?, None => clock.day_start(today - 6 * 86400 + 3600) };
-            let to = match a["to"].as_str() { Some(d) => clock.next_day_start(clock.date_start(d)?), None => t + 1 };
+            let from = match a["from"].as_str() {
+                Some(d) => clock.date_start(d)?,
+                None => clock.day_start(today - 6 * 86400 + 3600),
+            };
+            let to = match a["to"].as_str() {
+                Some(d) => clock.next_day_start(clock.date_start(d)?),
+                None => t + 1,
+            };
             if to - from > 400 * 86400 {
                 return Err("range too long; at most about a year".into());
             }
             let days = app.db.run(|c| en::stats(c, clock, &app.baby(), from, to))?;
             Ok(json!({"days": days}))
         }
-        "fields" => Ok(json!({"fields": FIELDS.iter().map(|f| f.describe()).collect::<Vec<_>>(),
-            "notes": "Absent = unknown/not stated; null = deliberately nothing. Booleans false and numbers 0 are ordinary values."})),
+        "fields" => Ok(
+            json!({"fields": FIELDS.iter().map(|f| f.describe()).collect::<Vec<_>>(),
+            "notes": "Absent = unknown/not stated; null = deliberately nothing. Booleans false and numbers 0 are ordinary values."}),
+        ),
         "sql" => run_sql(app, a["query"].as_str().unwrap_or("")),
         "suggest" => {
-            let text = a["text"].as_str().map(str::trim).filter(|s| !s.is_empty()).ok_or("text is required")?;
+            let text = a["text"]
+                .as_str()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .ok_or("text is required")?;
             app.db
-                .with(|c| c.execute("INSERT INTO suggestion (at, by, text) VALUES (?1, ?2, ?3)", rusqlite::params![t, user, text]))
+                .with(|c| {
+                    c.execute(
+                        "INSERT INTO suggestion (at, by, text) VALUES (?1, ?2, ?3)",
+                        rusqlite::params![t, user, text],
+                    )
+                })
                 .map_err(en::err)?;
             eprintln!("suggestion recorded");
             Ok(json!({"result": "Thanks, the suggestion was recorded for the developer."}))
@@ -425,21 +502,34 @@ fn run_sql(app: &App, q: &str) -> Result<Value, String> {
     // Only the log itself is readable: never passkeys, sessions, tokens or the
     // signing key, which live in the same database.
     c.authorizer(Some(|ctx: AuthContext<'_>| match ctx.action {
-        AuthAction::Read { table_name, column_name } => match table_name {
-            "entry" | "entry_old" | "suggestion" | "sqlite_master" | "sqlite_schema" => Authorization::Allow,
+        AuthAction::Read {
+            table_name,
+            column_name,
+        } => match table_name {
+            "entry" | "entry_old" | "suggestion" | "sqlite_master" | "sqlite_schema" => {
+                Authorization::Allow
+            }
             // Table-valued functions, to look inside the fields JSON.
             "json_each" | "json_tree" => Authorization::Allow,
             // An empty column name is a read of no column, as in count(*).
-            "user" if matches!(column_name, "id" | "name" | "display_name" | "") => Authorization::Allow,
+            "user" if matches!(column_name, "id" | "name" | "display_name" | "") => {
+                Authorization::Allow
+            }
             _ => Authorization::Deny,
         },
-        AuthAction::Select | AuthAction::Function { .. } | AuthAction::Recursive => Authorization::Allow,
-        AuthAction::Pragma { pragma_name: "table_info" | "table_xinfo" | "table_list", .. } => Authorization::Allow,
+        AuthAction::Select | AuthAction::Function { .. } | AuthAction::Recursive => {
+            Authorization::Allow
+        }
+        AuthAction::Pragma {
+            pragma_name: "table_info" | "table_xinfo" | "table_list",
+            ..
+        } => Authorization::Allow,
         _ => Authorization::Deny,
     }))
     .map_err(en::err)?;
     let deadline = Instant::now() + Duration::from_secs(5);
-    c.progress_handler(10_000, Some(move || Instant::now() > deadline)).map_err(en::err)?;
+    c.progress_handler(10_000, Some(move || Instant::now() > deadline))
+        .map_err(en::err)?;
     let mut st = c.prepare(q).map_err(|e| format!("sql: {e}"))?;
     if !st.readonly() {
         return Err("only read-only queries are allowed".into());
@@ -475,9 +565,21 @@ mod size_tests {
     #[test]
     fn instructions_and_tools_stay_small() {
         let tools = super::tools("Europe/Amsterdam").to_string();
-        println!("instructions {} bytes, tools {} bytes", super::INSTRUCTIONS.len(), tools.len());
-        assert!(super::INSTRUCTIONS.len() < 3000, "instructions grew to {} bytes", super::INSTRUCTIONS.len());
-        assert!(tools.len() < 9000, "tool definitions grew to {} bytes", tools.len());
+        println!(
+            "instructions {} bytes, tools {} bytes",
+            super::INSTRUCTIONS.len(),
+            tools.len()
+        );
+        assert!(
+            super::INSTRUCTIONS.len() < 3000,
+            "instructions grew to {} bytes",
+            super::INSTRUCTIONS.len()
+        );
+        assert!(
+            tools.len() < 9000,
+            "tool definitions grew to {} bytes",
+            tools.len()
+        );
         assert!(tools.contains("local is Europe/Amsterdam"));
     }
 }

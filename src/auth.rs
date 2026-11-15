@@ -50,7 +50,11 @@ pub fn sha256_hex(s: &str) -> String {
 
 /// A JSON error, OAuth-style: a code and what went wrong.
 pub(crate) fn json_err(status: StatusCode, code: &str, desc: &str) -> Response {
-    (status, Json(json!({"error": code, "error_description": desc}))).into_response()
+    (
+        status,
+        Json(json!({"error": code, "error_description": desc})),
+    )
+        .into_response()
 }
 
 pub(crate) fn cookie(headers: &HeaderMap, name: &str) -> Option<String> {
@@ -72,7 +76,10 @@ pub fn same_origin(app: &App, headers: &HeaderMap) -> bool {
 fn cors(mut r: Response) -> Response {
     let h = r.headers_mut();
     h.insert("access-control-allow-origin", HeaderValue::from_static("*"));
-    h.insert("access-control-allow-methods", HeaderValue::from_static("GET, POST, OPTIONS"));
+    h.insert(
+        "access-control-allow-methods",
+        HeaderValue::from_static("GET, POST, OPTIONS"),
+    );
     h.insert(
         "access-control-allow-headers",
         HeaderValue::from_static("authorization, content-type, mcp-protocol-version"),
@@ -102,12 +109,16 @@ pub fn cred_key(id: &CredentialID) -> String {
 pub fn fix_cred_ids(c: &rusqlite::Connection) -> rusqlite::Result<usize> {
     let rows: Vec<(i64, String)> = {
         let mut st = c.prepare("SELECT id, credential FROM passkey WHERE cred_id = ''")?;
-        st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<rusqlite::Result<_>>()?
+        st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<_>>()?
     };
     let mut n = 0;
     for (id, cred) in rows {
         if let Ok(pk) = serde_json::from_str::<Passkey>(&cred) {
-            n += c.execute("UPDATE passkey SET cred_id = ?1 WHERE id = ?2", params![cred_key(pk.cred_id()), id])?;
+            n += c.execute(
+                "UPDATE passkey SET cred_id = ?1 WHERE id = ?2",
+                params![cred_key(pk.cred_id()), id],
+            )?;
         }
     }
     Ok(n)
@@ -123,8 +134,16 @@ pub fn build_webauthn(origin: &str, host: &str) -> Result<Webauthn, String> {
 // ------------------------------------------------------------- in-memory state
 
 pub enum Ceremony {
-    Login { state: DiscoverableAuthentication, next: String },
-    Enroll { state: PasskeyRegistration, user_id: i64, token_hash: String, name: String },
+    Login {
+        state: DiscoverableAuthentication,
+        next: String,
+    },
+    Enroll {
+        state: PasskeyRegistration,
+        user_id: i64,
+        token_hash: String,
+        name: String,
+    },
 }
 
 pub struct PendingAuthz {
@@ -151,7 +170,8 @@ pub struct Mem {
 
 impl Mem {
     fn gc(&mut self) {
-        self.ceremonies.retain(|_, (t, _)| t.elapsed() < PENDING_TTL);
+        self.ceremonies
+            .retain(|_, (t, _)| t.elapsed() < PENDING_TTL);
         self.authz.retain(|_, (t, _)| t.elapsed() < PENDING_TTL);
         self.codes.retain(|_, (t, _)| t.elapsed() < CODE_TTL);
     }
@@ -204,22 +224,28 @@ fn session_cookie(tok: &str) -> String {
 /// Sliding sessions (middleware): a session in use is extended to
 /// SESSION_TTL from now, at most once a day, and the cookie with it; so the
 /// home-screen app doesn't ask for a login every month.
-pub async fn keep_session(State(app): State<Arc<App>>, req: axum::extract::Request, next: axum::middleware::Next) -> Response {
+pub async fn keep_session(
+    State(app): State<Arc<App>>,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
     let tok = cookie(req.headers(), SESSION_COOKIE);
     let mut resp = next.run(req).await;
     // A login or logout sets its own cookie.
     if let Some(tok) = tok.filter(|_| !resp.headers().contains_key(header::SET_COOKIE)) {
         let t = now();
-        let renewed = app.db.with(|c| {
-            c.execute(
+        let renewed =
+            app.db.with(|c| {
+                c.execute(
                 "UPDATE session SET expires = ?1 WHERE hash = ?2 AND expires > ?3 AND expires < ?4",
                 params![t + SESSION_TTL, sha256_hex(&tok), t, t + SESSION_TTL - SESSION_RENEW],
             )
-        });
+            });
         if renewed == Ok(1)
-            && let Ok(v) = HeaderValue::from_str(&session_cookie(&tok)) {
-                resp.headers_mut().append(header::SET_COOKIE, v);
-            }
+            && let Ok(v) = HeaderValue::from_str(&session_cookie(&tok))
+        {
+            resp.headers_mut().append(header::SET_COOKIE, v);
+        }
     }
     resp
 }
@@ -250,7 +276,9 @@ pub fn urldec(s: &str) -> String {
 pub fn urlenc(s: &str) -> String {
     s.bytes()
         .map(|b| match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => (b as char).to_string(),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                (b as char).to_string()
+            }
             _ => format!("%{b:02X}"),
         })
         .collect()
@@ -269,12 +297,16 @@ pub async fn logout(State(app): State<Arc<App>>, headers: HeaderMap) -> Response
         return html::error_page(StatusCode::FORBIDDEN, "Cross-site request refused.");
     }
     if let Some(tok) = cookie(&headers, SESSION_COOKIE) {
-        let _ = app.db.with(|c| c.execute("DELETE FROM session WHERE hash = ?1", [sha256_hex(&tok)]));
+        let _ = app
+            .db
+            .with(|c| c.execute("DELETE FROM session WHERE hash = ?1", [sha256_hex(&tok)]));
     }
     let mut r = Redirect::to("/login").into_response();
     r.headers_mut().insert(
         header::SET_COOKIE,
-        HeaderValue::from_static("baby_session=; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=0"),
+        HeaderValue::from_static(
+            "baby_session=; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=0",
+        ),
     );
     r
 }
@@ -302,12 +334,25 @@ pub struct LoginBegin {
     next: Option<String>,
 }
 
-pub async fn login_begin(State(app): State<Arc<App>>, headers: HeaderMap, Json(b): Json<LoginBegin>) -> Response {
+pub async fn login_begin(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Json(b): Json<LoginBegin>,
+) -> Response {
     if !same_origin(&app, &headers) {
         return json_err(StatusCode::FORBIDDEN, "forbidden", "cross-site request");
     }
-    match app.db.with(|c| c.query_row("SELECT count(*) FROM passkey", [], |r| r.get::<_, i64>(0))) {
-        Ok(0) => return json_err(StatusCode::BAD_REQUEST, "no_passkeys", "no passkeys enrolled yet; run `baby-mcp user add`"),
+    match app
+        .db
+        .with(|c| c.query_row("SELECT count(*) FROM passkey", [], |r| r.get::<_, i64>(0)))
+    {
+        Ok(0) => {
+            return json_err(
+                StatusCode::BAD_REQUEST,
+                "no_passkeys",
+                "no passkeys enrolled yet; run `baby-mcp user add`",
+            );
+        }
         Ok(_) => {}
         Err(e) => return json_err(StatusCode::INTERNAL_SERVER_ERROR, "server_error", &err(e)),
     }
@@ -318,11 +363,23 @@ pub async fn login_begin(State(app): State<Arc<App>>, headers: HeaderMap, Json(b
             let id = random_token(16);
             let mut m = app.mem();
             m.gc();
-            m.ceremonies
-                .insert(id.clone(), (Instant::now(), Ceremony::Login { state, next: safe_next(b.next.as_ref()) }));
+            m.ceremonies.insert(
+                id.clone(),
+                (
+                    Instant::now(),
+                    Ceremony::Login {
+                        state,
+                        next: safe_next(b.next.as_ref()),
+                    },
+                ),
+            );
             Json(json!({"id": id, "options": opts})).into_response()
         }
-        Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, "server_error", &e.to_string()),
+        Err(e) => json_err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "server_error",
+            &e.to_string(),
+        ),
     }
 }
 
@@ -332,13 +389,21 @@ pub struct Finish {
     credential: Value,
 }
 
-pub async fn login_finish(State(app): State<Arc<App>>, headers: HeaderMap, Json(b): Json<Finish>) -> Response {
+pub async fn login_finish(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Json(b): Json<Finish>,
+) -> Response {
     if !same_origin(&app, &headers) {
         return json_err(StatusCode::FORBIDDEN, "forbidden", "cross-site request");
     }
     let cer = app.mem().ceremonies.remove(&b.id);
     let Some((_, Ceremony::Login { state, next })) = cer else {
-        return json_err(StatusCode::BAD_REQUEST, "expired", "login expired; try again");
+        return json_err(
+            StatusCode::BAD_REQUEST,
+            "expired",
+            "login expired; try again",
+        );
     };
     let cred: PublicKeyCredential = match serde_json::from_value(b.credential) {
         Ok(c) => c,
@@ -353,7 +418,13 @@ pub async fn login_finish(State(app): State<Arc<App>>, headers: HeaderMap, Json(
         c.query_row(
             "SELECT id, user_id, credential FROM passkey WHERE cred_id = ?1",
             [&key],
-            |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, String>(2)?)),
+            |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, String>(2)?,
+                ))
+            },
         )
         .optional()
     });
@@ -361,16 +432,27 @@ pub async fn login_finish(State(app): State<Arc<App>>, headers: HeaderMap, Json(
         return json_err(StatusCode::FORBIDDEN, "denied", "unknown passkey");
     };
     let Ok(mut pk) = serde_json::from_str::<Passkey>(&raw) else {
-        return json_err(StatusCode::INTERNAL_SERVER_ERROR, "server_error", "stored passkey unreadable");
+        return json_err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "server_error",
+            "stored passkey unreadable",
+        );
     };
     if handle != user_uuid(user_id) {
         return json_err(StatusCode::FORBIDDEN, "denied", "passkey of another user");
     }
-    let res = match app.wa.finish_discoverable_authentication_v2(&cred, state, &pk) {
+    let res = match app
+        .wa
+        .finish_discoverable_authentication_v2(&cred, state, &pk)
+    {
         Ok(r) => r,
         Err(e) => {
             eprintln!("login: passkey verification failed: {e}");
-            return json_err(StatusCode::FORBIDDEN, "denied", "passkey verification failed");
+            return json_err(
+                StatusCode::FORBIDDEN,
+                "denied",
+                "passkey verification failed",
+            );
         }
     };
     {
@@ -378,7 +460,11 @@ pub async fn login_finish(State(app): State<Arc<App>>, headers: HeaderMap, Json(
         let _ = app.db.with(|c| {
             c.execute(
                 "UPDATE passkey SET credential = ?1, last_used = ?2 WHERE id = ?3",
-                params![serde_json::to_string(&pk).unwrap_or(raw.clone()), now(), pk_id],
+                params![
+                    serde_json::to_string(&pk).unwrap_or(raw.clone()),
+                    now(),
+                    pk_id
+                ],
             )
         });
     }
@@ -386,7 +472,8 @@ pub async fn login_finish(State(app): State<Arc<App>>, headers: HeaderMap, Json(
         Ok(set) => {
             eprintln!("login: user {user_id} with passkey {pk_id}");
             let mut r = Json(json!({"redirect": next})).into_response();
-            r.headers_mut().insert(header::SET_COOKIE, HeaderValue::from_str(&set).unwrap());
+            r.headers_mut()
+                .insert(header::SET_COOKIE, HeaderValue::from_str(&set).unwrap());
             r
         }
         Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, "server_error", &e),
@@ -421,7 +508,10 @@ fn enroll_user(app: &App, token: &str) -> Option<(i64, String)> {
         .flatten()
 }
 
-pub async fn enroll_page(State(app): State<Arc<App>>, Query(q): Query<HashMap<String, String>>) -> Response {
+pub async fn enroll_page(
+    State(app): State<Arc<App>>,
+    Query(q): Query<HashMap<String, String>>,
+) -> Response {
     let token = q.get("token").cloned().unwrap_or_default();
     let Some((_, display)) = enroll_user(&app, &token) else {
         return html::error_page(
@@ -451,16 +541,28 @@ pub struct EnrollBegin {
     name: String,
 }
 
-pub async fn enroll_begin(State(app): State<Arc<App>>, headers: HeaderMap, Json(b): Json<EnrollBegin>) -> Response {
+pub async fn enroll_begin(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Json(b): Json<EnrollBegin>,
+) -> Response {
     if !same_origin(&app, &headers) {
         return json_err(StatusCode::FORBIDDEN, "forbidden", "cross-site request");
     }
     let name = b.name.trim().to_string();
     if name.is_empty() || name.len() > 60 {
-        return json_err(StatusCode::BAD_REQUEST, "bad_name", "give the passkey a name of at most 60 characters");
+        return json_err(
+            StatusCode::BAD_REQUEST,
+            "bad_name",
+            "give the passkey a name of at most 60 characters",
+        );
     }
     let Some((user_id, display)) = enroll_user(&app, &b.token) else {
-        return json_err(StatusCode::FORBIDDEN, "expired", "enrollment link invalid or expired");
+        return json_err(
+            StatusCode::FORBIDDEN,
+            "expired",
+            "enrollment link invalid or expired",
+        );
     };
     let existing: Vec<CredentialID> = app
         .db
@@ -488,21 +590,50 @@ pub async fn enroll_begin(State(app): State<Arc<App>>, headers: HeaderMap, Json(
             m.gc();
             m.ceremonies.insert(
                 id.clone(),
-                (Instant::now(), Ceremony::Enroll { state, user_id, token_hash: sha256_hex(&b.token), name }),
+                (
+                    Instant::now(),
+                    Ceremony::Enroll {
+                        state,
+                        user_id,
+                        token_hash: sha256_hex(&b.token),
+                        name,
+                    },
+                ),
             );
             Json(json!({"id": id, "options": opts})).into_response()
         }
-        Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, "server_error", &e.to_string()),
+        Err(e) => json_err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "server_error",
+            &e.to_string(),
+        ),
     }
 }
 
-pub async fn enroll_finish(State(app): State<Arc<App>>, headers: HeaderMap, Json(b): Json<Finish>) -> Response {
+pub async fn enroll_finish(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Json(b): Json<Finish>,
+) -> Response {
     if !same_origin(&app, &headers) {
         return json_err(StatusCode::FORBIDDEN, "forbidden", "cross-site request");
     }
     let cer = app.mem().ceremonies.remove(&b.id);
-    let Some((_, Ceremony::Enroll { state, user_id, token_hash, name })) = cer else {
-        return json_err(StatusCode::BAD_REQUEST, "expired", "enrollment expired; reload the page");
+    let Some((
+        _,
+        Ceremony::Enroll {
+            state,
+            user_id,
+            token_hash,
+            name,
+        },
+    )) = cer
+    else {
+        return json_err(
+            StatusCode::BAD_REQUEST,
+            "expired",
+            "enrollment expired; reload the page",
+        );
     };
     let cred: RegisterPublicKeyCredential = match serde_json::from_value(b.credential) {
         Ok(c) => c,
@@ -510,7 +641,13 @@ pub async fn enroll_finish(State(app): State<Arc<App>>, headers: HeaderMap, Json
     };
     let pk = match app.wa.finish_passkey_registration(&cred, &state) {
         Ok(p) => p,
-        Err(e) => return json_err(StatusCode::BAD_REQUEST, "denied", &format!("passkey verification failed: {e}")),
+        Err(e) => {
+            return json_err(
+                StatusCode::BAD_REQUEST,
+                "denied",
+                &format!("passkey verification failed: {e}"),
+            );
+        }
     };
     let stored = app.db.with(|c| {
         let tx = c.transaction()?;
@@ -529,14 +666,21 @@ pub async fn enroll_finish(State(app): State<Arc<App>>, headers: HeaderMap, Json
     });
     match stored {
         Ok(true) => {}
-        Ok(false) => return json_err(StatusCode::FORBIDDEN, "expired", "enrollment link was already used or expired"),
+        Ok(false) => {
+            return json_err(
+                StatusCode::FORBIDDEN,
+                "expired",
+                "enrollment link was already used or expired",
+            );
+        }
         Err(e) => return json_err(StatusCode::INTERNAL_SERVER_ERROR, "server_error", &err(e)),
     }
     eprintln!("enroll: passkey for user {user_id}");
     match new_session(&app, user_id) {
         Ok(set) => {
             let mut r = Json(json!({"redirect": "/"})).into_response();
-            r.headers_mut().insert(header::SET_COOKIE, HeaderValue::from_str(&set).unwrap());
+            r.headers_mut()
+                .insert(header::SET_COOKIE, HeaderValue::from_str(&set).unwrap());
             r
         }
         Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, "server_error", &e),
@@ -589,7 +733,11 @@ fn redirect_allowed(app: &App, raw: &str) -> bool {
     let host = u.host_str().unwrap_or("").to_ascii_lowercase();
     match u.scheme() {
         "http" => matches!(host.as_str(), "localhost" | "127.0.0.1" | "[::1]"),
-        "https" => app.cfg.oauth_redirect_hosts.iter().any(|h| h.eq_ignore_ascii_case(&host)),
+        "https" => app
+            .cfg
+            .oauth_redirect_hosts
+            .iter()
+            .any(|h| h.eq_ignore_ascii_case(&host)),
         _ => false,
     }
 }
@@ -604,24 +752,52 @@ pub struct RegisterReq {
 
 pub async fn register(State(app): State<Arc<App>>, body: axum::body::Bytes) -> Response {
     let Ok(req) = serde_json::from_slice::<RegisterReq>(&body) else {
-        return cors(json_err(StatusCode::BAD_REQUEST, "invalid_client_metadata", "body must be JSON"));
+        return cors(json_err(
+            StatusCode::BAD_REQUEST,
+            "invalid_client_metadata",
+            "body must be JSON",
+        ));
     };
     if req.redirect_uris.is_empty() || req.redirect_uris.len() > 10 {
-        return cors(json_err(StatusCode::BAD_REQUEST, "invalid_redirect_uri", "give 1 to 10 redirect_uris"));
+        return cors(json_err(
+            StatusCode::BAD_REQUEST,
+            "invalid_redirect_uri",
+            "give 1 to 10 redirect_uris",
+        ));
     }
-    if let Some(bad) = req.redirect_uris.iter().find(|u| !redirect_allowed(&app, u)) {
+    if let Some(bad) = req
+        .redirect_uris
+        .iter()
+        .find(|u| !redirect_allowed(&app, u))
+    {
         return cors(json_err(
             StatusCode::BAD_REQUEST,
             "invalid_redirect_uri",
             &format!("redirect URI {bad:?} is not allowed by this server"),
         ));
     }
-    let method = req.token_endpoint_auth_method.unwrap_or_else(|| "none".into());
+    let method = req
+        .token_endpoint_auth_method
+        .unwrap_or_else(|| "none".into());
     if !["none", "client_secret_post", "client_secret_basic"].contains(&method.as_str()) {
-        return cors(json_err(StatusCode::BAD_REQUEST, "invalid_client_metadata", "unsupported token_endpoint_auth_method"));
+        return cors(json_err(
+            StatusCode::BAD_REQUEST,
+            "invalid_client_metadata",
+            "unsupported token_endpoint_auth_method",
+        ));
     }
-    let name: String = req.client_name.unwrap_or_default().trim().chars().take(100).collect();
-    let name = if name.is_empty() { "unnamed client".to_string() } else { name };
+    let name: String = req
+        .client_name
+        .unwrap_or_default()
+        .trim()
+        .chars()
+        .take(100)
+        .collect();
+    let name = if name.is_empty() {
+        "unnamed client".to_string()
+    } else {
+        name
+    };
     let id = format!("bmc_{}", random_token(16));
     let secret = (method != "none").then(|| random_token(32));
     let t = now();
@@ -641,7 +817,11 @@ pub async fn register(State(app): State<Arc<App>>, body: axum::body::Bytes) -> R
         )
     });
     if let Err(e) = res {
-        return cors(json_err(StatusCode::INTERNAL_SERVER_ERROR, "server_error", &err(e)));
+        return cors(json_err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "server_error",
+            &err(e),
+        ));
     }
     eprintln!("oauth: registered client {id} ({name})");
     let mut out = json!({
@@ -709,7 +889,10 @@ pub async fn authorize(
     let client = match app.db.with(|c| load_client(c, get("client_id"))) {
         Ok(Some(c)) => c,
         Ok(None) => {
-            return html::error_page(StatusCode::BAD_REQUEST, "Unknown client. Remove the connector and add it again.");
+            return html::error_page(
+                StatusCode::BAD_REQUEST,
+                "Unknown client. Remove the connector and add it again.",
+            );
         }
         Err(e) => return html::error_page(StatusCode::INTERNAL_SERVER_ERROR, &err(e)),
     };
@@ -718,21 +901,35 @@ pub async fn authorize(
         redirect = client.redirect_uris[0].clone();
     }
     if !client.redirect_uris.contains(&redirect) {
-        return html::error_page(StatusCode::BAD_REQUEST, "The redirect URI does not match the one this client registered.");
+        return html::error_page(
+            StatusCode::BAD_REQUEST,
+            "The redirect URI does not match the one this client registered.",
+        );
     }
     let iss = app.cfg.origin().to_string();
     let fail = |code: &str, desc: &str| {
         Redirect::to(&with_params(
             &redirect,
-            &[("error", code), ("error_description", desc), ("state", get("state")), ("iss", &iss)],
+            &[
+                ("error", code),
+                ("error_description", desc),
+                ("state", get("state")),
+                ("iss", &iss),
+            ],
         ))
         .into_response()
     };
     if get("response_type") != "code" {
-        return fail("unsupported_response_type", "only response_type=code is supported");
+        return fail(
+            "unsupported_response_type",
+            "only response_type=code is supported",
+        );
     }
     if get("code_challenge").is_empty() || get("code_challenge_method") != "S256" {
-        return fail("invalid_request", "PKCE with code_challenge_method=S256 is required");
+        return fail(
+            "invalid_request",
+            "PKCE with code_challenge_method=S256 is required",
+        );
     }
     let res = get("resource").trim_end_matches('/');
     if !res.is_empty() && res != resource(&app) {
@@ -742,7 +939,10 @@ pub async fn authorize(
         return to_login(&uri.to_string());
     };
     if user.viewer {
-        return html::error_page(StatusCode::FORBIDDEN, "This account can only view the charts.");
+        return html::error_page(
+            StatusCode::FORBIDDEN,
+            "This account can only view the charts.",
+        );
     }
     let rid = random_token(16);
     {
@@ -762,7 +962,10 @@ pub async fn authorize(
             ),
         );
     }
-    let host = Url::parse(&redirect).ok().and_then(|u| u.host_str().map(str::to_string)).unwrap_or_default();
+    let host = Url::parse(&redirect)
+        .ok()
+        .and_then(|u| u.host_str().map(str::to_string))
+        .unwrap_or_default();
     html::render(Page {
         title: "Allow access? · baby-mcp",
         body: format!(
@@ -789,7 +992,11 @@ pub struct Decide {
     decision: String,
 }
 
-pub async fn authorize_decide(State(app): State<Arc<App>>, headers: HeaderMap, Form(f): Form<Decide>) -> Response {
+pub async fn authorize_decide(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Form(f): Form<Decide>,
+) -> Response {
     if !same_origin(&app, &headers) {
         return html::error_page(StatusCode::FORBIDDEN, "Cross-site request refused.");
     }
@@ -797,13 +1004,20 @@ pub async fn authorize_decide(State(app): State<Arc<App>>, headers: HeaderMap, F
         return html::error_page(StatusCode::FORBIDDEN, "Not logged in (as a parent).");
     };
     let Some((_, p)) = app.mem().authz.remove(&f.rid) else {
-        return html::error_page(StatusCode::BAD_REQUEST, "This request expired; start again from Claude.");
+        return html::error_page(
+            StatusCode::BAD_REQUEST,
+            "This request expired; start again from Claude.",
+        );
     };
     let iss = app.cfg.origin().to_string();
     if f.decision != "allow" {
         return Redirect::to(&with_params(
             &p.redirect_uri,
-            &[("error", "access_denied"), ("state", &p.state), ("iss", &iss)],
+            &[
+                ("error", "access_denied"),
+                ("state", &p.state),
+                ("iss", &iss),
+            ],
         ))
         .into_response();
     }
@@ -812,23 +1026,45 @@ pub async fn authorize_decide(State(app): State<Arc<App>>, headers: HeaderMap, F
         code.clone(),
         (
             Instant::now(),
-            Code { client_id: p.client_id.clone(), redirect_uri: p.redirect_uri.clone(), challenge: p.challenge, user_id: user.id },
+            Code {
+                client_id: p.client_id.clone(),
+                redirect_uri: p.redirect_uri.clone(),
+                challenge: p.challenge,
+                user_id: user.id,
+            },
         ),
     );
-    eprintln!("oauth: user {} approved client {} ({})", user.id, p.client_id, p.client_name);
-    Redirect::to(&with_params(&p.redirect_uri, &[("code", &code), ("state", &p.state), ("iss", &iss)])).into_response()
+    eprintln!(
+        "oauth: user {} approved client {} ({})",
+        user.id, p.client_id, p.client_name
+    );
+    Redirect::to(&with_params(
+        &p.redirect_uri,
+        &[("code", &code), ("state", &p.state), ("iss", &iss)],
+    ))
+    .into_response()
 }
 
 // ------------------------------------------------------------- OAuth: token
 
 fn signing_key(c: &Connection) -> rusqlite::Result<Vec<u8>> {
-    if let Some(k) = c.query_row("SELECT value FROM kv WHERE key = 'signing_key'", [], |r| r.get(0)).optional()? {
+    if let Some(k) = c
+        .query_row("SELECT value FROM kv WHERE key = 'signing_key'", [], |r| {
+            r.get(0)
+        })
+        .optional()?
+    {
         return Ok(k);
     }
     let mut k = vec![0u8; 32];
     rand::fill(&mut k[..]);
-    c.execute("INSERT OR IGNORE INTO kv (key, value) VALUES ('signing_key', ?1)", [&k])?;
-    c.query_row("SELECT value FROM kv WHERE key = 'signing_key'", [], |r| r.get(0))
+    c.execute(
+        "INSERT OR IGNORE INTO kv (key, value) VALUES ('signing_key', ?1)",
+        [&k],
+    )?;
+    c.query_row("SELECT value FROM kv WHERE key = 'signing_key'", [], |r| {
+        r.get(0)
+    })
 }
 
 pub fn rotate_signing_key(c: &Connection) -> rusqlite::Result<()> {
@@ -844,7 +1080,8 @@ fn mac(key: &[u8], msg: &str) -> String {
 
 fn issue_access(key: &[u8], aud: &str, user_id: i64, client_id: &str) -> String {
     let t = now();
-    let payload = json!({"aud": aud, "uid": user_id, "cid": client_id, "iat": t, "exp": t + ACCESS_TTL});
+    let payload =
+        json!({"aud": aud, "uid": user_id, "cid": client_id, "iat": t, "exp": t + ACCESS_TTL});
     let msg = format!("bm1.{}", B64.encode(payload.to_string()));
     let sig = mac(key, &msg);
     format!("{msg}.{sig}")
@@ -854,7 +1091,10 @@ fn issue_access(key: &[u8], aud: &str, user_id: i64, client_id: &str) -> String 
 pub fn verify_access(app: &App, tok: &str) -> Result<i64, &'static str> {
     let (msg, sig) = tok.rsplit_once('.').ok_or("malformed token")?;
     let payload = msg.strip_prefix("bm1.").ok_or("malformed token")?;
-    let key = app.db.with(|c| signing_key(c)).map_err(|_| "server error")?;
+    let key = app
+        .db
+        .with(|c| signing_key(c))
+        .map_err(|_| "server error")?;
     let expect = mac(&key, msg);
     if expect.len() != sig.len() || !subtle_eq(expect.as_bytes(), sig.as_bytes()) {
         return Err("bad signature");
@@ -878,19 +1118,33 @@ fn subtle_eq(a: &[u8], b: &[u8]) -> bool {
 }
 
 fn pkce_ok(verifier: &str, challenge: &str) -> bool {
-    (43..=128).contains(&verifier.len()) && subtle_eq(B64.encode(Sha256::digest(verifier.as_bytes())).as_bytes(), challenge.as_bytes())
+    (43..=128).contains(&verifier.len())
+        && subtle_eq(
+            B64.encode(Sha256::digest(verifier.as_bytes())).as_bytes(),
+            challenge.as_bytes(),
+        )
 }
 
-pub async fn token(State(app): State<Arc<App>>, headers: HeaderMap, Form(f): Form<HashMap<String, String>>) -> Response {
+pub async fn token(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Form(f): Form<HashMap<String, String>>,
+) -> Response {
     let get = |k: &str| f.get(k).map(String::as_str).unwrap_or("");
-    let (mut cid, mut secret) = (get("client_id").to_string(), get("client_secret").to_string());
+    let (mut cid, mut secret) = (
+        get("client_id").to_string(),
+        get("client_secret").to_string(),
+    );
     if let Some((u, p)) = headers
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Basic "))
         .and_then(|b| base64::engine::general_purpose::STANDARD.decode(b).ok())
         .and_then(|b| String::from_utf8(b).ok())
-        .and_then(|s| s.split_once(':').map(|(a, b)| (a.to_string(), b.to_string())))
+        .and_then(|s| {
+            s.split_once(':')
+                .map(|(a, b)| (a.to_string(), b.to_string()))
+        })
     {
         // Both form-urlencoded (RFC 6749 §2.3.1).
         (cid, secret) = (urldec(&u), urldec(&p));
@@ -967,7 +1221,8 @@ pub async fn token(State(app): State<Arc<App>>, headers: HeaderMap, Form(f): For
         Ok(Err((s, code, desc))) => json_err(s, code, &desc),
         Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, "server_error", &err(e)),
     };
-    resp.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    resp.headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     cors(resp)
 }
 
@@ -980,8 +1235,19 @@ pub fn unauthorized(app: &App, why: &str, invalid: bool) -> Response {
     if invalid {
         chal.push_str(r#", error="invalid_token""#);
     }
-    let mut r = json_err(StatusCode::UNAUTHORIZED, if invalid { "invalid_token" } else { "unauthorized" }, why);
-    r.headers_mut().insert(header::WWW_AUTHENTICATE, HeaderValue::from_str(&chal).unwrap());
+    let mut r = json_err(
+        StatusCode::UNAUTHORIZED,
+        if invalid {
+            "invalid_token"
+        } else {
+            "unauthorized"
+        },
+        why,
+    );
+    r.headers_mut().insert(
+        header::WWW_AUTHENTICATE,
+        HeaderValue::from_str(&chal).unwrap(),
+    );
     cors(r)
 }
 
@@ -997,9 +1263,22 @@ pub fn bearer_user(app: &App, headers: &HeaderMap) -> Result<i64, Response> {
         Some(t) => {
             let uid = verify_access(app, t).map_err(|e| unauthorized(app, e, true))?;
             // A viewer (only the charts) has no MCP access, even with an older token.
-            let viewer = app.db.with(|c| c.query_row("SELECT role = 'viewer' FROM user WHERE id = ?1", [uid], |r| r.get::<_, bool>(0))).unwrap_or(true);
+            let viewer = app
+                .db
+                .with(|c| {
+                    c.query_row(
+                        "SELECT role = 'viewer' FROM user WHERE id = ?1",
+                        [uid],
+                        |r| r.get::<_, bool>(0),
+                    )
+                })
+                .unwrap_or(true);
             if viewer {
-                return Err(unauthorized(app, "this account can only view the charts", true));
+                return Err(unauthorized(
+                    app,
+                    "this account can only view the charts",
+                    true,
+                ));
             }
             Ok(uid)
         }
