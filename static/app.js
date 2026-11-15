@@ -366,9 +366,23 @@ if ($('push')) {
     });
   }
 
-  // A tap on another day in the timeline goes there too (a swipe gives no click).
+  // A tap on another day in the timeline goes there too (a swipe gives no
+  // click); a second tap soon after on the same spot zooms in one level on
+  // that day or week.
+  let lastTap = null;
   tl.addEventListener('click', (e) => {
     const key = unit(dayAt(tAt(tl.scrollLeft + e.clientX - tl.getBoundingClientRect().left)).date);
+    // The second tap of a double tap: on the first one's day or week (the
+    // first tap set the strip gliding there, so another may be under it now).
+    const first = lastTap && e.timeStamp - lastTap.t < 350 && Math.abs(e.clientX - lastTap.x) < 30 ? lastTap.key : null;
+    lastTap = first ? null : {t: e.timeStamp, x: e.clientX, key};
+    if (first && z > 0) {
+      const s = span(first);
+      if (!s) return;
+      touched = true;
+      zoomTo(z - 1, {sx: AT * W(), t: s.now ? NOW : (s.start + s.end) / 2});
+      return;
+    }
     if (key !== shown || z !== shownZ) goTo(key, true);
   });
 
