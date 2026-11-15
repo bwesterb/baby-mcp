@@ -1,0 +1,39 @@
+# Started (workflow_dispatch) by a deploy script on the server when deploying
+# fails, so that GitHub notifies: a status or issue made with your own token
+# doesn't. It shows what failed and the last log lines, then fails on purpose.
+name: Deploy failed
+run-name: "Deploy failed: ${{ inputs.what }}"
+on:
+  workflow_dispatch:
+    inputs:
+      commit:
+        description: The commit being deployed
+        required: true
+      what:
+        description: What failed
+        required: true
+      log:
+        description: The last lines of the log
+        required: false
+permissions: {}
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    steps:
+      - name: What failed
+        # Inputs only through the environment: never expanded into the script.
+        env:
+          COMMIT: ${{ inputs.commit }}
+          WHAT: ${{ inputs.what }}
+          LOG: ${{ inputs.log }}
+        run: |
+          {
+            echo "## Deploy failed"
+            echo "**$WHAT** (commit \`$COMMIT\`)"
+            echo '```'
+            printf '%s\n' "$LOG"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          printf '%s\n' "$LOG"
+          echo "::error title=Deploy failed::$WHAT"
+          exit 1
