@@ -894,7 +894,7 @@ pub async fn status(State(app): State<Arc<App>>, headers: HeaderMap, Query(q): Q
     let shown = if week { week_of(clock, &tr, day.unwrap_or(today_start)).1 } else { day.unwrap_or(today_start) };
     body += &format!(r#"<div class="now-only"{}>{}</div>"#, if day.is_some() || week { " hidden" } else { "" }, whats_next(&head, tiles));
     body += &format!(r#"<div id="daylog" data-day="{}">{log}</div>"#, clock.day(shown));
-    html::render(Page { title: "Status · baby-mcp", body, nav: Some(&user.display_name), live: Some((300, app.version.load(std::sync::atomic::Ordering::Relaxed))), viewer: false, footer_extra: String::new() })
+    html::render(Page { title: "Status · baby-mcp", body, nav: Some(&user.display_name), live: Some((60, app.version.load(std::sync::atomic::Ordering::Relaxed))), viewer: false, footer_extra: String::new() })
 }
 
 /// The start of the day `n` days after the day of `t`.
@@ -1573,7 +1573,7 @@ pub async fn charts(
             if preview { " selected" } else { "" }
         );
     }
-    html::render(Page { title: "Charts · baby-mcp", body, nav: Some(&user.display_name), live: Some((0, app.version.load(std::sync::atomic::Ordering::Relaxed))), viewer: user.viewer, footer_extra: view_as })
+    html::render(Page { title: "Charts · baby-mcp", body, nav: Some(&user.display_name), live: Some((60, app.version.load(std::sync::atomic::Ordering::Relaxed))), viewer: user.viewer, footer_extra: view_as })
 }
 
 // ------------------------------------------------------------- capture

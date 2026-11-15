@@ -621,5 +621,5 @@ async fn live_events() {
     assert_eq!(next().await, format!("event: changed\ndata: {}\n\n", v + 1));
     // The status page says which version it shows.
     let page = send(&t, get("/").header(header::COOKIE, &t.cookie).body(Body::empty()).unwrap()).await;
-    assert!(page.body.contains(&format!(r#"<body data-live="300" data-version="{}">"#, v + 1)), "{}", &page.body[..300]);
+    assert!(page.body.contains(&format!(r#"<body data-live="60" data-version="{}">"#, v + 1)), "{}", &page.body[..300]);
 }

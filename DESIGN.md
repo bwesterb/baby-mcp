@@ -263,8 +263,8 @@ Passkey session required. English labels. *(v1)*
   a burst, not while being touched, scrolled or typed in; the page knows the
   log's version it shows, so changes missed in the background count when it
   reconnects. It also reloads when coming back after more than a minute,
-  and every 5 minutes for the times that move with the clock (charts: only
-  on changes). A *viewer* sees only the charts.
+  and every minute for the times that move with the clock. A *viewer* sees
+  only the charts.
 - **Charts** (`/charts`): weight change since birth and the WHO growth chart
   (see Growth), ml per day by kind (pumped breast milk, formula), minutes at the breast per day (left and right), a per-kg chart (see
   Feeding guidance), feeds and
