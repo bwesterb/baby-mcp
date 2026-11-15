@@ -515,6 +515,8 @@ if ($('push')) {
     touched = true;
     const done = await zoomTo(nz, {sx: p.sx, t: p.t}, true);
     p.busy = false;
+    // Let go while it loaded: settle on the new level, nothing stretched.
+    if (p.ended) { unstretch(); return; }
     if (!done) return;
     p.k *= PXH[from] / PXH[nz];
     p.at = p.raw;
@@ -527,7 +529,7 @@ if ($('push')) {
     void hint.offsetWidth; // restart the animation
     hint.classList.add('pop');
   }
-  const unstretch = () => { svg.style.transform = ''; hint.classList.remove('on', 'go'); };
+  const unstretch = () => { svg.style.transform = ''; hint.classList.remove('on', 'go', 'pop'); };
   function level(s) {
     const want = PXH[z] * s;
     let best = z;
@@ -539,6 +541,7 @@ if ($('push')) {
   // Letting go: after a switch during the pinch, settle on that level;
   // a short pinch (no switch yet) still switches past 1.25 / 0.8.
   function commit(p) {
+    p.ended = true;
     const nz = p.switched ? z : level(p.s);
     hint.classList.remove('on', 'go', 'pop');
     if (nz === z || p.busy) { unstretch(); return; }
