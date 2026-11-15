@@ -141,20 +141,34 @@ if ($('push')) {
   el.textContent = '↓';
   document.body.prepend(el);
   const ready = 70;
-  let start = null, dist = 0;
+  let start = null, startX = 0, dist = 0, decided = false;
   const show = (d) => {
     el.style.transform = `translateY(${Math.min(d, 110) - 44}px)`;
     el.style.opacity = String(Math.min(1, d / ready));
     el.textContent = d >= ready ? '↻' : '↓';
   };
   addEventListener('touchstart', (e) => {
-    start = window.scrollY <= 0 && e.touches.length === 1 ? e.touches[0].clientY : null;
+    // Not on the timeline (it scrolls sideways; a drag there may dip down).
+    const onStrip = e.target instanceof Element && e.target.closest('.tl-scroll');
+    start = window.scrollY <= 0 && e.touches.length === 1 && !onStrip ? e.touches[0].clientY : null;
+    startX = e.touches[0].clientX;
     dist = 0;
+    decided = false;
   }, {passive: true});
   addEventListener('touchmove', (e) => {
     if (start === null) return;
+    const dx = e.touches[0].clientX - startX;
     dist = e.touches[0].clientY - start;
-    if (dist > 0) show(dist);
+    // Decide once it has moved a little: mostly sideways is no pull.
+    if (!decided && Math.hypot(dx, dist) > 10) {
+      decided = true;
+      if (Math.abs(dx) > Math.abs(dist)) {
+        start = null;
+        dist = 0;
+        return;
+      }
+    }
+    if (decided && dist > 0) show(dist);
   }, {passive: true});
   addEventListener('touchend', () => {
     if (start !== null && dist >= ready) {
