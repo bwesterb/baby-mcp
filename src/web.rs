@@ -512,6 +512,31 @@ fn tl_day(clock: &crate::time::Clock, tr: &Track, entries: &[en::Entry], s: Opti
     svg + "</svg>"
 }
 
+/// Server-sent events for open pages: "hello" with the log's version on
+/// connecting (a page that missed changes while away sees a different
+/// one), then "changed" on every change; comments keep it open.
+pub async fn events(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
+    use axum::response::sse::{Event, KeepAlive, Sse};
+    use futures_util::stream::{self, StreamExt};
+    use tokio::sync::broadcast::error::RecvError;
+    if session_user(&app, &headers).is_none() {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let now = app.version.load(std::sync::atomic::Ordering::Relaxed);
+    let hello = stream::once(async move { Ok::<_, std::convert::Infallible>(Event::default().event("hello").data(now.to_string())) });
+    let changes = stream::unfold((app.changes.subscribe(), app.clone()), |(mut rx, app)| async move {
+        let v = match rx.recv().await {
+            Ok(v) => v,
+            Err(RecvError::Lagged(_)) => app.version.load(std::sync::atomic::Ordering::Relaxed),
+            Err(RecvError::Closed) => return None,
+        };
+        Some((Ok(Event::default().event("changed").data(v.to_string())), (rx, app)))
+    });
+    let mut r = Sse::new(hello.chain(changes)).keep_alive(KeepAlive::default()).into_response();
+    r.headers_mut().insert(axum::http::header::CACHE_CONTROL, axum::http::HeaderValue::from_static("no-store"));
+    r
+}
+
 /// One day of the timeline (`?date=…&z=…`), for the script to place.
 pub async fn timeline_day(State(app): State<Arc<App>>, headers: HeaderMap, Query(q): Query<HashMap<String, String>>) -> Response {
     if let Err(r) = require(&app, &headers, "/") {
@@ -869,7 +894,7 @@ pub async fn status(State(app): State<Arc<App>>, headers: HeaderMap, Query(q): Q
     let shown = if week { week_of(clock, &tr, day.unwrap_or(today_start)).1 } else { day.unwrap_or(today_start) };
     body += &format!(r#"<div class="now-only"{}>{}</div>"#, if day.is_some() || week { " hidden" } else { "" }, whats_next(&head, tiles));
     body += &format!(r#"<div id="daylog" data-day="{}">{log}</div>"#, clock.day(shown));
-    html::render(Page { title: "Status · baby-mcp", body, nav: Some(&user.display_name), refresh: Some(60), viewer: false, footer_extra: String::new() })
+    html::render(Page { title: "Status · baby-mcp", body, nav: Some(&user.display_name), live: Some((300, app.version.load(std::sync::atomic::Ordering::Relaxed))), viewer: false, footer_extra: String::new() })
 }
 
 /// The start of the day `n` days after the day of `t`.
@@ -1548,7 +1573,7 @@ pub async fn charts(
             if preview { " selected" } else { "" }
         );
     }
-    html::render(Page { title: "Charts · baby-mcp", body, nav: Some(&user.display_name), refresh: Some(60), viewer: user.viewer, footer_extra: view_as })
+    html::render(Page { title: "Charts · baby-mcp", body, nav: Some(&user.display_name), live: Some((0, app.version.load(std::sync::atomic::Ordering::Relaxed))), viewer: user.viewer, footer_extra: view_as })
 }
 
 // ------------------------------------------------------------- capture
@@ -1564,7 +1589,7 @@ pub async fn add_page(State(app): State<Arc<App>>, headers: HeaderMap) -> Respon
 <div class="row"><button class="primary">Save</button></div>
 </form>
 <p class="mut">Saved as you write it. Claude fills in the details later, including the time if you mention one; otherwise it is logged as now.</p></div>"#.to_string();
-    html::render(Page { title: "Add · baby-mcp", body, nav: Some(&user.display_name), refresh: None, viewer: false, footer_extra: String::new() })
+    html::render(Page { title: "Add · baby-mcp", body, nav: Some(&user.display_name), live: None, viewer: false, footer_extra: String::new() })
 }
 
 #[derive(Deserialize)]
@@ -1920,7 +1945,7 @@ pub async fn entry_page(State(app): State<Arc<App>>, headers: HeaderMap, axum::e
         );
     }
     body += "</table></div>";
-    html::render(Page { title: &format!("Entry {id} · baby-mcp"), body, viewer: false, footer_extra: String::new(), nav: Some(&user.display_name), refresh: None })
+    html::render(Page { title: &format!("Entry {id} · baby-mcp"), body, viewer: false, footer_extra: String::new(), nav: Some(&user.display_name), live: None })
 }
 
 pub async fn not_found() -> Response {

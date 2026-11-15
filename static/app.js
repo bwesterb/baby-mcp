@@ -23,7 +23,7 @@ if ('setAppBadge' in navigator || 'serviceWorker' in navigator) {
       const reg = 'serviceWorker' in navigator && await navigator.serviceWorker.getRegistration();
       if (reg && reg.getNotifications && Array.isArray(j.groups)) {
         // Not one that just arrived (with the app open it isn't shown as a
-        // banner, and the page reloads every minute).
+        // banner, and the page reloads on changes and every 5 minutes).
         const fresh = (n) => n.data && n.data.at > Date.now() - 60 * 1000;
         for (const n of await reg.getNotifications()) {
           if (!fresh(n) && !j.groups.includes((n.data && n.data.group) || n.tag)) n.close();
@@ -273,7 +273,7 @@ if ($('push')) {
     const last = z === WZ ? days[Math.min(days.length - 1, i + 6)] : days[i];
     return {i, start: days[i].start, end: last.end, now: NOW >= days[i].start && NOW < last.end};
   }
-  // Logs fetched, kept briefly (the page reloads every minute anyway).
+  // Logs fetched, kept until the page reloads (on any change to the log).
   const logs = new Map();
   const getLog = (key, zz) => {
     const k = zz + ':' + key;
@@ -543,3 +543,36 @@ if ($('push')) {
 if ($('viewas')) {
   $('viewas').onchange = (e) => { location.href = e.target.value === 'viewer' ? '/charts?as=viewer' : '/charts'; };
 }
+
+// Live pages (data-live): reload when the log changes (server-sent events),
+// when coming back after a while, and every data-live seconds (if not 0)
+// for the times that move with the clock. Changes in quick succession give
+// one reload, a second after the last; never while touching, scrolling or
+// typing. The page knows the log's version it was made from: on (re)connect
+// the server says the current one, so changes missed meanwhile still count.
+(() => {
+  const b = document.body;
+  if (!b.dataset.live || !('EventSource' in window)) return;
+  const every = Number(b.dataset.live) * 1000;
+  const mine = b.dataset.version;
+  let busyUntil = 0, wanted = false, timer = null, hiddenAt = null;
+  for (const ev of ['pointerdown', 'touchstart', 'wheel', 'keydown', 'scroll']) {
+    addEventListener(ev, () => { busyUntil = Date.now() + 2000; }, {passive: true, capture: true});
+  }
+  const typing = () => { const a = document.activeElement; return !!a && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName); };
+  function reload() {
+    clearTimeout(timer);
+    if (document.hidden) { wanted = true; return; }
+    if (Date.now() < busyUntil || typing()) { timer = setTimeout(reload, 1000); return; }
+    location.reload();
+  }
+  function soon() { wanted = true; clearTimeout(timer); timer = setTimeout(reload, 1000); }
+  const es = new EventSource('/events');
+  es.addEventListener('hello', (e) => { if (e.data !== mine) soon(); });
+  es.addEventListener('changed', soon);
+  if (every > 0) setInterval(() => { if (!document.hidden) reload(); }, every);
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) { hiddenAt = Date.now(); return; }
+    if (wanted || (hiddenAt && Date.now() - hiddenAt > 60000)) reload();
+  });
+})();

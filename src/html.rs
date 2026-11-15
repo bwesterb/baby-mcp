@@ -54,7 +54,10 @@ pub struct Page<'a> {
     /// Extra HTML on the footer's line (at the right), e.g. the view-as menu.
     pub footer_extra: String,
     pub nav: Option<&'a str>, // logged-in display name
-    pub refresh: Option<u32>,
+    /// Kept up to date: reloaded on changes to the log (`/events`) and, if
+    /// not 0, every so many seconds (for times that move with the clock);
+    /// with the log's version it was made from.
+    pub live: Option<(u32, u64)>,
 }
 
 pub fn render(p: Page) -> Response {
@@ -69,12 +72,9 @@ pub fn render(p: Page) -> Response {
         ),
         None => r#"<div class="brand logo"><img src="/icon-192.png" width="72" height="72" alt=""></div>"#.to_string(),
     };
-    let refresh = p
-        .refresh
-        .map(|s| format!(r#"<meta http-equiv="refresh" content="{s}">"#))
-        .unwrap_or_default();
+    let live = p.live.map(|(s, v)| format!(r#" data-live="{s}" data-version="{v}""#)).unwrap_or_default();
     let html = format!(
-        r#"<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">{refresh}{head}<title>{title}</title><link rel="stylesheet" href="/app.css?v={v}"><script src="/app.js?v={v}" defer></script></head><body><main>{nav}{body}{footer}</main></body></html>"#,
+        r#"<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">{head}<title>{title}</title><link rel="stylesheet" href="/app.css?v={v}"><script src="/app.js?v={v}" defer></script></head><body{live}><main>{nav}{body}{footer}</main></body></html>"#,
         title = esc(p.title),
         footer = footer(&p.footer_extra),
         head = app_head(),
@@ -102,7 +102,7 @@ pub fn error_page(status: StatusCode, msg: &str) -> Response {
         title: "baby-mcp",
         body: format!(r#"<div class="card"><h1>Cannot continue</h1><p>{}</p></div>"#, esc(msg)),
         nav: None,
-        refresh: None,
+        live: None,
         viewer: false,
         footer_extra: String::new(),
     });

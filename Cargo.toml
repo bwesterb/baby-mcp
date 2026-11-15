@@ -11,6 +11,7 @@ aes-gcm = "0.11"
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "query", "form", "json"] }
 base64 = "0.23.1"
 clap = { version = "4.6.7", features = ["derive"] }
+futures-util = { version = "0.3.34", default-features = false }
 hmac = "0.13.0"
 jiff = { version = "0.2.39", features = ["tzdb-bundle-always"] }
 p256 = { version = "0.14", features = ["ecdh", "ecdsa"] }

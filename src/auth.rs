@@ -291,7 +291,7 @@ pub async fn login_page(Query(q): Query<HashMap<String, String>>) -> Response {
             esc(&next)
         ),
         nav: None,
-        refresh: None,
+        live: None,
         viewer: false,
         footer_extra: String::new(),
     })
@@ -439,7 +439,7 @@ pub async fn enroll_page(State(app): State<Arc<App>>, Query(q): Query<HashMap<St
             esc(&token)
         ),
         nav: None,
-        refresh: None,
+        live: None,
         viewer: false,
         footer_extra: String::new(),
     })
@@ -777,7 +777,7 @@ pub async fn authorize(
             rid = esc(&rid)
         ),
         nav: None,
-        refresh: None,
+        live: None,
         viewer: false,
         footer_extra: String::new(),
     })

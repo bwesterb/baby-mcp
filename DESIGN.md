@@ -257,7 +257,14 @@ Passkey session required. English labels. *(v1)*
   and per week of life. "What's next" tiles (feed, diaper, bath, vitamins)
   under today's heading; below, the log of the day in view (`/?day=`,
   swapped in from `/log` while scrolling), or at the week zoom the week.
-  Refreshes every minute. A *viewer* sees only the charts.
+  Kept up to date without polling: the server sends a server-sent event
+  (`/events`) on every change to the log (an SQLite update hook on `entry`,
+  so every writer counts), and the page reloads a second after the last of
+  a burst, not while being touched, scrolled or typed in; the page knows the
+  log's version it shows, so changes missed in the background count when it
+  reconnects. It also reloads when coming back after more than a minute,
+  and every 5 minutes for the times that move with the clock (charts: only
+  on changes). A *viewer* sees only the charts.
 - **Charts** (`/charts`): weight change since birth and the WHO growth chart
   (see Growth), ml per day by kind (pumped breast milk, formula), minutes at the breast per day (left and right), a per-kg chart (see
   Feeding guidance), feeds and

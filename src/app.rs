@@ -17,6 +17,10 @@ pub struct App {
     pub growth: Option<std::sync::Arc<crate::growth::Table>>,
     pub change: Option<std::sync::Arc<crate::growth::WeightChange>>,
     pub push_client: reqwest::Client,
+    /// Bumped on every change to the log (any writer in this process), and
+    /// sent to open pages so they reload (`/events`).
+    pub version: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    pub changes: tokio::sync::broadcast::Sender<u64>,
 }
 
 impl App {
@@ -42,7 +46,23 @@ impl App {
             eprintln!("note: {} not found; running without first-month weight-change percentiles", path.display());
             None
         };
-        Ok(App { cfg, db, clock, wa, mem: Mutex::new(Mem::default()), growth, change, push_client: crate::notify::client() })
+        // Every row written to the log, from MCP, the web or anything else
+        // using this connection, tells the open pages.
+        let version = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(1));
+        let (changes, _) = tokio::sync::broadcast::channel(16);
+        {
+            let (version, changes) = (version.clone(), changes.clone());
+            db.with(|c| {
+                c.update_hook(Some(move |_: rusqlite::hooks::Action, _: &str, table: &str, _: i64| {
+                    if table == "entry" {
+                        let v = version.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                        let _ = changes.send(v);
+                    }
+                }))
+            })
+            .map_err(|e| e.to_string())?;
+        }
+        Ok(App { cfg, db, clock, wa, mem: Mutex::new(Mem::default()), growth, change, push_client: crate::notify::client(), version, changes })
     }
 
     /// The in-memory state (ceremonies, codes); a panic elsewhere while it

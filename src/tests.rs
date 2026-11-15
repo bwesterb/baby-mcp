@@ -599,3 +599,27 @@ async fn viewer_sees_only_charts() {
     assert!(!r.body.contains(r#"href="/day""#) && !r.body.contains(r#"href="/add""#), "only the charts in the menu");
     assert_eq!(send(&t, get("/push/badge").header(header::COOKIE, &t.cookie).body(Body::empty()).unwrap()).await.status, StatusCode::UNAUTHORIZED);
 }
+
+#[tokio::test]
+async fn live_events() {
+    use futures_util::StreamExt;
+    let t = setup();
+    // Without a session: no stream.
+    let r = crate::router(t.app.clone()).oneshot(get("/events").body(Body::empty()).unwrap()).await.unwrap();
+    assert_eq!(r.status(), StatusCode::UNAUTHORIZED);
+    let r = crate::router(t.app.clone()).oneshot(get("/events").header(header::COOKIE, &t.cookie).body(Body::empty()).unwrap()).await.unwrap();
+    assert_eq!(r.headers()[header::CONTENT_TYPE], "text/event-stream");
+    let mut body = r.into_body().into_data_stream();
+    let mut next = async || String::from_utf8(tokio::time::timeout(std::time::Duration::from_secs(2), body.next()).await.unwrap().unwrap().unwrap().to_vec()).unwrap();
+    let v = t.app.version.load(std::sync::atomic::Ordering::Relaxed);
+    assert_eq!(next().await, format!("event: hello\ndata: {v}\n\n"));
+    // A change to the log, by whatever way: "changed", with the new version.
+    t.app.db.run(|c| crate::entries::insert(c, 1, &crate::entries::NewEntry {
+        at: now(), duration_s: None, text: "wet".into(), fields: serde_json::from_value(json!({"wet": true})).unwrap(),
+        attention_by: 0, attention_why: None,
+    }, now())).unwrap();
+    assert_eq!(next().await, format!("event: changed\ndata: {}\n\n", v + 1));
+    // The status page says which version it shows.
+    let page = send(&t, get("/").header(header::COOKIE, &t.cookie).body(Body::empty()).unwrap()).await;
+    assert!(page.body.contains(&format!(r#"<body data-live="300" data-version="{}">"#, v + 1)), "{}", &page.body[..300]);
+}
