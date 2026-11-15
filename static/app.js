@@ -341,12 +341,23 @@ if ($('push')) {
   // While the timeline glides to a chosen day, the log doesn't follow the
   // days it passes; touching it again hands back control.
   let gliding = false;
-  function goTo(key, smooth) {
+  // With `after` (ms) the log changes at once and the strip glides later
+  // (unless it was scrolled meanwhile, or another tap cancelled it).
+  let later = null;
+  function goTo(key, smooth, after = 0) {
     const s = span(key);
     if (!s) return;
+    clearTimeout(later);
     gliding = smooth;
     const left = s.now ? home() : x((s.start + s.end) / 2) - AT * W();
-    tl.scrollTo({left, behavior: smooth ? 'smooth' : 'auto'});
+    const from = tl.scrollLeft;
+    const glide = () => {
+      if (tl.scrollLeft !== from) return;
+      gliding = smooth;
+      tl.scrollTo({left, behavior: smooth ? 'smooth' : 'auto'});
+    };
+    if (after > 0) later = setTimeout(glide, after);
+    else glide();
     show(key).then(setUrl);
   }
   // The links to other days (in the log, or over what's next) scroll the
@@ -367,27 +378,24 @@ if ($('push')) {
   }
 
   // A tap on another day in the timeline goes there too (a swipe gives no
-  // click); a second tap on the same day or week soon after zooms in one
-  // level on it. While a double tap is possible the strip waits for it, so
-  // nothing moves between the taps: a quick tap on another day goes there.
-  const DOUBLE = 300;
-  let pending = null; // {key, timer}
+  // click); a second tap soon after on the same day or week (what is under
+  // the pointer then) zooms in one level on it.
+  let lastTap = null;
   tl.addEventListener('click', (e) => {
     const key = unit(dayAt(tAt(tl.scrollLeft + e.clientX - tl.getBoundingClientRect().left)).date);
-    if (pending && pending.key === key) {
-      clearTimeout(pending.timer);
-      pending = null;
+    const double = lastTap && e.timeStamp - lastTap.t < 350 && lastTap.key === key;
+    lastTap = double ? null : {t: e.timeStamp, key};
+    if (double && z > 0) {
+      clearTimeout(later);
       const s = span(key);
       if (!s) return;
       touched = true;
       zoomTo(z - 1, {sx: AT * W(), t: s.now ? NOW : (s.start + s.end) / 2});
       return;
     }
-    if (pending) clearTimeout(pending.timer);
-    pending = null;
-    const go = () => { if (key !== shown || z !== shownZ) goTo(key, true); };
-    if (z === 0) { go(); return; }
-    pending = {key, timer: setTimeout(() => { pending = null; go(); }, DOUBLE)};
+    // The log at once; the strip glides a moment later, so a second tap
+    // still finds the same day or week under the pointer.
+    if (key !== shown || z !== shownZ) goTo(key, true, z > 0 ? 300 : 0);
   });
 
   // Where to open.
